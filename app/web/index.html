@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CW RAG Task</title>
+  <style>
+    :root {
+      --bg: #f6f8fc;
+      --panel: #ffffff;
+      --line: #dbe3f0;
+      --ink: #16253b;
+      --muted: #6a7990;
+      --brand: #1f4fd6;
+      --shadow: 0 14px 34px rgba(19, 39, 76, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", "Apple SD Gothic Neo", sans-serif;
+      background: linear-gradient(180deg, #f7faff 0%, #eef3fb 100%);
+      color: var(--ink);
+    }
+
+    .shell {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 32px 24px 48px;
+    }
+
+    .hero {
+      padding: 28px 30px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .eyebrow {
+      color: var(--brand);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 12px 0 10px;
+      font-size: 38px;
+      line-height: 1.12;
+      letter-spacing: -0.03em;
+    }
+
+    .lead {
+      margin: 0;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.8;
+      max-width: 760px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+      margin-top: 22px;
+    }
+
+    .card {
+      padding: 22px 20px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      min-height: 190px;
+    }
+
+    .card h2 {
+      margin: 0 0 12px;
+      font-size: 20px;
+      letter-spacing: -0.02em;
+    }
+
+    .card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.75;
+      font-size: 14px;
+    }
+
+    .placeholder {
+      margin-top: 16px;
+      padding: 14px 16px;
+      border: 1px dashed #c8d5eb;
+      background: #f8fbff;
+      color: #7a879c;
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .footnote {
+      margin-top: 24px;
+      padding: 18px 20px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.8;
+      box-shadow: var(--shadow);
+    }
+
+    code {
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 13px;
+      background: #f2f6fc;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    @media (max-width: 960px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      h1 {
+        font-size: 30px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <div class="eyebrow">Initial Skeleton</div>
+      <h1>문서형 RAG 챗봇 프로젝트 초안</h1>
+      <p class="lead">
+        본 페이지는 과제 초기 설계 단계에서 사용할 웹 골격 화면입니다.
+        이후 단계에서 자료실, 세션 메모리, 검색 컨텍스트, 스트리밍 응답 UI가 순차적으로 추가될 예정입니다.
+      </p>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <h2>챗봇 영역</h2>
+        <p>
+          사용자 질문 입력, 스트리밍 응답, 세션 기반 멀티턴 대화 UI가 들어갈 예정입니다.
+        </p>
+        <div class="placeholder">
+          Placeholder:
+          질문 입력창 / 답변 출력 / 세션 상태 표시
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>자료실 영역</h2>
+        <p>
+          PDF 업로드, 문서 목록 조회, 인덱싱 상태 확인을 위한 화면을 구성할 예정입니다.
+        </p>
+        <div class="placeholder">
+          Placeholder:
+          PDF 업로드 / 문서 목록 / 메타데이터 표시
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>검색 컨텍스트 영역</h2>
+        <p>
+          retrieval 결과와 문서 근거를 사용자에게 보여주는 패널을 추가할 예정입니다.
+        </p>
+        <div class="placeholder">
+          Placeholder:
+          top-k 검색 결과 / 점수 / source page
+        </div>
+      </article>
+    </section>
+
+    <section class="footnote">
+      초기 단계에서는 <code>/</code> 기본 페이지와 <code>/health</code> 같은 최소 API만 구성하고,
+      이후 PDF ingestion, OCR fallback, chunking, retrieval, LLM 연동 순서로 기능을 확장하는 것을 목표로 합니다.
+    </section>
+  </main>
+</body>
+</html>
