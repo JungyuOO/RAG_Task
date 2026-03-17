@@ -1,9 +1,11 @@
 .venv
 __pycache__/
 .env
+
 data/cache/*
 data/index/*
-data/processed/*
+data/corpus/pdfs/*
+
 !data/cache/.gitkeep
 !data/index/.gitkeep
-!data/processed/.gitkeep
+!data/corpus/pdfs/.gitkeep
