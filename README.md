@@ -151,7 +151,7 @@ PDF Upload / Library Ingestion
 - answer cache: 동일 질의 + 동일 retrieval context 조합 재사용
 - 캐시 키는 질의, 세션 맥락, retrieval 결과를 반영하는 형태로
 
-## 기술 선택 초안
+## 기술 스택 초안
 
 - Backend: `Python + FastAPI`
 - Frontend: `HTML/CSS/Vanilla JS`
