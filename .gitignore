@@ -5,6 +5,7 @@ __pycache__/
 data/cache/*
 data/index/*
 data/corpus/pdfs/*
+data/extracted_markdown/*
 
 !data/cache/.gitkeep
 !data/index/.gitkeep
