@@ -128,6 +128,15 @@ class StructuredMarkdownChunker:
                     order += 1
                 continue
 
+            if current_blocks and (
+                block.page_start != current_blocks[-1].page_end
+                or self._should_force_boundary(current_blocks, block)
+            ):
+                chunks.append(self._build_chunk(doc_id, documents[0].source_path, current_blocks, order))
+                order += 1
+                current_blocks = []
+                current_length = 0
+
             projected = current_length + len(block.text) + (2 if current_blocks else 0)
             if current_blocks and projected > self.chunk_size:
                 chunks.append(self._build_chunk(doc_id, documents[0].source_path, current_blocks, order))
@@ -143,6 +152,20 @@ class StructuredMarkdownChunker:
             chunks.append(self._build_chunk(doc_id, documents[0].source_path, current_blocks, order))
 
         return chunks
+
+    def _should_force_boundary(self, current_blocks: list[MarkdownBlock], next_block: MarkdownBlock) -> bool:
+        if not current_blocks:
+            return False
+
+        current_kinds = {block.kind for block in current_blocks}
+        structured_kinds = {"heading", "list", "table", "code"}
+        if next_block.kind == "heading":
+            return True
+        if next_block.kind in structured_kinds and current_kinds - {next_block.kind}:
+            return True
+        if next_block.kind == "paragraph" and current_kinds & structured_kinds:
+            return True
+        return False
 
     def _blocks_from_markdown(self, markdown_text: str) -> list[MarkdownBlock]:
         text = _normalize_markdown_text(markdown_text)
@@ -170,12 +193,62 @@ class StructuredMarkdownChunker:
 
     def _parse_markdown_blocks(self, body_text: str, page_number: int) -> list[MarkdownBlock]:
         blocks: list[MarkdownBlock] = []
-        sections = [section.strip() for section in re.split(r"\n\s*\n", body_text) if section.strip()]
+        sections = self._split_markdown_sections(body_text)
         for section in sections:
             lines = [line.strip() for line in section.splitlines() if line.strip()]
             if not lines:
                 continue
-            kind = "list" if all(line.startswith(("-", "*", "1.", "2.", "3.")) for line in lines) else "paragraph"
+            if len(lines) == 1 and (lines[0].startswith("#") or (len(lines[0]) <= 40 and lines[0].endswith(":"))):
+                normalized = normalize_text(lines[0].lstrip("#").strip())
+                if normalized:
+                    blocks.append(
+                        MarkdownBlock(
+                            text=normalized,
+                            page_start=page_number,
+                            page_end=page_number,
+                            kind="heading",
+                        )
+                )
+                continue
+
+            if self._is_code_block(lines):
+                normalized = "\n".join(line.rstrip() for line in lines).strip()
+                blocks.append(
+                    MarkdownBlock(
+                        text=normalized,
+                        page_start=page_number,
+                        page_end=page_number,
+                        kind="code",
+                    )
+                )
+                continue
+
+            if self._is_table_block(lines):
+                normalized = "\n".join(line.rstrip() for line in lines).strip()
+                blocks.append(
+                    MarkdownBlock(
+                        text=normalized,
+                        page_start=page_number,
+                        page_end=page_number,
+                        kind="table",
+                    )
+                )
+                continue
+
+            all_list = all(self._is_list_line(line) for line in lines)
+            if all_list:
+                normalized = "\n".join(lines).strip()
+                blocks.append(
+                    MarkdownBlock(
+                        text=normalized,
+                        page_start=page_number,
+                        page_end=page_number,
+                        kind="list",
+                    )
+                )
+                continue
+
+            kind = "paragraph"
             normalized = normalize_text(" ".join(lines))
             if normalized:
                 blocks.append(
@@ -187,6 +260,47 @@ class StructuredMarkdownChunker:
                     )
                 )
         return blocks
+
+    def _split_markdown_sections(self, body_text: str) -> list[str]:
+        sections: list[str] = []
+        current_lines: list[str] = []
+        in_code_block = False
+
+        for raw_line in body_text.splitlines():
+            line = raw_line.rstrip()
+            if line.strip().startswith("```"):
+                in_code_block = not in_code_block
+                current_lines.append(line)
+                continue
+
+            if not in_code_block and not line.strip():
+                if current_lines:
+                    sections.append("\n".join(current_lines).strip())
+                    current_lines = []
+                continue
+
+            current_lines.append(line)
+
+        if current_lines:
+            sections.append("\n".join(current_lines).strip())
+        return [section for section in sections if section]
+
+    def _is_list_line(self, line: str) -> bool:
+        return bool(re.match(r"^(?:[-*]\s+|\d+\.\s+)", line))
+
+    def _is_table_block(self, lines: list[str]) -> bool:
+        if len(lines) < 2:
+            return False
+        pipe_lines = [line for line in lines if "|" in line]
+        if len(pipe_lines) != len(lines):
+            return False
+        separator_pattern = re.compile(r"^\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?$")
+        return any(separator_pattern.match(line) for line in lines)
+
+    def _is_code_block(self, lines: list[str]) -> bool:
+        if len(lines) >= 2 and lines[0].startswith("```") and lines[-1].startswith("```"):
+            return True
+        return False
 
     def _blocks_from_documents(self, documents: list[Document]) -> list[MarkdownBlock]:
         blocks: list[MarkdownBlock] = []
@@ -227,6 +341,7 @@ class StructuredMarkdownChunker:
                 "page_start": page_start,
                 "page_end": page_end,
                 "block_types": ",".join(sorted({block.kind for block in blocks})),
+                "block_count": len(blocks),
                 "chunking_strategy": "structured_markdown",
             },
         )
