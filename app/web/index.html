@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>CW Library RAG</title>
+  <title>CW Library RAG UI</title>
   <style>
     :root {
       --bg: #f6f8fc;
@@ -23,26 +23,28 @@
     }
 
     * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); font-family: "Segoe UI", "Apple SD Gothic Neo", sans-serif; }
+    body { margin: 0; min-height: 100vh; background: #f6f7f8; color: var(--ink); font-family: "Inter", "Segoe UI", "Apple SD Gothic Neo", sans-serif; }
     button, input, textarea { font: inherit; }
     button { border: 1px solid transparent; border-radius: 10px; padding: 11px 16px; font-weight: 700; cursor: pointer; }
     input, textarea { width: 100%; border: 1px solid var(--line-strong); background: #fff; color: var(--ink); }
     .app { display: grid; grid-template-columns: 248px minmax(0, 1fr); min-height: 100vh; }
     .sidebar { border-right: 1px solid var(--line); background: #fff; padding: 20px 16px 16px; display: flex; flex-direction: column; gap: 18px; min-height: 100vh; }
-    .brand { display: flex; align-items: center; gap: 12px; padding: 6px 8px 12px; border-bottom: 1px solid var(--line); }
-    .brand img { width: 56px; height: 44px; object-fit: contain; }
-    .brand-name { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; color: var(--brand-deep); }
-    .brand-sub { margin-top: 2px; color: var(--muted); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .brand { display: flex; align-items: center; gap: 12px; padding: 6px 8px 12px; }
+    .brand-mark { width: 42px; height: 42px; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center; background: #fff; border: 1px solid var(--line); box-shadow: 0 14px 28px rgba(19, 109, 236, 0.12); overflow: hidden; padding: 6px; }
+    .brand-mark img { width: 100%; height: 100%; object-fit: contain; display: block; }
+    .brand-name { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; color: #0f172a; }
+    .brand-sub { margin-top: 2px; color: var(--muted); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; }
     .nav { display: flex; flex-direction: column; gap: 8px; }
     .nav-button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 12px 14px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: var(--ink); font: inherit; font-weight: 700; cursor: pointer; text-align: left; }
     .nav-button:hover { background: #f5f8ff; border-color: var(--line); }
     .nav-button.active { background: #edf4ff; color: var(--brand-deep); border-color: #bfd3fb; box-shadow: inset 0 0 0 1px rgba(42, 87, 223, 0.05); }
     .nav-icon { width: 20px; height: 20px; object-fit: contain; flex: 0 0 auto; border-radius: 4px; }
-    .session-rail { margin-top: auto; border: 1px solid var(--line); background: var(--panel-soft); padding: 14px; border-radius: 10px; display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; height: calc(100vh - 220px); }
-    .session-rail-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
-    .session-rail-title { font-size: 15px; font-weight: 800; white-space: nowrap; }
-    .session-actions { display: flex; gap: 6px; flex-wrap: nowrap; align-items: center; }
-    .session-actions button { padding: 8px 10px; font-size: 12px; white-space: nowrap; flex: 0 0 auto; }
+    .session-rail { margin-top: auto; border: 1px solid var(--line); background: #f8fafc; padding: 14px; border-radius: 16px; display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; height: calc(100vh - 220px); }
+    .rail-label { color: #94a3b8; font-size: 11px; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; margin-bottom: 10px; }
+    .session-rail-header { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+    .session-rail-title { font-size: 16px; font-weight: 800; white-space: nowrap; }
+    .session-actions { display: flex; gap: 8px; align-items: center; }
+    .session-actions button { padding: 10px 12px; font-size: 12px; white-space: nowrap; flex: 1 1 0; border-radius: 12px; }
     .history-status { color: var(--muted); font-size: 12px; line-height: 1.5; margin-bottom: 10px; min-height: 18px; }
     .history-list { display: flex; flex-direction: column; gap: 8px; overflow: auto; padding-right: 2px; min-height: 0; }
     .history-item { width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; text-align: left; cursor: pointer; }
@@ -53,13 +55,13 @@
     .item-title { font-size: 14px; font-weight: 800; color: var(--ink); margin-bottom: 4px; word-break: break-word; }
     .item-copy, .item-meta, .status { color: var(--muted); font-size: 12px; line-height: 1.55; word-break: break-word; }
     .main { display: flex; flex-direction: column; min-width: 0; padding-top: 72px; }
-    .topbar { height: 72px; padding: 0 28px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, 0.92); display: flex; align-items: center; position: fixed; top: 0; left: 248px; right: 0; z-index: 40; backdrop-filter: blur(10px); }
+    .topbar { height: 72px; padding: 0 28px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, 0.92); display: flex; align-items: center; justify-content: space-between; position: fixed; top: 0; left: 248px; right: 0; z-index: 40; backdrop-filter: blur(10px); }
     .topbar-title { font-size: 20px; font-weight: 800; letter-spacing: -0.02em; }
     .topbar-copy { color: var(--muted); font-size: 13px; margin-top: 2px; }
     .content { padding: 24px 28px 28px; }
     .screen { display: none; }
     .screen.active { display: block; }
-    .surface { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; box-shadow: var(--shadow); }
+    .surface { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); }
     .surface-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 20px 22px; border-bottom: 1px solid var(--line); }
     .surface-title { margin: 0; font-size: 20px; font-weight: 800; letter-spacing: -0.02em; }
     .surface-copy { margin: 4px 0 0; color: var(--muted); font-size: 14px; line-height: 1.6; }
@@ -71,19 +73,38 @@
     .chat-layout { display: grid; grid-template-columns: minmax(0, 1fr) 0fr; gap: 0; align-items: stretch; transition: grid-template-columns 0.28s ease, gap 0.28s ease; }
     .chat-layout.preview-open { grid-template-columns: minmax(0, 1.02fr) minmax(32vw, 0.98fr); gap: clamp(16px, 1.4vw, 24px); }
     .chat-main, .preview-main { height: clamp(700px, 86vh, 1120px); }
-    .chat-main { display: grid; grid-template-rows: auto 1fr auto; }
+    .chat-main { display: grid; grid-template-rows: auto 1fr; }
     .chat-main .surface-body, .preview-main .surface-body { display: flex; flex-direction: column; min-height: 0; }
     .preview-main { min-width: 0; opacity: 0; transform: translateX(20px); pointer-events: none; overflow: hidden; transition: opacity 0.24s ease, transform 0.24s ease; }
     .chat-layout.preview-open .preview-main { opacity: 1; transform: translateX(0); pointer-events: auto; }
     .preview-main .surface-body { overflow: hidden; }
     .surface-header-actions { display: flex; align-items: center; gap: 8px; }
-    .chat-log { display: flex; flex-direction: column; gap: 12px; min-height: clamp(320px, 42vh, 560px); max-height: clamp(360px, 60vh, 720px); overflow: auto; padding-right: 4px; }
-    .message { padding: 12px 18px 16px; border: 1px solid var(--line); border-radius: 4px; background: #fff; line-height: 1.72; word-break: break-word; }
-    .message.user { background: #f8fbff; border-color: #d8e4fb; }
-    .message.assistant.loading { border-color: #d6deef; background: #fcfdff; }
-    .message-role { margin-bottom: 8px; font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--brand-deep); }
-    .message-body { white-space: pre-wrap; min-height: 24px; }
-    .message-actions { display: flex; gap: 8px; margin-top: 12px; }
+    .chat-shell { display: flex; flex-direction: column; min-height: 0; gap: 18px; height: 100%; }
+    .chat-log { display: flex; flex-direction: column; gap: 20px; min-height: clamp(320px, 42vh, 560px); max-height: clamp(360px, 60vh, 720px); overflow: auto; padding-right: 4px; }
+    .message { display: flex; flex-direction: column; gap: 8px; max-width: 90%; line-height: 1.72; word-break: break-word; }
+    .message.user { align-self: flex-end; }
+    .message.assistant { align-self: flex-start; }
+    .message-role { margin-bottom: 0; font-size: 11px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; color: #94a3b8; padding-inline: 2px; }
+    .message-body { white-space: pre-wrap; min-height: 24px; padding: 18px 20px; border: 1px solid var(--line); border-radius: 22px; background: #f8fafc; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04); }
+    .message.user .message-body { background: #136dec; color: #fff; border-color: transparent; border-top-right-radius: 8px; }
+    .message.assistant .message-body { border-top-left-radius: 8px; }
+    .message.assistant .message-body { white-space: normal; }
+    .assistant-heading { margin-top: 14px; font-weight: 800; letter-spacing: -0.02em; color: #0f172a; }
+    .assistant-heading.level-1 { font-size: 20px; }
+    .assistant-heading.level-2 { font-size: 17px; }
+    .assistant-heading.level-3 { font-size: 15px; color: #1e3a8a; }
+    .assistant-text-block { white-space: pre-wrap; }
+    .assistant-text-block + .assistant-text-block { margin-top: 12px; }
+    .assistant-list { margin: 12px 0 0; padding-left: 22px; }
+    .assistant-list li { margin: 6px 0; line-height: 1.6; }
+    .assistant-code-wrap { margin-top: 12px; border: 1px solid #d6deeb; border-radius: 14px; overflow: hidden; background: #0f172a; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04); }
+    .assistant-code-wrap::before { content: attr(data-language); display: block; min-height: 18px; padding: 8px 12px 0; color: #94a3b8; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+    .assistant-code-block { margin: 0; padding: 14px 16px 16px; overflow: auto; color: #e2e8f0; font: 12px/1.6 "Consolas", "SFMono-Regular", monospace; background: transparent; white-space: pre; }
+    .assistant-table { width: 100%; margin-top: 12px; border-collapse: collapse; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #fff; font-size: 13px; }
+    .assistant-table th, .assistant-table td { padding: 10px 12px; border: 1px solid var(--line); text-align: left; vertical-align: top; white-space: normal; line-height: 1.55; }
+    .assistant-table thead th { background: #eef4ff; color: var(--brand-deep); font-weight: 800; }
+    .assistant-table tbody tr:nth-child(even) { background: #f9fbff; }
+    .message-actions { display: flex; gap: 8px; padding-inline: 2px; }
     .loading-indicator { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 12px; border: 1px solid #dbe4f6; border-radius: 12px; background: linear-gradient(180deg, #f8fbff 0%, #fdfefe 100%); color: var(--muted); font-size: 13px; }
     .loading-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
     .loading-title { color: var(--ink); font-weight: 700; }
@@ -97,9 +118,10 @@
       0%, 80%, 100% { transform: scale(0.7); opacity: 0.38; }
       40% { transform: scale(1); opacity: 1; }
     }
-    .composer { display: flex; flex-direction: column; gap: 10px; margin-top: auto; padding-top: 16px; }
-    .composer-shell { display: grid; grid-template-columns: auto 1fr auto auto; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 999px; background: #fff; }
-    .composer-input { min-height: 24px; max-height: 140px; padding: 8px 10px; border: 0; resize: none; line-height: 1.5; outline: none; border-radius: 999px; }
+    .composer { display: flex; flex-direction: column; gap: 10px; margin-top: auto; padding-top: 16px; border-top: 1px solid var(--line); }
+    .composer-shell { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: end; padding: 10px; border: 1px solid var(--line-strong); border-radius: 24px; background: #f8fafc; }
+    .composer-tools, .composer-actions { display: flex; align-items: center; gap: 8px; }
+    .composer-input { min-height: 54px; max-height: 140px; padding: 8px 10px; border: 0; resize: none; line-height: 1.5; outline: none; background: transparent; }
     .composer-shell.pending { opacity: 0.72; }
     .icon-button { width: 38px; height: 38px; padding: 0; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-size: 16px; line-height: 1; }
     #attachPdfBtn { font-size: 22px; font-weight: 500; padding-bottom: 2px; }
@@ -110,6 +132,72 @@
     .attachment-remove:hover { color: var(--danger); }
     .hidden-input { display: none; }
     .library-list { display: flex; flex-direction: column; gap: 10px; }
+    .status-panel {
+      margin-top: 16px;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: #f8fafc;
+    }
+    .status-panel[data-tone="loading"] {
+      background: #eff6ff;
+      border-color: #bfdbfe;
+    }
+    .status-panel[data-tone="success"] {
+      background: #f0fdf4;
+      border-color: #bbf7d0;
+    }
+    .status-panel[data-tone="error"] {
+      background: #fef2f2;
+      border-color: #fecaca;
+    }
+    .status-indicator {
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      background: #94a3b8;
+      flex: 0 0 auto;
+      margin-top: 4px;
+    }
+    .status-panel[data-tone="loading"] .status-indicator {
+      background: #136dec;
+      box-shadow: 0 0 0 6px rgba(19, 109, 236, 0.14);
+      animation: statusPulse 1.4s ease-in-out infinite;
+    }
+    .status-panel[data-tone="success"] .status-indicator {
+      background: #16a34a;
+      box-shadow: 0 0 0 6px rgba(22, 163, 74, 0.12);
+    }
+    .status-panel[data-tone="error"] .status-indicator {
+      background: #dc2626;
+      box-shadow: 0 0 0 6px rgba(220, 38, 38, 0.12);
+    }
+    .status-copy {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .status-label {
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #64748b;
+    }
+    .status-text {
+      color: var(--ink);
+      font-size: 14px;
+      line-height: 1.6;
+      word-break: break-word;
+    }
+    @keyframes statusPulse {
+      0%, 100% { transform: scale(0.92); opacity: 0.82; }
+      50% { transform: scale(1.08); opacity: 1; }
+    }
     .empty { padding: 18px; border: 1px dashed var(--line-strong); border-radius: 4px; background: #fbfcff; color: var(--muted); font-size: 14px; line-height: 1.6; }
     .answer-preview-shell { display: grid; grid-template-rows: auto auto 1fr; gap: 12px; height: 100%; min-height: 0; }
     .answer-preview-meta { padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: #f8fbff; }
@@ -123,18 +211,29 @@
     .answer-preview-frame { width: 100%; height: 100%; min-height: clamp(560px, 74vh, 980px); border: 1px solid var(--line); border-radius: 12px; background: #eef3fb; overflow: hidden; display: flex; align-items: stretch; justify-content: stretch; padding: 0; }
     .answer-preview-frame iframe { width: 100%; height: 100%; border: 0; background: #eef3fb; }
     .library-layout { display: flex; flex-direction: column; gap: 20px; }
+    .stats-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+    .stat-card { background: #fff; border: 1px solid var(--line); border-radius: 18px; padding: 20px; box-shadow: var(--shadow); }
+    .stat-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+    .stat-label { font-size: 11px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+    .stat-value { font-size: 28px; font-weight: 800; letter-spacing: -0.04em; }
+    .stat-foot { margin-top: 8px; color: var(--muted); font-size: 12px; }
+    .library-card-top { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 24px; border-bottom: 1px solid var(--line); background: rgba(248, 250, 252, 0.8); }
+    .library-card-title { font-size: 18px; font-weight: 800; letter-spacing: -0.02em; }
+    .library-card-copy { margin-top: 4px; color: var(--muted); font-size: 13px; }
     .upload-box { display: flex; flex-direction: column; gap: 12px; padding: 28px 24px; border: 1px solid #cfe0ff; border-radius: 10px; background: #eef6ff; align-items: center; justify-content: center; text-align: center; min-height: 118px; cursor: pointer; transition: border-color 0.18s ease, background 0.18s ease; }
     .upload-box.dragover { border-color: #8fb5ff; background: #e4f0ff; }
     .upload-icon { font-size: 30px; line-height: 1; color: #7ca4f7; }
     .upload-title { font-size: 14px; font-weight: 700; color: var(--ink); }
     .upload-copy { color: var(--muted); font-size: 12px; line-height: 1.6; }
     .upload-hidden { display: none; }
-    .library-table { width: 100%; border-collapse: collapse; border: 1px solid var(--line); background: #fff; }
+    .library-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 18px; }
+    .library-table { width: 100%; border-collapse: collapse; background: #fff; }
     .library-table th, .library-table td { padding: 14px 16px; border-bottom: 1px solid var(--line); font-size: 13px; text-align: left; vertical-align: middle; }
     .library-table th { background: #f7f9fc; color: var(--muted); font-weight: 700; }
     .library-table tbody tr:hover { background: #fafcff; }
     .status-badge { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 999px; background: #ebf8ef; color: var(--ok); font-size: 12px; font-weight: 700; }
-    .row-actions { display: flex; gap: 8px; }
+    .status-badge::before { content: ""; width: 8px; height: 8px; border-radius: 999px; background: currentColor; }
+    .row-actions { display: flex; justify-content: flex-end; gap: 8px; }
     .pdf-modal { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 24px; background: var(--overlay); z-index: 200; }
     .pdf-modal.open { display: flex; }
     .pdf-modal-card { width: min(1320px, 96vw); height: min(920px, 92vh); display: grid; grid-template-rows: auto 1fr; background: #fff; border-radius: 4px; overflow: hidden; box-shadow: 0 30px 80px rgba(8, 18, 40, 0.28); }
@@ -144,6 +243,7 @@
     .pdf-frame { width: 100%; height: 100%; border: 0; background: #eef3fb; }
     @media (max-width: 1440px) {
       .chat-layout.preview-open { grid-template-columns: minmax(0, 1.08fr) minmax(30vw, 0.92fr); }
+      .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 1240px) {
       .chat-layout, .chat-layout.preview-open { grid-template-columns: 1fr; gap: 16px; }
@@ -160,6 +260,9 @@
       .main { padding-top: 72px; }
       .topbar { left: 0; padding-inline: 18px; }
       .content { padding: 18px; }
+      .stats-grid { grid-template-columns: 1fr; }
+      .composer-shell { grid-template-columns: 1fr; }
+      .composer-tools, .composer-actions { justify-content: space-between; }
     }
   </style>
 </head>
@@ -167,10 +270,12 @@
   <div class="app">
     <aside class="sidebar">
       <div class="brand">
-        <img src="/resources/images/Cywell_logo.png" alt="Cywell logo" />
+        <div class="brand-mark" aria-hidden="true">
+          <img src="/resources/images/Cywell_logo.png" alt="" />
+        </div>
         <div>
           <div class="brand-name">CW RAG</div>
-          <div class="brand-sub">Library Workspace</div>
+          <div class="brand-sub">Enterprise AI</div>
         </div>
       </div>
 
@@ -186,10 +291,11 @@
       </nav>
 
       <section class="session-rail">
+        <div class="rail-label">Workspace</div>
         <div class="session-rail-header">
-          <div class="session-rail-title">채팅 이력</div>
+          <div class="session-rail-title">Recent Chats</div>
           <div class="session-actions">
-            <button id="newChatBtn" class="secondary" type="button">새 채팅</button>
+            <button id="newChatBtn" class="primary" type="button">새 채팅</button>
             <button id="refreshSessionsBtn" class="secondary" type="button">새로고침</button>
           </div>
         </div>
@@ -212,23 +318,28 @@
             <div class="surface chat-main">
               <div class="surface-header">
                 <div>
-                  <h2 class="surface-title">채팅</h2>
-                  <p class="surface-copy">선택한 세션 기준으로 문서 질의와 일반 질문을 처리합니다.</p>
+                  <h2 class="surface-title">Document-based Assistant</h2>
+                  <p class="surface-copy">선택한 세션 기준으로 문서 질의와 일반 질문을 처리하고, 관련 근거 페이지를 함께 확인할 수 있습니다.</p>
                 </div>
-                <div class="surface-header-actions"></div>
               </div>
               <div class="surface-body">
-                <div id="chatLog" class="chat-log"></div>
-                <div class="composer">
-                  <div id="chatAttachmentList" class="attachment-strip"></div>
-                  <div id="composerShell" class="composer-shell">
-                    <input id="chatFileInput" class="hidden-input" type="file" accept=".pdf,application/pdf" multiple />
-                    <button id="attachPdfBtn" class="icon-button secondary" type="button" title="PDF 첨부">+</button>
-                    <textarea id="messageInput" class="composer-input" placeholder="메시지를 입력해 주세요"></textarea>
-                    <button id="clearInputBtn" class="icon-button secondary" type="button" title="입력 지우기">X</button>
-                    <button id="sendBtn" class="icon-button primary" type="button" title="보내기">></button>
+                <div class="chat-shell">
+                  <div id="chatLog" class="chat-log"></div>
+                  <div class="composer">
+                    <div id="chatAttachmentList" class="attachment-strip"></div>
+                    <div id="composerShell" class="composer-shell">
+                      <div class="composer-tools">
+                        <input id="chatFileInput" class="hidden-input" type="file" accept=".pdf,application/pdf" multiple />
+                        <button id="attachPdfBtn" class="icon-button secondary" type="button" title="PDF 첨부">+</button>
+                      </div>
+                      <textarea id="messageInput" class="composer-input" placeholder="문서와 관련된 질문을 입력해 주세요"></textarea>
+                      <div class="composer-actions">
+                        <button id="clearInputBtn" class="icon-button secondary" type="button" title="입력 지우기">×</button>
+                        <button id="sendBtn" class="icon-button primary" type="button" title="보내기">→</button>
+                      </div>
+                    </div>
+                    <div class="composer-help">Enter로 전송하고 Shift+Enter로 줄바꿈합니다. PDF를 첨부한 뒤 바로 질문할 수 있습니다.</div>
                   </div>
-                  <div class="composer-help">Enter로 전송하고 Shift+Enter로 줄바꿈합니다. PDF를 첨부한 뒤 바로 질문할 수 있습니다.</div>
                 </div>
               </div>
             </div>
@@ -261,13 +372,39 @@
 
         <section id="screen-library" class="screen">
           <div class="library-layout">
-            <div class="surface">
-              <div class="surface-header">
-                <div>
-                  <h2 class="surface-title">자료실</h2>
-                  <p class="surface-copy">문서 목록과 업로드 상태를 관리합니다.</p>
+            <div class="stats-grid">
+              <div class="stat-card">
+                <div class="stat-head">
+                  <span class="stat-label">Total Files</span>
+                  <span>문서</span>
                 </div>
-                <div class="toolbar">
+                <div id="totalFilesStat" class="stat-value">0</div>
+                <div class="stat-foot">현재 자료실에 등록된 전체 PDF 수</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-head">
+                  <span class="stat-label">Indexed</span>
+                  <span>완료</span>
+                </div>
+                <div id="indexedFilesStat" class="stat-value">0</div>
+                <div class="stat-foot">인덱스에 반영된 문서 기준</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-head">
+                  <span class="stat-label">Chunks</span>
+                  <span>청크</span>
+                </div>
+                <div id="indexedChunksStat" class="stat-value">0</div>
+                <div class="stat-foot">검색 가능한 전체 청크 수</div>
+              </div>
+            </div>
+            <div class="surface">
+              <div class="library-card-top">
+                <div>
+                  <div class="library-card-title">Recent Knowledge Base Documents</div>
+                  <div class="library-card-copy">자료실 문서 목록을 조회하고 미리보기, 삭제, 재인덱싱 작업을 수행합니다.</div>
+                </div>
+                <div class="library-actions">
                   <button id="refreshLibraryBtn" class="secondary" type="button">문서 목록 새로고침</button>
                   <button id="reindexBtn" class="secondary" type="button">전체 재인덱싱</button>
                 </div>
@@ -275,12 +412,18 @@
               <div class="surface-body">
                 <label for="fileInput" id="uploadDropzone" class="upload-box">
                   <input id="fileInput" class="upload-hidden" type="file" accept=".pdf,application/pdf" multiple />
-                  <div class="upload-icon">+</div>
+                  <div class="upload-icon">↑</div>
                   <div class="upload-title">여기를 클릭하거나 파일을 끌어다 놓으세요</div>
                   <div class="upload-copy">PDF 업로드 즉시 OCR, 청킹, 임베딩, 인덱싱까지 서버에서 처리합니다.</div>
                 </label>
 
-                <div id="status" class="status" style="margin-top: 14px;">자료실 상태를 불러오는 중입니다.</div>
+                <div id="libraryStatusPanel" class="status-panel" data-tone="loading">
+                  <div class="status-indicator" aria-hidden="true"></div>
+                  <div class="status-copy">
+                    <div id="statusLabel" class="status-label">Library Status</div>
+                    <div id="status" class="status-text">자료실 상태를 불러오는 중입니다.</div>
+                  </div>
+                </div>
                 <div id="libraryList" class="library-list" style="margin-top: 12px;"></div>
               </div>
             </div>
@@ -302,804 +445,11 @@
       <iframe id="pdfViewer" class="pdf-frame" title="PDF Viewer"></iframe>
     </div>
   </div>
-    <script>
-    const navButtons = Array.from(document.querySelectorAll(".nav-button"));
-    const chatLayout = document.querySelector(".chat-layout");
-    const previewPanel = document.querySelector(".preview-main");
-    const topbarTitle = document.getElementById("topbarTitle");
-    const topbarCopy = document.getElementById("topbarCopy");
-    const chatLog = document.getElementById("chatLog");
-    const statusBox = document.getElementById("status");
-    const historyStatus = document.getElementById("historyStatus");
-    const messageInput = document.getElementById("messageInput");
-    const libraryList = document.getElementById("libraryList");
-    const answerPreviewSummary = document.getElementById("answerPreviewSummary");
-    const answerPreviewMeta = document.getElementById("answerPreviewMeta");
-    const answerPageStrip = document.getElementById("answerPageStrip");
-    const answerPreviewFrame = document.getElementById("answerPreviewFrame");
-    const sessionHistory = document.getElementById("sessionHistory");
-    const pdfModal = document.getElementById("pdfModal");
-    const pdfViewer = document.getElementById("pdfViewer");
-    const pdfModalTitle = document.getElementById("pdfModalTitle");
-    const fileInput = document.getElementById("fileInput");
-    const chatFileInput = document.getElementById("chatFileInput");
-    const chatAttachmentList = document.getElementById("chatAttachmentList");
-    const uploadDropzone = document.getElementById("uploadDropzone");
-    const composerShell = document.getElementById("composerShell");
-    const sendBtn = document.getElementById("sendBtn");
-    const attachPdfBtn = document.getElementById("attachPdfBtn");
-    const clearInputBtn = document.getElementById("clearInputBtn");
-    const closePreviewBtn = document.getElementById("closePreviewBtn");
-    const screens = {
-      chat: document.getElementById("screen-chat"),
-      library: document.getElementById("screen-library"),
-    };
-
-    const screenMeta = {
-      chat: {
-        title: "채팅",
-        copy: "문서 근거 기반 응답과 일반 fallback 응답을 함께 확인할 수 있습니다.",
-      },
-      library: {
-        title: "자료실",
-        copy: "문서 목록과 업로드 상태를 관리합니다.",
-      },
-    };
-
-    const STORAGE_KEYS = {
-      activeSessionId: "cw-rag.active-session-id",
-      pendingChat: "cw-rag.pending-chat",
-      draftMessage: "cw-rag.draft-message",
-    };
-
-    let activeSessionId = "";
-    let currentPdfFileName = "";
-    let pendingChatFiles = [];
-    let isSending = false;
-    let previewAvailable = false;
-    let previewOpen = false;
-    let chatPinnedToBottom = true;
-    let currentContextPayload = null;
-
-    function generateSessionId() {
-      if (window.crypto && typeof window.crypto.randomUUID === "function") {
-        return window.crypto.randomUUID();
-      }
-      return "session-" + Date.now() + "-" + Math.random().toString(16).slice(2, 10);
-    }
-
-    function escapeHtml(value) {
-      return String(value)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#39;");
-    }
-
-    function normalizeAssistantText(value) {
-      return String(value || "").replaceAll("**", "").replace(/^#{1,6}\s*/gm, "");
-    }
-
-    function ensureSessionId() {
-      if (!activeSessionId) {
-        activeSessionId = generateSessionId();
-        saveActiveSessionId();
-      }
-      return activeSessionId;
-    }
-
-    function saveActiveSessionId() {
-      if (activeSessionId) {
-        localStorage.setItem(STORAGE_KEYS.activeSessionId, activeSessionId);
-      }
-    }
-
-    function readPendingChatState() {
-      try {
-        const raw = localStorage.getItem(STORAGE_KEYS.pendingChat);
-        return raw ? JSON.parse(raw) : null;
-      } catch (error) {
-        localStorage.removeItem(STORAGE_KEYS.pendingChat);
-        return null;
-      }
-    }
-
-    function persistPendingChatState(state) {
-      localStorage.setItem(STORAGE_KEYS.pendingChat, JSON.stringify(state));
-    }
-
-    function updatePendingChatState(patch) {
-      const state = readPendingChatState();
-      if (!state) return;
-      persistPendingChatState({ ...state, ...patch, updated_at: Date.now() });
-    }
-
-    function clearPendingChatState() {
-      localStorage.removeItem(STORAGE_KEYS.pendingChat);
-    }
-
-    function switchScreen(name) {
-      navButtons.forEach((button) => button.classList.toggle("active", button.dataset.screen === name));
-      Object.entries(screens).forEach(([key, screen]) => screen.classList.toggle("active", key === name));
-      topbarTitle.textContent = screenMeta[name].title;
-      topbarCopy.textContent = screenMeta[name].copy;
-    }
-
-    function updateChatPinnedState() {
-      const threshold = 40;
-      const distanceFromBottom = chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight;
-      chatPinnedToBottom = distanceFromBottom <= threshold;
-    }
-
-    function scrollChatToBottom(force) {
-      if (!force && !chatPinnedToBottom) return;
-      chatLog.scrollTop = chatLog.scrollHeight;
-      chatPinnedToBottom = true;
-    }
-
-    function syncPreviewPanel() {
-      chatLayout.classList.toggle("preview-open", previewAvailable && previewOpen);
-      previewPanel.setAttribute("aria-hidden", previewAvailable && previewOpen ? "false" : "true");
-    }
-
-    function hidePreviewPanel() {
-      previewAvailable = false;
-      previewOpen = false;
-      syncPreviewPanel();
-    }
-
-    function showPreviewPanel() {
-      previewAvailable = true;
-      previewOpen = true;
-      syncPreviewPanel();
-    }
-
-    function resetPreview() {
-      answerPreviewSummary.textContent = "질문을 보내면 가장 관련된 PDF 페이지를 바로 미리보기로 보여줍니다.";
-      answerPreviewMeta.innerHTML = '<div class="answer-preview-title">문서 미리보기 대기 중</div><div class="answer-preview-copy">RAG 근거가 잡히면 해당 PDF 페이지를 표시합니다.</div>';
-      answerPageStrip.innerHTML = "";
-      answerPreviewFrame.src = "about:blank";
-      hidePreviewPanel();
-    }
-
-    function resetChatSurface() {
-      chatLog.innerHTML = "";
-      chatPinnedToBottom = true;
-      resetPreview();
-      renderChatAttachments();
-    }
-
-    function startNewSession() {
-      activeSessionId = generateSessionId();
-      saveActiveSessionId();
-      clearPendingChatState();
-      resetChatSurface();
-      renderSessionSelection();
-      switchScreen("chat");
-      historyStatus.textContent = "새 대화를 시작했습니다.";
-      messageInput.focus();
-    }
-
-    function attachSourceButton(block, metadata) {
-      if (!metadata || !Array.isArray(metadata.preview_pages) || !metadata.preview_pages.length) return;
-      let actions = block.querySelector(".message-actions");
-      if (!actions) {
-        actions = document.createElement("div");
-        actions.className = "message-actions";
-        block.appendChild(actions);
-      } else {
-        actions.innerHTML = "";
-      }
-
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "secondary mini-button";
-      button.textContent = "자료 보기";
-      button.addEventListener("click", () => {
-        renderAnswerPreview(metadata);
-      });
-      actions.appendChild(button);
-    }
-
-    function appendMessage(role, text, metadata) {
-      const shouldStick = chatPinnedToBottom;
-      const block = document.createElement("div");
-      block.className = "message " + role;
-      const roleLabel = role === "user" ? "User" : "Assistant";
-      block.innerHTML = '<div class="message-role">' + roleLabel + '</div><div class="message-body"></div>';
-      const body = block.querySelector(".message-body");
-      body.textContent = role === "assistant" ? normalizeAssistantText(text) : text;
-      if (role === "assistant") {
-        attachSourceButton(block, metadata || null);
-      }
-      chatLog.appendChild(block);
-      scrollChatToBottom(shouldStick);
-      return { block, body };
-    }
-
-    function appendAssistantLoading() {
-      const shouldStick = chatPinnedToBottom;
-      const block = document.createElement("div");
-      block.className = "message assistant loading";
-      block.innerHTML = '<div class="message-role">Assistant</div><div class="message-body"><div class="loading-indicator"><div class="loading-copy"><div class="loading-title">답변 생성 중</div><div class="loading-subtitle">문서와 대화 내용을 바탕으로 응답을 준비하고 있습니다.</div></div><div class="loading-meta"><div class="loading-dots" aria-hidden="true"><span></span><span></span><span></span></div><span class="loading-elapsed">0.0초</span></div></div></div>';
-      chatLog.appendChild(block);
-      scrollChatToBottom(shouldStick);
-
-      const body = block.querySelector(".message-body");
-      const elapsedNode = block.querySelector(".loading-elapsed");
-      const startedAt = Date.now();
-      const intervalId = window.setInterval(() => {
-        elapsedNode.textContent = ((Date.now() - startedAt) / 1000).toFixed(1) + "초";
-      }, 100);
-
-      return {
-        block,
-        setText(text) {
-          window.clearInterval(intervalId);
-          block.classList.remove("loading");
-          body.textContent = normalizeAssistantText(text);
-          scrollChatToBottom(true);
-        },
-        setPartialText(text) {
-          body.textContent = normalizeAssistantText(text);
-          scrollChatToBottom(true);
-        },
-        setError(text) {
-          window.clearInterval(intervalId);
-          block.classList.remove("loading");
-          body.textContent = text;
-          scrollChatToBottom(true);
-        },
-        elapsedSeconds() {
-          return ((Date.now() - startedAt) / 1000).toFixed(1);
-        },
-      };
-    }
-
-    function renderChatAttachments() {
-      chatAttachmentList.innerHTML = "";
-      pendingChatFiles.forEach((file, index) => {
-        const chip = document.createElement("div");
-        chip.className = "attachment-chip";
-        chip.innerHTML = '<span>' + escapeHtml(file.name) + '</span><button class="attachment-remove" type="button" aria-label="Remove file">x</button>';
-        chip.querySelector("button").addEventListener("click", () => {
-          pendingChatFiles = pendingChatFiles.filter((_, fileIndex) => fileIndex !== index);
-          renderChatAttachments();
-        });
-        chatAttachmentList.appendChild(chip);
-      });
-    }
-
-    function addChatAttachments(files) {
-      const nextFiles = Array.from(files).filter((file) => file.name.toLowerCase().endsWith(".pdf"));
-      pendingChatFiles = pendingChatFiles.concat(nextFiles);
-      renderChatAttachments();
-    }
-
-    function openPdf(fileName) {
-      currentPdfFileName = fileName;
-      pdfModalTitle.textContent = fileName || "PDF 미리보기";
-      pdfViewer.src = "/api/library/preview?file_name=" + encodeURIComponent(fileName) + "#toolbar=1&navpanes=0&scrollbar=1";
-      pdfModal.classList.add("open");
-      pdfModal.setAttribute("aria-hidden", "false");
-    }
-
-    function closePdf() {
-      pdfModal.classList.remove("open");
-      pdfModal.setAttribute("aria-hidden", "true");
-      pdfViewer.src = "";
-      currentPdfFileName = "";
-    }
-
-    function downloadPdf() {
-      if (!currentPdfFileName) return;
-      window.open("/api/library/download?file_name=" + encodeURIComponent(currentPdfFileName), "_blank");
-    }
-
-    function renderLibrary(documents) {
-      libraryList.innerHTML = "";
-      if (!documents.length) {
-        libraryList.innerHTML = '<div class="empty">업로드된 PDF가 없습니다. 위 영역에 파일을 올려 주세요.</div>';
-        return;
-      }
-
-      const table = document.createElement("table");
-      table.className = "library-table";
-      table.innerHTML = '<thead><tr><th>파일</th><th>상태</th><th>인덱싱</th><th>형식</th><th>액션</th></tr></thead><tbody></tbody>';
-      const tbody = table.querySelector("tbody");
-
-      documents.forEach((doc) => {
-        const tr = document.createElement("tr");
-        const loaders = doc.loaders && doc.loaders.length ? doc.loaders.join(", ") : "미인식";
-        tr.innerHTML = '<td><div class="item-title">' + escapeHtml(doc.file_name) + '</div><div class="item-copy">로드 방식: ' + escapeHtml(loaders) + '</div></td><td><span class="status-badge">인덱싱 완료</span></td><td>청크 ' + doc.indexed_chunks + '<br />페이지 ' + doc.indexed_pages + '</td><td>' + escapeHtml(String(doc.extension || "").toUpperCase()) + '</td><td><div class="row-actions"><button class="secondary mini-button preview-button" type="button">미리보기</button><button class="secondary mini-button delete-button" type="button">삭제</button></div></td>';
-        tr.querySelector(".preview-button").addEventListener("click", () => openPdf(doc.file_name));
-        tr.querySelector(".delete-button").addEventListener("click", () => deleteLibraryFile(doc.file_name));
-        tbody.appendChild(tr);
-      });
-
-      libraryList.appendChild(table);
-    }
-
-    function buildPreviewUrl(fileName, pageNumber) {
-      return "/api/library/preview?file_name=" + encodeURIComponent(fileName)
-        + "&preview_page=" + pageNumber
-        + "&ts=" + Date.now()
-        + "#page=" + pageNumber
-        + "&zoom=page-fit&toolbar=1&navpanes=0&scrollbar=1";
-    }
-
-    function loadAnswerPreviewPage(fileName, pageNumber) {
-      answerPreviewFrame.src = "about:blank";
-      window.setTimeout(() => {
-        answerPreviewFrame.src = buildPreviewUrl(fileName, pageNumber);
-      }, 0);
-    }
-
-    function renderAnswerPreview(payload) {
-      currentContextPayload = payload || null;
-      answerPageStrip.innerHTML = "";
-      answerPreviewSummary.textContent = "질문 기준 관련 문서 미리보기";
-      const previewPages = Array.isArray(payload.preview_pages) ? payload.preview_pages : [];
-
-      if (payload.mode !== "rag" || !previewPages.length) {
-        answerPreviewMeta.innerHTML = '<div class="answer-preview-title">표시할 근거 페이지가 없습니다</div><div class="answer-preview-copy">이번 질문은 업로드된 문서 근거가 약해서 우측 미리보기를 표시하지 않습니다.</div>';
-        answerPreviewFrame.src = "about:blank";
-        hidePreviewPanel();
-        return;
-      }
-
-      const pages = previewPages.map((page) => {
-        const sourcePath = String(page.source_path || "");
-        const fileName = sourcePath.split(/[\\/]/).pop() || sourcePath;
-        return { fileName, pageNumber: page.page_number || 1 };
-      });
-
-      const primary = pages[0];
-      answerPreviewMeta.innerHTML = '<div class="answer-preview-title">' + escapeHtml(primary.fileName) + ' · p.' + primary.pageNumber + '</div><div class="answer-preview-copy">답변에 사용된 해당 페이지가 먼저 열리도록 표시합니다.</div>';
-      loadAnswerPreviewPage(primary.fileName, primary.pageNumber);
-
-      if (pages.length > 1) {
-        pages.forEach((page, index) => {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "answer-page-chip" + (index === 0 ? " active" : "");
-        button.innerHTML = '<span class="answer-page-chip-label">' + escapeHtml(page.fileName) + '</span><span class="answer-page-chip-page">p.' + page.pageNumber + '</span>';
-        button.addEventListener("click", () => {
-          loadAnswerPreviewPage(page.fileName, page.pageNumber);
-          answerPageStrip.querySelectorAll(".answer-page-chip").forEach((chip) => chip.classList.remove("active"));
-          button.classList.add("active");
-        });
-        answerPageStrip.appendChild(button);
-        });
-      }
-
-      showPreviewPanel();
-    }
-
-    function renderSessionSelection() {
-      sessionHistory.querySelectorAll(".history-item").forEach((item) => {
-        item.classList.toggle("active", item.dataset.sessionId === activeSessionId);
-      });
-    }
-
-    function formatSessionTime(value) {
-      if (!value) return "";
-      const hasTimezone = /[zZ]|[+\-]\d{2}:\d{2}$/.test(value);
-      const normalized = value.includes("T") ? value : value.replace(" ", "T");
-      const isoValue = hasTimezone ? normalized : normalized + "Z";
-      const date = new Date(isoValue);
-      if (Number.isNaN(date.getTime())) return value;
-      return date.toLocaleString("ko-KR", {
-        timeZone: "Asia/Seoul",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-    }
-
-    function setComposerPending(pending) {
-      isSending = pending;
-      composerShell.classList.toggle("pending", pending);
-      messageInput.disabled = pending;
-      sendBtn.disabled = pending;
-      attachPdfBtn.disabled = pending;
-      clearInputBtn.disabled = pending;
-    }
-
-    async function extractErrorMessage(response) {
-      const contentType = response.headers.get("content-type") || "";
-      if (contentType.includes("application/json")) {
-        try {
-          const data = await response.json();
-          return data.detail || data.message || JSON.stringify(data);
-        } catch (error) {
-          return "요청에 실패했습니다. (" + response.status + ")";
-        }
-      }
-      const text = await response.text();
-      return text ? text.slice(0, 300) : "요청에 실패했습니다. (" + response.status + ")";
-    }
-
-    async function loadLibrary() {
-      statusBox.textContent = "자료실 상태를 불러오는 중입니다.";
-      try {
-        const response = await fetch("/api/library");
-        if (!response.ok) throw new Error(await extractErrorMessage(response));
-        const data = await response.json();
-        renderLibrary(data.indexed_documents || []);
-        statusBox.textContent = "문서 " + data.total_files + "개를 확인했습니다.";
-      } catch (error) {
-        renderLibrary([]);
-        statusBox.textContent = "자료실을 불러오지 못했습니다. " + error.message;
-      }
-    }
-
-    async function deleteSession(sessionId) {
-      if (!window.confirm("이 세션을 삭제할까요?")) return;
-      const response = await fetch("/api/sessions/" + encodeURIComponent(sessionId), { method: "DELETE" });
-      if (!response.ok) {
-        historyStatus.textContent = "세션 삭제에 실패했습니다.";
-        return;
-      }
-      if (activeSessionId === sessionId) startNewSession();
-      historyStatus.textContent = "세션을 삭제했습니다.";
-      await loadSessions();
-    }
-
-    async function deleteLibraryFile(fileName) {
-      if (!window.confirm("자료실에서 '" + fileName + "' 문서를 삭제할까요?\n추출된 마크다운도 함께 삭제됩니다.")) return;
-      statusBox.textContent = fileName + " 삭제 중입니다.";
-      try {
-        const response = await fetch("/api/library?file_name=" + encodeURIComponent(fileName), { method: "DELETE" });
-        if (!response.ok) throw new Error(await extractErrorMessage(response));
-        const data = await response.json();
-        const markdownText = data.deleted_markdown ? "마크다운 삭제됨" : "마크다운 없음";
-        statusBox.textContent = data.deleted_file + " 삭제 완료 · " + markdownText + " · 남은 파일 " + data.indexed_files + "개";
-        await loadLibrary();
-      } catch (error) {
-        statusBox.textContent = "문서 삭제에 실패했습니다. " + error.message;
-      }
-    }
-
-    function renderSessionHistory(items) {
-      sessionHistory.innerHTML = "";
-      if (!items.length) {
-        sessionHistory.innerHTML = '<div class="empty">아직 저장된 대화가 없습니다. 첫 질문을 보내면 여기에 표시됩니다.</div>';
-        return;
-      }
-      items.forEach((item) => {
-        const card = document.createElement("div");
-        card.className = "history-item";
-        card.dataset.sessionId = item.session_id;
-        const title = item.last_user_message || item.title || "새 채팅";
-        const timeText = formatSessionTime(item.last_user_at || item.updated_at);
-        card.innerHTML = '<div class="history-item-head"><div class="item-title">' + escapeHtml(title) + '</div><button class="history-delete" type="button" title="세션 삭제">x</button></div><div class="item-meta">' + escapeHtml(timeText || "시간 정보 없음") + '</div>';
-        card.addEventListener("click", () => loadSession(item.session_id));
-        card.querySelector(".history-delete").addEventListener("click", (event) => {
-          event.stopPropagation();
-          deleteSession(item.session_id);
-        });
-        sessionHistory.appendChild(card);
-      });
-      renderSessionSelection();
-    }
-
-    async function loadSessions() {
-      historyStatus.textContent = "대화 이력을 불러오는 중입니다.";
-      try {
-        const response = await fetch("/api/sessions");
-        if (!response.ok) throw new Error(await extractErrorMessage(response));
-        const data = await response.json();
-        const sessions = data.sessions || [];
-        renderSessionHistory(sessions);
-        historyStatus.textContent = "저장된 세션 " + sessions.length + "개";
-      } catch (error) {
-        sessionHistory.innerHTML = '<div class="empty">세션 목록을 불러오지 못했습니다.</div>';
-        historyStatus.textContent = "세션 목록 로드 실패: " + error.message;
-      }
-    }
-
-    async function loadSession(sessionId) {
-      activeSessionId = sessionId;
-      saveActiveSessionId();
-      resetChatSurface();
-      currentContextPayload = null;
-      const response = await fetch("/api/sessions/" + encodeURIComponent(sessionId));
-      if (!response.ok) throw new Error(await extractErrorMessage(response));
-      const data = await response.json();
-      const turns = data.turns || [];
-      turns.forEach((turn) => appendMessage(turn.role, turn.content, turn.metadata || null));
-      const assistantTurns = turns.filter((turn) => turn.role === "assistant" && turn.metadata && Array.isArray(turn.metadata.preview_pages) && turn.metadata.preview_pages.length);
-      if (assistantTurns.length) {
-        renderAnswerPreview(assistantTurns[assistantTurns.length - 1].metadata);
-      }
-      renderSessionSelection();
-      historyStatus.textContent = turns.length ? "이전 대화를 불러왔습니다." : "빈 세션입니다.";
-      switchScreen("chat");
-      return data;
-    }
-
-    async function uploadFiles() {
-      const files = fileInput.files;
-      if (!files.length) return;
-      const formData = new FormData();
-      for (const file of files) formData.append("files", file);
-      statusBox.textContent = "업로드 중입니다. OCR, 청킹, 인덱싱을 처리합니다.";
-      try {
-        const response = await fetch("/api/library/upload", { method: "POST", body: formData });
-        if (!response.ok) throw new Error(await extractErrorMessage(response));
-        const data = await response.json();
-        statusBox.textContent = "업로드 및 인덱싱 완료: 청크 " + data.indexed_chunks + "개";
-        fileInput.value = "";
-        await loadLibrary();
-      } catch (error) {
-        statusBox.textContent = "업로드에 실패했습니다. " + error.message;
-      }
-    }
-
-    function handleSelectedFiles(files) {
-      const dataTransfer = new DataTransfer();
-      Array.from(files).forEach((file) => dataTransfer.items.add(file));
-      fileInput.files = dataTransfer.files;
-      uploadFiles();
-    }
-
-    async function reindexAll() {
-      statusBox.textContent = "전체 라이브러리를 다시 인덱싱하는 중입니다.";
-      try {
-        const response = await fetch("/api/reindex", { method: "POST" });
-        if (!response.ok) throw new Error(await extractErrorMessage(response));
-        const data = await response.json();
-        statusBox.textContent = "재인덱싱 완료: 파일 " + data.indexed_files + "개, 청크 " + data.indexed_chunks + "개";
-        await loadLibrary();
-      } catch (error) {
-        statusBox.textContent = "재인덱싱에 실패했습니다. " + error.message;
-      }
-    }
-
-    async function consumeChatStream(response, assistantState, pendingState) {
-      if (!response.body) throw new Error("응답 스트림을 사용할 수 없습니다.");
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let assistantText = pendingState.partial_response || "";
-      let sawDone = false;
-      if (assistantText) assistantState.setPartialText(assistantText);
-
-      while (true) {
-        const result = await reader.read();
-        if (result.done) break;
-        buffer += decoder.decode(result.value, { stream: true });
-        const events = buffer.split("\n\n");
-        buffer = events.pop() || "";
-
-        for (const event of events) {
-          if (!event.startsWith("data: ")) continue;
-          const payload = JSON.parse(event.slice(6));
-          if (payload.type === "upload") {
-            pendingChatFiles = [];
-            renderChatAttachments();
-            statusBox.textContent = "PDF 업로드 완료: " + (payload.uploaded_files || []).join(", ");
-            await loadLibrary();
-          }
-          if (payload.type === "context") {
-            currentContextPayload = payload;
-            if (payload.preview_finalized) {
-              renderAnswerPreview(payload);
-            }
-          }
-          if (payload.type === "token") {
-            assistantText += payload.content;
-            assistantState.setText(assistantText);
-            updatePendingChatState({ partial_response: assistantText });
-          }
-          if (payload.type === "done") {
-            sawDone = true;
-            attachSourceButton(assistantState.block, currentContextPayload);
-            clearPendingChatState();
-            statusBox.textContent = (payload.cached ? "캐시 응답 완료 (" : "응답 완료 (") + assistantState.elapsedSeconds() + "초)";
-            await loadSessions();
-          }
-        }
-      }
-
-      if (!assistantText.trim() && !sawDone) {
-        assistantState.setError("Assistant 응답이 비어 있습니다.");
-      }
-    }
-
-    async function retryPendingChat(pendingState) {
-      if (!pendingState || !pendingState.session_id || !pendingState.message || isSending) return;
-      activeSessionId = pendingState.session_id;
-      saveActiveSessionId();
-      try {
-        await loadSession(activeSessionId);
-      } catch (error) {
-        resetChatSurface();
-        appendMessage("user", pendingState.message);
-      }
-
-      const turns = Array.from(chatLog.querySelectorAll(".message-role")).map((node) => node.textContent);
-      if (!turns.length || turns[turns.length - 1] !== "Assistant") {
-        const assistantState = appendAssistantLoading();
-        setComposerPending(true);
-        statusBox.textContent = "새로고침 이후 답변을 복구하는 중입니다.";
-        try {
-          const response = await fetch("/api/chat/retry", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              session_id: pendingState.session_id,
-              message: pendingState.message,
-              file_names: pendingState.file_names || [],
-            }),
-          });
-          if (!response.ok) throw new Error(await extractErrorMessage(response));
-          await consumeChatStream(response, assistantState, { ...pendingState, is_retry: true });
-        } catch (error) {
-          assistantState.setError("Assistant 복구 응답 중 오류가 발생했습니다.\n" + error.message);
-          statusBox.textContent = "복구 실패: " + error.message;
-        } finally {
-          setComposerPending(false);
-        }
-      }
-    }
-
-    async function sendMessage() {
-      const message = messageInput.value.trim();
-      if (!message || isSending) return;
-
-      const sessionId = ensureSessionId();
-      const pendingState = {
-        session_id: sessionId,
-        message,
-        file_names: pendingChatFiles.map((file) => file.name),
-        partial_response: "",
-        created_at: Date.now(),
-        updated_at: Date.now(),
-      };
-
-      saveActiveSessionId();
-      persistPendingChatState(pendingState);
-      setComposerPending(true);
-      chatPinnedToBottom = true;
-      messageInput.value = "";
-      localStorage.removeItem(STORAGE_KEYS.draftMessage);
-      appendMessage("user", message);
-      const assistantState = appendAssistantLoading();
-      statusBox.textContent = pendingChatFiles.length ? "첨부 문서를 반영해 답변을 준비 중입니다." : "Assistant가 답변 생성 중입니다.";
-
-      try {
-        let response;
-        if (pendingChatFiles.length) {
-          const formData = new FormData();
-          formData.append("session_id", sessionId);
-          formData.append("message", message);
-          pendingChatFiles.forEach((file) => formData.append("files", file));
-          response = await fetch("/api/chat/upload", { method: "POST", body: formData });
-        } else {
-          response = await fetch("/api/chat", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ session_id: sessionId, message }),
-          });
-        }
-        if (!response.ok) throw new Error(await extractErrorMessage(response));
-        await consumeChatStream(response, assistantState, pendingState);
-      } catch (error) {
-        assistantState.setError("Assistant 응답 중 오류가 발생했습니다.\n" + error.message);
-        statusBox.textContent = "응답 생성 실패: " + error.message;
-      } finally {
-        setComposerPending(false);
-        messageInput.focus();
-      }
-    }
-
-    navButtons.forEach((button) => button.addEventListener("click", () => switchScreen(button.dataset.screen)));
-    chatLog.addEventListener("scroll", updateChatPinnedState);
-    messageInput.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && !event.shiftKey) {
-        event.preventDefault();
-        sendMessage();
-      }
-    });
-    messageInput.addEventListener("input", () => {
-      localStorage.setItem(STORAGE_KEYS.draftMessage, messageInput.value);
-    });
-    chatFileInput.addEventListener("change", () => {
-      if (!chatFileInput.files.length) return;
-      addChatAttachments(chatFileInput.files);
-      chatFileInput.value = "";
-    });
-    fileInput.addEventListener("change", () => {
-      if (fileInput.files.length) uploadFiles();
-    });
-    uploadDropzone.addEventListener("dragover", (event) => {
-      event.preventDefault();
-      uploadDropzone.classList.add("dragover");
-    });
-    uploadDropzone.addEventListener("dragleave", () => uploadDropzone.classList.remove("dragover"));
-    uploadDropzone.addEventListener("drop", (event) => {
-      event.preventDefault();
-      uploadDropzone.classList.remove("dragover");
-      if (event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files.length) {
-        handleSelectedFiles(event.dataTransfer.files);
-      }
-    });
-
-    sendBtn.addEventListener("click", sendMessage);
-    attachPdfBtn.addEventListener("click", () => chatFileInput.click());
-    closePreviewBtn.addEventListener("click", () => {
-      previewOpen = false;
-      syncPreviewPanel();
-    });
-    clearInputBtn.addEventListener("click", () => {
-      messageInput.value = "";
-      localStorage.removeItem(STORAGE_KEYS.draftMessage);
-      messageInput.focus();
-    });
-    document.getElementById("refreshLibraryBtn").addEventListener("click", loadLibrary);
-    document.getElementById("reindexBtn").addEventListener("click", reindexAll);
-    document.getElementById("newChatBtn").addEventListener("click", startNewSession);
-    document.getElementById("refreshSessionsBtn").addEventListener("click", loadSessions);
-    document.getElementById("pdfCloseBtn").addEventListener("click", closePdf);
-    document.getElementById("pdfDownloadBtn").addEventListener("click", downloadPdf);
-    pdfModal.addEventListener("click", (event) => {
-      if (event.target === pdfModal) closePdf();
-    });
-    document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && pdfModal.classList.contains("open")) closePdf();
-    });
-
-    async function initialize() {
-      resetChatSurface();
-      syncPreviewPanel();
-      messageInput.value = localStorage.getItem(STORAGE_KEYS.draftMessage) || "";
-
-      const savedSessionId = localStorage.getItem(STORAGE_KEYS.activeSessionId) || "";
-      if (savedSessionId) {
-        activeSessionId = savedSessionId;
-      } else {
-        activeSessionId = generateSessionId();
-        saveActiveSessionId();
-      }
-
-      await loadSessions();
-      await loadLibrary();
-
-      let loadedExistingSession = false;
-      if (activeSessionId) {
-        try {
-          const session = await loadSession(activeSessionId);
-          loadedExistingSession = Array.isArray(session.turns) && session.turns.length > 0;
-        } catch (error) {
-          resetChatSurface();
-        }
-      }
-
-      if (!loadedExistingSession) {
-        resetChatSurface();
-        renderSessionSelection();
-      }
-
-      const pendingState = readPendingChatState();
-      if (pendingState && pendingState.session_id === activeSessionId) {
-        await retryPendingChat(pendingState);
-      }
-    }
-
-    initialize();
-  </script>
+  <script src="/static/js/shared.js"></script>
+  <script src="/static/js/preview.js"></script>
+  <script src="/static/js/session.js"></script>
+  <script src="/static/js/library.js"></script>
+  <script src="/static/js/chat.js"></script>
+  <script src="/static/js/app.js"></script>
 </body>
 </html>
-
-
-
-
-
-
-
-
