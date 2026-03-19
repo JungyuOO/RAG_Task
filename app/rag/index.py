@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import closing
+from contextlib import contextmanager
 import json
 import sqlite3
 from pathlib import Path
@@ -17,8 +19,14 @@ class VectorIndex:
         connection.row_factory = sqlite3.Row
         return connection
 
+    @contextmanager
+    def _connection(self):
+        with closing(self._connect()) as connection:
+            with connection:
+                yield connection
+
     def _initialize(self) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS documents (
@@ -44,7 +52,7 @@ class VectorIndex:
             )
 
     def save(self, chunks: list[Chunk], vectors: list[list[float]]) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute("DELETE FROM chunks")
             connection.execute("DELETE FROM documents")
 
@@ -80,12 +88,12 @@ class VectorIndex:
             )
 
     def delete_document(self, source_path: str) -> None:
-        with self._connect() as connection:
+        with self._connection() as connection:
             connection.execute("DELETE FROM chunks WHERE source_path = ?", (source_path,))
             connection.execute("DELETE FROM documents WHERE source_path = ?", (source_path,))
 
     def load(self) -> list[dict]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 """
                 SELECT chunk_id, doc_id, source_path, text, tokens_json,
@@ -111,7 +119,7 @@ class VectorIndex:
         ]
 
     def list_documents(self) -> list[dict]:
-        with self._connect() as connection:
+        with self._connection() as connection:
             rows = connection.execute(
                 """
                 SELECT

@@ -14,7 +14,15 @@ class RetryChatRequest(BaseModel):
     file_names: list[str] = Field(default_factory=list)
 
 
+class RetrievalDebugRequest(BaseModel):
+    session_id: str = Field(..., min_length=1)
+    message: str = Field(..., min_length=1)
+    file_names: list[str] = Field(default_factory=list)
+
+
 class BuildIndexResponse(BaseModel):
+    task_id: str | None = None
+    task_status: str | None = None
     indexed_files: int
     indexed_chunks: int
     skipped_files: int
@@ -56,3 +64,14 @@ class SessionHistoryItem(BaseModel):
 
 class SessionHistoryResponse(BaseModel):
     sessions: list[SessionHistoryItem]
+
+
+class TaskStatusResponse(BaseModel):
+    task_id: str
+    task_type: str
+    status: str
+    payload: dict = Field(default_factory=dict)
+    result: dict = Field(default_factory=dict)
+    error: str = ""
+    created_at: str
+    updated_at: str
