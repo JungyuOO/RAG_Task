@@ -12,6 +12,16 @@ class Settings(BaseSettings):
     app_name: str = "Custom RAG Task"
     cllm_base_url: str = "http://cllm.cywell.co.kr/v1"
     cllm_model: str = "Qwen/Qwen3.5-9B"
+    llm_connect_timeout_seconds: float = 3.0
+    llm_read_timeout_seconds: float = 20.0
+    llm_write_timeout_seconds: float = 10.0
+    llm_pool_timeout_seconds: float = 5.0
+    llm_total_timeout_seconds: float = 90.0
+    llm_timeout_cooldown_seconds: float = 8.0
+    llm_failure_cooldown_seconds: float = 45.0
+    llm_prompt_recent_turns: int = 4
+    llm_prompt_context_items: int = 3
+    llm_prompt_context_char_limit: int = 2200
 
     rag_data_dir: Path = Path("./data")
     rag_source_dir: Path = Path("./data/corpus/pdfs")
@@ -30,6 +40,8 @@ class Settings(BaseSettings):
     vector_dim: int = 768
     retrieval_top_k: int = 6
     candidate_pool_size: int = 14
+    grounded_page_top_n: int = 3
+    grounded_chunk_top_n: int = 4
     memory_window_turns: int = 6
     retrieval_min_score: float = 0.12
 
