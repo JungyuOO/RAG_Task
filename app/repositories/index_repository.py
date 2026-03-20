@@ -5,6 +5,12 @@ from app.rag.types import Chunk
 
 
 class IndexRepository:
+    """벡터 인덱스 데이터 접근 계층 — VectorIndex와 서비스 계층 사이의 추상 경계.
+
+    인덱스 저장소 교체(예: 파일→원격 DB) 시 이 인터페이스만 재구현하면
+    서비스 계층 코드 변경 없이 확장할 수 있다.
+    """
+
     def __init__(self, backend: VectorIndex) -> None:
         self.backend = backend
 

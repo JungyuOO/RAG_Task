@@ -8,6 +8,12 @@ from app.services.retrieval_service import RetrievalService
 
 
 class AnswerService:
+    """LLM 응답에서 인용을 추출하고, 출처 라인과 프리뷰 페이지를 구성하는 서비스.
+
+    답변 텍스트에서 [파일명] p.N 형식의 인용을 파싱하여 context 아이템과
+    매칭하고, 코드 예시 요청 시 문서에서 코드 블록을 추출하여 응답한다.
+    """
+
     def __init__(self, retrieval_service: RetrievalService) -> None:
         self.retrieval_service = retrieval_service
 
