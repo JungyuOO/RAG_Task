@@ -23,6 +23,12 @@ class TurnPolicyDecision:
 
 
 class TurnPolicyService:
+    """사용자 메시지의 턴 유형을 분류하고 검색/응답 전략을 결정하는 서비스.
+
+    인사, 승인, 후속 질문, 문서 질의, 명확화 요청 등을 구분하여
+    불필요한 검색을 차단하고 적절한 응답 모드를 선택한다.
+    """
+
     ACK_MARKERS = (
         "고마워",
         "감사",
@@ -61,46 +67,20 @@ class TurnPolicyService:
         "hey",
     )
     DOCUMENT_INTENT_MARKERS = (
-        "무엇",
-        "뭐",
-        "어디",
-        "언제",
-        "왜",
-        "어떻게",
-        "설명",
-        "정리",
-        "비교",
-        "차이",
-        "종류",
-        "페이지",
-        "문서",
-        "pdf",
-        "출처",
-        "찾아",
-        "알려",
-        "보여",
-        "스토리지",
-        "쿠버네티스",
-        "오픈시프트",
-        "pv",
-        "pvc",
-        "storageclass",
-        "hostpath",
-        "정적 프로비저닝",
-        "동적 프로비저닝",
+        # 의문사 (한국어)
+        "무엇", "뭐", "어디", "언제", "왜", "어떻게",
+        # 요청 동사 (한국어)
+        "설명", "정리", "비교", "차이", "종류",
+        "찾아", "알려", "보여",
+        # 문서/출처 참조
+        "페이지", "문서", "pdf", "출처",
+        # 물음표
         "?",
-        "what",
-        "which",
-        "where",
-        "when",
-        "why",
-        "how",
-        "compare",
-        "difference",
-        "explain",
-        "page",
-        "source",
-        "document",
+        # 의문사 (영어)
+        "what", "which", "where", "when", "why", "how",
+        # 요청 동사 (영어)
+        "compare", "difference", "explain",
+        "page", "source", "document",
     )
     FOLLOW_UP_MARKERS = (
         "그거",
@@ -171,17 +151,11 @@ class TurnPolicyService:
         "적어줘",
     )
     GENERIC_FOCUS_MARKERS = (
-        "스토리지",
-        "문서",
-        "페이지",
-        "예시",
-        "코드",
-        "설명",
-        "example",
-        "code",
-        "document",
-        "page",
+        "문서", "페이지", "예시", "코드", "설명",
+        "example", "code", "document", "page",
     )
+    # 도메인 키워드를 하드코딩하지 않음 — 인덱싱된 문서의 존재 여부와
+    # 의문사/요청 동사 기반으로 문서 검색 필요성을 판단한다.
 
     def classify_turn(
         self,
@@ -272,11 +246,22 @@ class TurnPolicyService:
         return False
 
     def _is_document_query(self, normalized: str, topic_state: dict) -> bool:
+        """문서 질의 여부를 판단한다.
+
+        의문사/요청 동사가 포함되거나, 현재 선택된 출처 파일명이
+        질문에 언급되거나, 대문자 약어/전문 용어가 포함되면 문서 검색을 수행한다.
+        하드코딩된 도메인 키워드 목록 대신 형태적 특성으로 판별한다.
+        """
         if any(marker in normalized for marker in self.DOCUMENT_INTENT_MARKERS):
             return True
         for source in topic_state.get("selected_sources", []):
             source_name = str(source).lower()
             if source_name.endswith(".pdf") and source_name in normalized:
+                return True
+        # 대문자 약어/전문 용어가 포함되면 문서 검색 수행 (PV, PVC, YAML 등)
+        tokens = normalized.split()
+        for token in tokens:
+            if len(token) >= 2 and token.isupper() and token.isalpha():
                 return True
         return False
 
