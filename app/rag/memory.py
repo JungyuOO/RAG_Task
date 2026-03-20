@@ -30,40 +30,31 @@ DEFAULT_TOPIC_STATE = {
     "recent_user_topics": [],
 }
 
-ENTITY_STOPWORDS = {
-    "what",
-    "when",
-    "where",
-    "which",
-    "that",
-    "this",
-    "again",
-    "with",
-    "그거",
-    "그건",
-    "그럼",
-    "그니까",
-    "그",
-    "이거",
-    "이건",
-    "저거",
-    "저건",
-    "다시",
-    "설명",
-    "알려줘",
-    "말해줘",
-    "보여줘",
-    "예시",
-    "코드",
-    "문서",
-    "페이지",
-    "정의",
-    "종류",
-    "차이",
+_GENERIC_STOPWORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been",
+    "do", "does", "did", "have", "has", "had", "will", "would",
+    "can", "could", "may", "might", "shall", "should",
+    "i", "you", "he", "she", "it", "we", "they", "me", "him", "her",
+    "my", "your", "his", "its", "our", "their",
+    "what", "when", "where", "which", "who", "whom", "how", "why",
+    "that", "this", "these", "those", "there", "here",
+    "and", "or", "but", "if", "then", "so", "because", "as", "than",
+    "of", "in", "on", "at", "to", "for", "from", "by", "with", "about",
+    "not", "no", "yes", "all", "some", "any", "each", "every",
+    "more", "most", "very", "too", "also", "just", "only",
+    "again", "above", "below", "up", "down", "out", "off",
+    "explain", "show", "tell", "give", "get", "make", "let",
 }
 
 
 class SessionStore:
+    """LLM 히스토리에 의존하지 않는 애플리케이션 수준 세션 메모리.
+
+    SQLite에 대화 턴, 구조화된 요약, 토픽 상태를 저장하고,
+    매 턴마다 요약과 토픽을 자동 갱신한다. 질의 재작성(query rewrite)은
+    대화 맥락과 엔티티를 사용하여 모호한 후속 질문을 보강한다.
+    """
+
     def __init__(self, db_path: Path, memory_window_turns: int = 6) -> None:
         self.db_path = db_path
         self.memory_window_turns = memory_window_turns
@@ -71,8 +62,11 @@ class SessionStore:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path)
+        """SQLite 연결을 생성한다. WAL 모드와 busy_timeout으로 동시성을 확보한다."""
+        connection = sqlite3.connect(self.db_path, timeout=10)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA busy_timeout=5000")
         return connection
 
     @contextmanager
@@ -213,85 +207,42 @@ class SessionStore:
             "topic_state": self.topic_state(session_id),
         }
 
-    def rewrite_query(self, session_id: str, user_message: str) -> str:
+    def build_rewrite_context(self, session_id: str, user_message: str) -> dict | None:
+        """LLM 질의 재작성에 필요한 대화 맥락을 구성한다.
+
+        대화 이력이 없으면 None을 반환하여 재작성이 불필요함을 알린다.
+        반환된 dict는 LLM 프롬프트 구성에 사용되며, 하드코딩된 규칙 대신
+        LLM이 맥락을 판단하여 질의를 재작성한다.
+        """
         recent = self.recent_turns(session_id)
         if not recent:
-            return user_message
+            return None
 
-        stripped_message = normalize_text(user_message)
-        lowered = stripped_message.lower()
         summary = self.structured_summary(session_id)
         topic_state = self.topic_state(session_id)
-        prior_user_messages = [turn.content for turn in reversed(recent) if turn.role == "user"]
-        latest_user_message = prior_user_messages[0] if prior_user_messages else ""
-        current_entities = self._extract_entities(stripped_message)
-        latest_user_entities = self._extract_entities(latest_user_message)
-        topic_entities = [normalize_text(str(item)) for item in topic_state.get("active_entities", []) if item]
 
-        ambiguous_markers = (
-            "that",
-            "it",
-            "this",
-            "those",
-            "again",
-            "previous",
-            "above",
-            "그거",
-            "이거",
-            "그 문서",
-            "이 문서",
-            "그 페이지",
-            "이 페이지",
-            "다시",
-            "이전",
-        )
-        follow_up_markers = (
-            "what about",
-            "how about",
-            "then",
-            "also",
-            "compare",
-            "difference",
-            "그럼",
-            "그러면",
-            "그리고",
-            "또",
-            "비교",
-        )
-        is_ambiguous = any(marker in lowered for marker in ambiguous_markers)
-        is_follow_up = is_ambiguous or any(marker in lowered for marker in follow_up_markers)
-        has_new_explicit_entity = bool(
-            current_entities
-            and not set(current_entities).issubset(set(latest_user_entities + topic_entities))
-        )
+        # 최근 대화 턴을 간결하게 정리
+        conversation_history: list[dict] = []
+        for turn in recent[-4:]:
+            entry: dict = {"role": turn.role, "content": turn.content[:200]}
+            if turn.role == "assistant" and turn.metadata:
+                sources = [
+                    s.get("file_name", "")
+                    for s in turn.metadata.get("source_grounding", [])[:2]
+                    if s.get("file_name")
+                ]
+                if sources:
+                    entry["sources"] = sources
+            conversation_history.append(entry)
 
-        memory_parts: list[str] = []
-        last_user_focus = normalize_text(str(topic_state.get("last_user_focus") or ""))
-        active_topic = normalize_text(str(topic_state.get("active_topic") or summary.get("topic") or ""))
-        if active_topic and not has_new_explicit_entity:
-            memory_parts.append(f"topic: {active_topic}")
-        if last_user_focus and not has_new_explicit_entity:
-            memory_parts.append(f"focus: {last_user_focus}")
-
-        selected_sources = [normalize_text(str(item)) for item in topic_state.get("selected_sources", []) if item]
-        if selected_sources and not has_new_explicit_entity:
-            memory_parts.append("documents: " + ", ".join(selected_sources[:2]))
-
-        selected_pages = topic_state.get("selected_pages", [])
-        if selected_pages and not has_new_explicit_entity:
-            page_text = ", ".join(str(page) for page in selected_pages[:4])
-            memory_parts.append(f"pages: {page_text}")
-
-        active_entities = [normalize_text(str(item)) for item in topic_state.get("active_entities", []) if item]
-        if active_entities and not has_new_explicit_entity:
-            memory_parts.append("entities: " + ", ".join(active_entities[:4]))
-
-        if latest_user_message and (is_ambiguous or len(stripped_message) <= 18) and not has_new_explicit_entity:
-            memory_parts.append(f"previous_user: {normalize_text(latest_user_message)}")
-
-        if not memory_parts or not is_follow_up:
-            return stripped_message
-        return stripped_message + "\n\n[conversation memory]\n" + "\n".join(memory_parts)
+        return {
+            "conversation_history": conversation_history,
+            "active_topic": str(topic_state.get("active_topic") or summary.get("topic") or ""),
+            "active_entities": [str(e) for e in topic_state.get("active_entities", []) if e][:6],
+            "selected_sources": [str(s) for s in topic_state.get("selected_sources", []) if s][:3],
+            "selected_pages": topic_state.get("selected_pages", [])[:5],
+            "last_retrieval_mode": str(topic_state.get("last_retrieval_mode") or ""),
+        }
 
     def export_session(self, session_id: str) -> dict:
         turns = self.all_turns(session_id)
@@ -542,44 +493,52 @@ class SessionStore:
         return ""
 
     def _extract_entities(self, text: str) -> list[str]:
+        """텍스트에서 의미 있는 엔티티를 범용적으로 추출한다.
+
+        하드코딩된 도메인 키워드 없이, 토큰의 형태적 특성만으로 판별한다:
+        - 대문자로 시작하는 단어 (고유명사, 약어: PV, StorageClass)
+        - 대소문자 혼합 단어 (camelCase: hostPath, configMap)
+        - 한글이 포함된 토큰 (한국어 명사)
+        - 숫자가 포함된 토큰 (버전, 식별자)
+        - .pdf로 끝나는 파일명
+        일반적인 영어 불용어(관사, 전치사, 대명사 등)는 제외한다.
+        """
         normalized = normalize_text(text)
         if not normalized:
             return []
-        tokens = [token.strip(".,:;()[]{}") for token in normalized.split(" ")]
+        tokens = [token.strip(".,:;()[]{}!?") for token in normalized.split(" ")]
         entities: list[str] = []
+
         for token in tokens:
-            if len(token) < 3:
+            if len(token) < 2:
                 continue
             lowered = token.lower()
-            if lowered in ENTITY_STOPWORDS:
+            if lowered in _GENERIC_STOPWORDS:
                 continue
-            if any(char.isdigit() for char in token) or lowered.endswith(".pdf"):
+            # 파일명
+            if lowered.endswith(".pdf"):
                 entities.append(token)
                 continue
-            if token[:1].isupper():
+            # 숫자 포함 (버전, 식별자)
+            if any(char.isdigit() for char in token):
                 entities.append(token)
                 continue
-            if any("가" <= char <= "힣" for char in token):
+            # 대문자 시작 (고유명사, 약어: PV, Pod, StorageClass)
+            if token[0].isupper():
                 entities.append(token)
                 continue
+            # 대소문자 혼합 (camelCase: hostPath, configMap)
             if any(char.isalpha() for char in token) and any(char.isupper() for char in token[1:]):
                 entities.append(token)
                 continue
-            if lowered in {
-                "hostpath",
-                "pod",
-                "pvc",
-                "pv",
-                "storageclass",
-                "hostpath",
-                "static",
-                "dynamic",
-                "provisioning",
-            }:
+            # 한글 포함 토큰 (한국어 명사)
+            if any("\uac00" <= char <= "\ud7a3" for char in token):
                 entities.append(token)
+                continue
         return entities[:8]
 
     def _extract_focus_phrase(self, text: str) -> str:
+        """사용자 메시지에서 핵심 구문을 추출한다."""
         normalized = normalize_text(text)
         if not normalized:
             return ""
@@ -589,7 +548,7 @@ class SessionStore:
         words = [
             word
             for word in normalized.split(" ")
-            if len(word) >= 2 and word.lower() not in ENTITY_STOPWORDS
+            if len(word) >= 2 and word.lower() not in _GENERIC_STOPWORDS
         ]
         return normalize_text(" ".join(words[:4]))
 
