@@ -222,7 +222,7 @@ async def debug_retrieval(
             str(resolve_library_pdf(container.settings, file_name).resolve())
             for file_name in request.file_names
         }
-    return container.pipeline.inspect_retrieval(
+    return await container.pipeline.inspect_retrieval(
         session_id=request.session_id,
         user_message=request.message,
         allowed_source_paths=allowed_source_paths,

@@ -5,6 +5,12 @@ from app.rag.types import ChatTurn
 
 
 class SessionRepository:
+    """세션 데이터 접근 계층 — SessionStore와 파이프라인 사이의 추상 경계.
+
+    현재는 SessionStore에 직접 위임하지만, 향후 캐싱·로깅·트랜잭션 관리 등
+    교차 관심사를 이 계층에서 일괄 적용할 수 있도록 분리한다.
+    """
+
     def __init__(self, backend: SessionStore) -> None:
         self.backend = backend
 
@@ -29,8 +35,8 @@ class SessionRepository:
     def memory_snapshot(self, session_id: str) -> dict:
         return self.backend.memory_snapshot(session_id)
 
-    def rewrite_query(self, session_id: str, user_message: str) -> str:
-        return self.backend.rewrite_query(session_id, user_message)
+    def build_rewrite_context(self, session_id: str, user_message: str) -> dict | None:
+        return self.backend.build_rewrite_context(session_id, user_message)
 
     def export_session(self, session_id: str) -> dict:
         return self.backend.export_session(session_id)

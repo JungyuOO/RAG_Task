@@ -41,12 +41,18 @@ class MarkdownBlock:
 
 
 class TextChunker:
+    """페이지 단위 슬라이딩 윈도우로 텍스트를 고정 크기 청크로 분할한다.
+
+    구조 정보가 부족한 일반 텍스트에 사용되며, chunk_size와 overlap으로
+    청크 크기와 중복 구간을 조절한다.
+    """
+
     def __init__(self, chunk_size: int = 700, overlap: int = 120) -> None:
         self.chunk_size = chunk_size
         self.overlap = overlap
 
-    def split(self, documents: list[Document], markdown_text: str | None = None) -> list[Chunk]:
-        del markdown_text
+    def split(self, documents: list[Document], markdown_text: str | None = None) -> list[Chunk]:  # noqa: ARG002
+        # markdown_text는 StructuredMarkdownChunker와의 인터페이스 통일을 위해 받되 사용하지 않는다.
         chunks: list[Chunk] = []
         for document in documents:
             text = normalize_text(document.text)
@@ -89,6 +95,12 @@ class TextChunker:
 
 
 class StructuredMarkdownChunker:
+    """마크다운 블록 구조(heading/list/table/code)를 인식하여 의미 단위로 청킹한다.
+
+    페이지 경계와 블록 유형 전환에서 청크를 분리하여 구조적 일관성을 유지하며,
+    긴 블록은 슬라이딩 윈도우로 분할한다.
+    """
+
     def __init__(self, chunk_size: int = 1000, overlap: int = 150, max_block_chars: int = 1400) -> None:
         self.chunk_size = chunk_size
         self.overlap = overlap
@@ -110,6 +122,10 @@ class StructuredMarkdownChunker:
         current_blocks: list[MarkdownBlock] = []
         current_length = 0
 
+        # 블록 병합 알고리즘:
+        # 1) 초대형 블록(>max_block_chars)은 슬라이딩 윈도우로 개별 분할
+        # 2) 페이지 경계 또는 블록 유형 전환(heading→paragraph 등)에서 강제 분리
+        # 3) chunk_size 초과 시 마지막 블록 1개를 overlap으로 유지하며 분리
         for block in blocks:
             if len(block.text) > self.max_block_chars:
                 if current_blocks:
@@ -137,6 +153,7 @@ class StructuredMarkdownChunker:
                 current_blocks = []
                 current_length = 0
 
+            # +2는 블록 간 "\n\n" 구분자 길이. 빈 상태에서는 구분자 불필요.
             projected = current_length + len(block.text) + (2 if current_blocks else 0)
             if current_blocks and projected > self.chunk_size:
                 chunks.append(self._build_chunk(doc_id, documents[0].source_path, current_blocks, order))
@@ -198,6 +215,8 @@ class StructuredMarkdownChunker:
             lines = [line.strip() for line in section.splitlines() if line.strip()]
             if not lines:
                 continue
+            # 단일 줄이 '#' 마크다운 헤딩이거나, 40자 이하의 콜론 종료 텍스트
+            # (예: "정적 프로비저닝:")이면 heading으로 분류
             if len(lines) == 1 and (lines[0].startswith("#") or (len(lines[0]) <= 40 and lines[0].endswith(":"))):
                 normalized = normalize_text(lines[0].lstrip("#").strip())
                 if normalized:

@@ -7,6 +7,12 @@ from app.config import Settings
 
 
 class RetrievalService:
+    """검색 결과를 페이지 기반 그라운딩, 출처 집계, context 아이템 선택으로 가공하는 서비스.
+
+    HybridRetriever가 반환한 청크 목록을 페이지 단위로 점수를 집계하고,
+    근거가 강한 페이지/출처를 우선 선택하여 LLM에 전달할 context를 구성한다.
+    """
+
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
