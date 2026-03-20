@@ -10,13 +10,22 @@ from app.rag.types import Chunk
 
 
 class VectorIndex:
+    """청크와 벡터를 SQLite에 저장하고 전체 로드하는 벡터 인덱스.
+
+    외부 벡터 DB 없이 SQLite만으로 구현하며, 검색 시 전체 벡터를 메모리에
+    로드한 뒤 HybridRetriever가 점수를 계산하는 구조이다.
+    """
+
     def __init__(self, index_dir: Path) -> None:
         self.db_path = index_dir / "rag_store.sqlite3"
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path)
+        """SQLite 연결을 생성한다. WAL 모드와 busy_timeout으로 동시성을 확보한다."""
+        connection = sqlite3.connect(self.db_path, timeout=10)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA busy_timeout=5000")
         return connection
 
     @contextmanager
