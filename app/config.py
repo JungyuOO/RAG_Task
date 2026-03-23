@@ -33,8 +33,6 @@ class Settings(BaseSettings):
     rag_extract_dir: Path = Path("./data/extracted_markdown")
     save_extracted_markdown: bool = True
 
-    ocr_lang: str = "korean"
-    ocr_dpi: int = 220
     chunk_size: int = 700
     chunk_overlap: int = 120
     structured_chunk_size: int = 1000
