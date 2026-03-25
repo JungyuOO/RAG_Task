@@ -33,6 +33,7 @@ services:
       - ./data/corpus/pdfs:/app/data/corpus/pdfs           # 원본 PDF — 영속 필수
       - ./data/cache:/app/data/cache                        # JSON 캐시 — 재생성 가능
       - ./data/extracted_markdown:/app/data/extracted_markdown  # PDF 추출 마크다운 — 재생성 가능
+      - model-cache:/app/data/models                        # HuggingFace 모델 캐시 — 재다운로드 방지
     healthcheck:
       # python:3.13-slim에는 curl 미포함 → Python 내장 urllib 사용
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/library')"]
@@ -43,3 +44,4 @@ services:
 
 volumes:
   pgdata:
+  model-cache:

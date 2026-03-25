@@ -32,13 +32,16 @@ WORKDIR /app
 COPY . /app/
 
 # 볼륨 마운트 경로 사전 생성 및 소유권 설정
-# appuser 권한으로 SQLite 파일 생성·쓰기 가능하도록 함
 RUN mkdir -p \
     /app/data/corpus/pdfs \
     /app/data/index \
     /app/data/cache \
     /app/data/extracted_markdown \
+    /app/data/models \
     && chown -R appuser:appuser /app/data
+
+# HuggingFace 모델 캐시 경로 설정 (sentence-transformers 다운로드 위치)
+ENV HF_HOME=/app/data/models
 
 USER appuser
 
