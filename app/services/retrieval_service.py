@@ -213,7 +213,20 @@ class RetrievalService:
 
         selected_page_limit = max(int(self.settings.grounded_page_top_n), 1)
         selected_chunk_limit = max(int(self.settings.grounded_chunk_top_n), 1)
-        selected_pages = grounded_pages[:selected_page_limit]
+
+        # 소스 다양성 보장: 각 소스에서 best-ranked 페이지 1개를 먼저 확보하고,
+        # 남은 슬롯을 점수 순으로 채운다. RBAC처럼 한 문서가 상위 페이지를 독점해도
+        # SCC 등 다른 소스의 페이지(→ 청크)가 후보에서 완전히 배제되지 않도록 한다.
+        source_best_pages: dict[str, dict] = {}
+        for page in grounded_pages:
+            source = page["source_path"]
+            if source not in source_best_pages:
+                source_best_pages[source] = page
+        diversity_pages = list(source_best_pages.values())
+        diversity_page_keys = {(p["source_path"], p["page_number"]) for p in diversity_pages}
+        fill_pages = [p for p in grounded_pages if (p["source_path"], p["page_number"]) not in diversity_page_keys]
+        selected_pages = (diversity_pages + fill_pages)[:selected_page_limit]
+
         preferred_preview_source = self.select_grounded_preview_source(grounded_pages)
         selected_page_ranks = {
             (item["source_path"], int(item["page_number"])): index
@@ -257,7 +270,21 @@ class RetrievalService:
                 -float(item["rerank_score"]),
             )
         )
-        return prioritized_items[:selected_chunk_limit]
+
+        # 소스 다양성 보장: 각 소스에서 best-ranked 청크 1개씩 먼저 확보한 뒤 나머지 슬롯을 점수 순으로 채운다.
+        # RBAC처럼 한 문서가 상위 점수를 독점해도 SCC 등 다른 소스의 청크가 누락되지 않도록 한다.
+        source_best: dict[str, dict] = {}
+        for item in prioritized_items:
+            source = item["chunk"]["source_path"]
+            if source not in source_best:
+                source_best[source] = item
+
+        diversity_items = list(source_best.values())
+        diversity_ids = {id(item) for item in diversity_items}
+        fill_items = [item for item in prioritized_items if id(item) not in diversity_ids]
+
+        merged = diversity_items + fill_items
+        return merged[:selected_chunk_limit]
 
     def filter_index_items(
         self,
