@@ -20,6 +20,9 @@ class IndexRepository:
     def load(self) -> list[dict]:
         return self.backend.load()
 
+    def upsert_document(self, source_path: str, chunks: list[Chunk], vectors: list[list[float]]) -> None:
+        self.backend.upsert_document(source_path, chunks, vectors)
+
     def delete_document(self, source_path: str) -> None:
         self.backend.delete_document(source_path)
 
