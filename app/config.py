@@ -33,16 +33,20 @@ class Settings(BaseSettings):
     rag_extract_dir: Path = Path("./data/extracted_markdown")
     save_extracted_markdown: bool = True
 
+    # 임베딩 모델 선택. "hash": HashingEmbedder (기본값, 외부 모델 없음),
+    # "e5": intfloat/multilingual-e5-small (384차원, sentence-transformers 필요)
+    embedding_model: str = "hash"
+
     chunk_size: int = 700
     chunk_overlap: int = 120
     structured_chunk_size: int = 1000
     structured_chunk_overlap: int = 150
     chunking_strategy: str = "auto"
     vector_dim: int = 768
-    retrieval_top_k: int = 6
-    candidate_pool_size: int = 14
-    grounded_page_top_n: int = 4
-    grounded_chunk_top_n: int = 6
+    retrieval_top_k: int = 3
+    candidate_pool_size: int = 8
+    grounded_page_top_n: int = 3
+    grounded_chunk_top_n: int = 3
     memory_window_turns: int = 6
     # 검색 최소 점수 임계값.
     # 코퍼스 대비 실측: 관련 청크 rerank_score 평균 0.25~0.45,
@@ -58,6 +62,11 @@ class Settings(BaseSettings):
     retrieval_dense_weight: float = 0.45
     retrieval_sparse_weight: float = 0.25
     retrieval_title_weight: float = 0.15
+
+    # E5 임베딩 사용 시 가중치 (의미 검색이 강하므로 sparse/title 비중 증가)
+    e5_retrieval_dense_weight: float = 0.30
+    e5_retrieval_sparse_weight: float = 0.35
+    e5_retrieval_title_weight: float = 0.20
 
     # BM25 파라미터 — Okapi BM25 표준값 (Robertson et al., 1994).
     # k1: TF 포화 계수. 높을수록 반복 출현 토큰의 영향 증가.

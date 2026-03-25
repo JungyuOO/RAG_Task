@@ -233,6 +233,9 @@
     .library-table tbody tr:hover { background: #fafcff; }
     .status-badge { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 999px; background: #ebf8ef; color: var(--ok); font-size: 12px; font-weight: 700; }
     .status-badge::before { content: ""; width: 8px; height: 8px; border-radius: 999px; background: currentColor; }
+    .status-badge.not-indexed { background: #f5f5f5; color: #9e9e9e; }
+    .status-badge.indexing { background: #e3f2fd; color: #1565c0; animation: pulse-badge 1.2s ease-in-out infinite; }
+    @keyframes pulse-badge { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
     .row-actions { display: flex; justify-content: flex-end; gap: 8px; }
     .pdf-modal { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 24px; background: var(--overlay); z-index: 200; }
     .pdf-modal.open { display: flex; }

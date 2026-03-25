@@ -46,10 +46,18 @@ class LibraryDocument(BaseModel):
     loaders: list[str]
 
 
+class StartupIndexingStatus(BaseModel):
+    status: str = "idle"  # "idle", "indexing", "done"
+    total: int = 0
+    completed: int = 0
+    current_file: str = ""
+
+
 class LibraryStatusResponse(BaseModel):
     source_dir: str
     total_files: int
     indexed_documents: list[LibraryDocument]
+    startup_indexing: StartupIndexingStatus = StartupIndexingStatus()
 
 
 class SessionHistoryItem(BaseModel):
