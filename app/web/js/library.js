@@ -8,13 +8,26 @@ function updateLibraryStats(data) {
   if (indexedChunksStat) indexedChunksStat.textContent = totalChunks.toLocaleString("ko-KR");
 }
 
+// 현재 자동 인덱싱 중인 파일명 (폴링 시 갱신)
+let _startupIndexingFile = "";
+
 function _makeDocRow(doc) {
   const tr = document.createElement("tr");
   const loaders = doc.loaders && doc.loaders.length ? doc.loaders.join(", ") : "미인식";
+  const isIndexed = Number(doc.indexed_chunks) > 0;
+  const isCurrentlyIndexing = !isIndexed && _startupIndexingFile === doc.file_name;
+  let statusBadge;
+  if (isIndexed) {
+    statusBadge = '<span class="status-badge">인덱싱 완료</span>';
+  } else if (isCurrentlyIndexing) {
+    statusBadge = '<span class="status-badge indexing">인덱싱 중…</span>';
+  } else {
+    statusBadge = '<span class="status-badge not-indexed">대기 중</span>';
+  }
   tr.innerHTML =
     '<td><div class="item-title">' + escapeHtml(doc.file_name) + '</div>' +
     '<div class="item-copy">로드 방식: ' + escapeHtml(loaders) + '</div></td>' +
-    '<td><span class="status-badge">인덱싱 완료</span></td>' +
+    '<td>' + statusBadge + '</td>' +
     '<td>청크 ' + doc.indexed_chunks + '<br />페이지 ' + doc.indexed_pages + '</td>' +
     '<td>' + escapeHtml(String(doc.extension || "").toUpperCase()) + '</td>' +
     '<td><div class="row-actions">' +
@@ -90,15 +103,40 @@ function _updateProgressBar(pct) {
   if (label) label.textContent = pct + "%";
 }
 
+let _startupPollTimer = null;
+
 async function loadLibrary() {
   setLibraryStatus("자료실 상태를 불러오는 중입니다.", "loading", "Loading");
   try {
     const response = await fetch("/api/library");
     if (!response.ok) throw new Error(await extractErrorMessage(response));
     const data = await response.json();
+
+    // 자동 인덱싱 상태 처리
+    const si = data.startup_indexing || {};
+    _startupIndexingFile = si.current_file || "";
+
     updateLibraryStats(data);
     renderLibrary(data.indexed_documents || []);
-    setLibraryStatus("문서 " + data.total_files + "개를 확인했습니다.", "success", "Ready");
+
+    if (si.status === "indexing") {
+      const msg = si.current_file
+        ? "자동 인덱싱 중: " + si.current_file + " (" + si.completed + "/" + si.total + ")"
+        : "자동 인덱싱 준비 중… (" + si.completed + "/" + si.total + ")";
+      setLibraryStatus(msg, "loading", "Indexing");
+      // 2초마다 폴링
+      if (!_startupPollTimer) {
+        _startupPollTimer = setInterval(loadLibrary, 2000);
+      }
+    } else {
+      // 인덱싱 완료 또는 idle — 폴링 중지
+      if (_startupPollTimer) {
+        clearInterval(_startupPollTimer);
+        _startupPollTimer = null;
+      }
+      _startupIndexingFile = "";
+      setLibraryStatus("문서 " + data.total_files + "개를 확인했습니다.", "success", "Ready");
+    }
   } catch (error) {
     updateLibraryStats({ total_files: 0, indexed_documents: [] });
     renderLibrary([]);
