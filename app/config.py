@@ -6,15 +6,18 @@ from pathlib import Path
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+ENV_FILE = BASE_DIR / ".env"
+
 
 class Settings(BaseSettings):
     """애플리케이션 전체 설정. 환경 변수 또는 .env 파일에서 오버라이드 가능하다."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(env_file=ENV_FILE, env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = "Custom RAG Task"
-    cllm_base_url: str = "http://cllm.cywell.co.kr/v1"
-    cllm_model: str = "Qwen/Qwen3.5-9B"
+    cllm_base_url: str
+    cllm_model: str
     llm_connect_timeout_seconds: float = 3.0
     llm_read_timeout_seconds: float = 20.0
     llm_write_timeout_seconds: float = 10.0
@@ -26,16 +29,16 @@ class Settings(BaseSettings):
     llm_prompt_context_items: int = 5
     llm_prompt_context_char_limit: int = 4000
 
-    rag_data_dir: Path = Path("./data")
-    rag_source_dir: Path = Path("./data/corpus/pdfs")
-    rag_index_dir: Path = Path("./data/index")
-    rag_cache_dir: Path = Path("./data/cache")
-    rag_extract_dir: Path = Path("./data/extracted_markdown")
+    rag_data_dir: Path
+    rag_source_dir: Path
+    rag_index_dir: Path
+    rag_cache_dir: Path
+    rag_extract_dir: Path
     save_extracted_markdown: bool = True
 
     # 임베딩 모델 선택. "hash": HashingEmbedder (기본값, 외부 모델 없음),
     # "e5": intfloat/multilingual-e5-small (384차원, sentence-transformers 필요)
-    embedding_model: str = "hash"
+    embedding_model: str
 
     chunk_size: int = 700
     chunk_overlap: int = 120
@@ -90,11 +93,11 @@ class Settings(BaseSettings):
     rerank_compact_bonus_weight: float = 0.12
 
     # PostgreSQL 설정
-    db_host: str = "localhost"
-    db_port: int = 5432
-    db_name: str = "rag_db"
-    db_user: str = "rag_user"
-    db_password: str = "rag_password"
+    db_host: str
+    db_port: int
+    db_name: str
+    db_user: str
+    db_password: str
 
     # 캐시 설정
     cache_max_entries: int = 500

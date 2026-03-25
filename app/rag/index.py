@@ -6,6 +6,7 @@ from pathlib import Path
 
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 
 from app.rag.types import Chunk
 
@@ -19,17 +20,13 @@ class VectorIndex:
 
     def __init__(self, dsn: str) -> None:
         self.dsn = dsn
+        self._pool = psycopg2.pool.SimpleConnectionPool(1, 5, dsn)
         self._initialize()
-
-    def _connect(self):
-        """PostgreSQL 연결을 생성한다."""
-        connection = psycopg2.connect(self.dsn)
-        connection.autocommit = False
-        return connection
 
     @contextmanager
     def _connection(self):
-        connection = self._connect()
+        connection = self._pool.getconn()
+        connection.autocommit = False
         try:
             yield connection
             connection.commit()
@@ -37,7 +34,11 @@ class VectorIndex:
             connection.rollback()
             raise
         finally:
-            connection.close()
+            self._pool.putconn(connection)
+
+    def close(self) -> None:
+        """커넥션 풀을 닫는다."""
+        self._pool.closeall()
 
     def _initialize(self) -> None:
         with self._connection() as connection:

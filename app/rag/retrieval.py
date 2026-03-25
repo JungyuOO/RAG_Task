@@ -17,18 +17,19 @@ class HybridRetriever:
 
     def __init__(
         self,
-        top_k: int = 6,
-        candidate_pool_size: int = 14,
-        dense_weight: float = 0.45,
-        sparse_weight: float = 0.25,
-        title_weight: float = 0.15,
-        bm25_k1: float = 1.2,
-        bm25_b: float = 0.75,
-        rerank_base_weight: float = 0.68,
-        rerank_overlap_weight: float = 0.17,
-        rerank_title_weight: float = 0.08,
-        rerank_title_bonus_weight: float = 0.07,
-        rerank_compact_bonus_weight: float = 0.12,
+        *,
+        top_k: int,
+        candidate_pool_size: int,
+        dense_weight: float,
+        sparse_weight: float,
+        title_weight: float,
+        bm25_k1: float,
+        bm25_b: float,
+        rerank_base_weight: float,
+        rerank_overlap_weight: float,
+        rerank_title_weight: float,
+        rerank_title_bonus_weight: float,
+        rerank_compact_bonus_weight: float,
     ) -> None:
         self.top_k = top_k
         self.candidate_pool_size = candidate_pool_size
@@ -166,7 +167,7 @@ class HybridRetriever:
         reranked.sort(key=lambda entry: entry["rerank_score"], reverse=True)
         return reranked
 
-    def compute_retrieval_metrics(self, results: list[dict], min_score: float = 0.12) -> dict:
+    def compute_retrieval_metrics(self, results: list[dict], min_score: float) -> dict:
         """검색 결과의 품질 지표를 계산한다.
 
         Args:

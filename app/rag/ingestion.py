@@ -66,45 +66,46 @@ class DocumentIngestor:
         if fitz is None:
             raise RuntimeError("PyMuPDF is required to parse PDF files.")
 
-        pdf = fitz.open(path)
-        is_slide = self._is_slide_pdf(pdf)
-        footer_pattern = self._detect_footer_pattern(pdf) if not is_slide else None
         documents: list[Document] = []
         markdown_sections: list[dict[str, str | int]] = []
 
-        total_pages = len(pdf)
-        for index, page in enumerate(pdf, start=1):
-            if is_slide:
-                structured_md = self._extract_slide_page(page)
-                loader = "pdf_slide"
-            else:
-                structured_md = self._extract_structured_page(page, footer_pattern)
-                loader = "pdf_text"
+        with fitz.open(path) as pdf:
+            is_slide = self._is_slide_pdf(pdf)
+            footer_pattern = self._detect_footer_pattern(pdf) if not is_slide else None
 
-            text = normalize_text(structured_md)
-            if not text:
-                continue
+            total_pages = len(pdf)
+            for index, page in enumerate(pdf, start=1):
+                if is_slide:
+                    structured_md = self._extract_slide_page(page)
+                    loader = "pdf_slide"
+                else:
+                    structured_md = self._extract_structured_page(page, footer_pattern)
+                    loader = "pdf_text"
 
-            documents.append(
-                Document(
-                    doc_id=stable_hash(f"{path}:{index}"),
-                    source_path=str(path),
-                    page_number=index,
-                    text=text,
-                    metadata={"file_name": path.name, "loader": loader},
+                text = normalize_text(structured_md)
+                if not text:
+                    continue
+
+                documents.append(
+                    Document(
+                        doc_id=stable_hash(f"{path}:{index}"),
+                        source_path=str(path),
+                        page_number=index,
+                        text=text,
+                        metadata={"file_name": path.name, "loader": loader},
+                    )
                 )
-            )
-            markdown_sections.append(
-                {
-                    "page_number": index,
-                    "loader": loader,
-                    "chars": len(text),
-                    "text": structured_md,
-                }
-            )
-            if progress_callback:
-                progress_callback("extract", index, total_pages)
-        pdf.close()
+                markdown_sections.append(
+                    {
+                        "page_number": index,
+                        "loader": loader,
+                        "chars": len(text),
+                        "text": structured_md,
+                    }
+                )
+                if progress_callback:
+                    progress_callback("extract", index, total_pages)
+
         self._merge_cross_page_tables(documents, markdown_sections)
         return documents, markdown_sections
 
