@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from app.api.schemas import (
@@ -15,7 +17,6 @@ from app.api.schemas import (
     RetryChatRequest,
     SessionHistoryResponse,
     TaskStatusResponse,
-    UploadLibraryResponse,
 )
 from app.dependencies import AppContainer, get_container
 from app.rag.artifacts import extracted_markdown_candidates
@@ -145,21 +146,82 @@ async def delete_library_file(
 async def upload_to_library(
     files: list[UploadFile] = File(...),
     container: AppContainer = Depends(get_container),
-) -> UploadLibraryResponse:
+) -> StreamingResponse:
     uploaded_files = await save_library_uploads(container.settings, files)
-    source_files = list_source_pdfs(container.settings)
-    result = container.task_service.run_inline(
-        "library_upload_reindex",
-        {"uploaded_files": uploaded_files},
-        lambda: container.pipeline.rebuild_index(source_files),
-    )
-    return UploadLibraryResponse(uploaded_files=uploaded_files, **result)
+    total_files = len(uploaded_files)
+
+    async def event_stream():
+        loop = asyncio.get_running_loop()
+        total_chunks = 0
+
+        for file_idx, file_name in enumerate(uploaded_files):
+            source_path = container.settings.rag_source_dir / file_name
+            queue: asyncio.Queue = asyncio.Queue()
+
+            def make_progress_callback(q, ev_loop):
+                def callback(stage, current, total):
+                    # extract: 0~70%, embed: 70~95%
+                    if stage == "extract":
+                        pct = int(current / total * 70)
+                    else:
+                        pct = 70 + int(current / total * 25)
+                    ev_loop.call_soon_threadsafe(q.put_nowait, {"type": "progress", "file": file_name, "pct": pct})
+                return callback
+
+            progress_cb = make_progress_callback(queue, loop)
+
+            # 스레드풀에서 인덱싱 실행 (진행률 콜백은 queue에 이벤트 적재)
+            index_task = asyncio.ensure_future(
+                run_in_threadpool(container.pipeline.index_single_file, source_path, progress_cb)
+            )
+
+            # 인덱싱 완료까지 queue에서 progress 이벤트를 소비하며 SSE 전송
+            while not index_task.done():
+                try:
+                    event = queue.get_nowait()
+                    yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+                except asyncio.QueueEmpty:
+                    await asyncio.sleep(0.05)
+
+            # 남은 queue 이벤트 flush
+            while not queue.empty():
+                event = queue.get_nowait()
+                yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+
+            try:
+                result = index_task.result()
+            except Exception as exc:
+                yield "data: " + json.dumps({"type": "file_error", "file": file_name, "error": str(exc)}, ensure_ascii=False) + "\n\n"
+                continue
+
+            total_chunks += result.get("indexed_chunks", 0)
+            library = container.pipeline.list_library_documents()
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "type": "file_indexed",
+                        "file": file_name,
+                        "file_idx": file_idx,
+                        "total_files": total_files,
+                        **result,
+                        "library": library,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n\n"
+            )
+
+        yield "data: " + json.dumps({"type": "done", "total_chunks": total_chunks}, ensure_ascii=False) + "\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.post("/api/reindex")
 async def reindex_all(container: AppContainer = Depends(get_container)) -> BuildIndexResponse:
     source_files = list_source_pdfs(container.settings)
-    result = container.task_service.run_inline(
+    result = await run_in_threadpool(
+        container.task_service.run_inline,
         "full_reindex",
         {"source_count": len(source_files)},
         lambda: container.pipeline.rebuild_index(source_files),
@@ -272,12 +334,11 @@ async def chat_with_upload(
 ) -> StreamingResponse:
     async def event_stream():
         uploaded_files = await save_library_uploads(container.settings, files)
-        source_files = list_source_pdfs(container.settings)
-        result = container.task_service.run_inline(
-            "chat_upload_reindex",
-            {"uploaded_files": uploaded_files},
-            lambda: container.pipeline.rebuild_index(source_files),
-        )
+        total_chunks = 0
+        for file_name in uploaded_files:
+            source_path = container.settings.rag_source_dir / file_name
+            result = await run_in_threadpool(container.pipeline.index_single_file, source_path)
+            total_chunks += result.get("indexed_chunks", 0)
         uploaded_source_paths = {
             str((container.settings.rag_source_dir / file_name).resolve())
             for file_name in uploaded_files
@@ -288,10 +349,7 @@ async def chat_with_upload(
                 {
                     "type": "upload",
                     "uploaded_files": uploaded_files,
-                    "task_id": result["task_id"],
-                    "task_status": result["task_status"],
-                    "indexed_files": result["indexed_files"],
-                    "indexed_chunks": result["indexed_chunks"],
+                    "indexed_chunks": total_chunks,
                 },
                 ensure_ascii=False,
             )
