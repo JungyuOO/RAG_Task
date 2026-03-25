@@ -31,22 +31,12 @@ class HashingEmbedder:
 
         total_tokens = len(tokens)
         for position, token in enumerate(tokens):
-            # 위치 감쇠: 앞쪽 토큰일수록 약간 높은 가중치 (1.0 ~ 0.7).
-            # 0.3 감쇠 폭은 문서 앞부분의 제목/핵심어를 강조하되
-            # 뒤쪽 토큰도 0.7 이상의 기여를 유지하는 경험적 균형점.
             position_weight = 1.0 - 0.3 * (position / max(total_tokens, 1))
             token_hash = int(hashlib.sha256(token.encode("utf-8")).hexdigest(), 16)
             index = token_hash % self.dim
-            # 해시의 비트 1로 부호 결정 — 벡터 차원에 +/- 분산을 부여하여
-            # 서로 다른 토큰이 같은 인덱스에 매핑될 때 상쇄 효과 생성
             sign = -1.0 if (token_hash >> 1) & 1 else 1.0
-            # 토큰 길이의 로그 스케일링: 긴 토큰(전문 용어)이 짧은 토큰(조사)보다
-            # 더 큰 기여를 하도록 가중. log로 포화시켜 극단적 길이 차이를 완화.
             vector[index] += sign * (1.0 + math.log(len(token) + 1)) * position_weight
 
-        # 바이그램: 인접 토큰 쌍을 결합 해싱하여 토큰 순서 정보를 벡터에 반영.
-        # 가중치 0.5는 유니그램 대비 보조적 역할 — 순서 정보를 추가하되
-        # 단일 토큰의 의미 기여를 압도하지 않는 수준.
         for i in range(len(tokens) - 1):
             bigram = tokens[i] + "_" + tokens[i + 1]
             bigram_hash = int(hashlib.sha256(bigram.encode("utf-8")).hexdigest(), 16)
