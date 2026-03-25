@@ -12,7 +12,7 @@ PDF 문서 기반 지식베이스를 구축하고, 멀티턴 대화를 지원하
 | Database | PostgreSQL |
 | PDF 파싱 | PyMuPDF (fitz) |
 | 임베딩 | HashingEmbedder (자체 구현) / multilingual-e5-small (선택) |
-| LLM 통신 | httpx (OpenAI-compatible API) |
+| LLM 통신 | httpx (사내 LLM 엔드포인트 — Qwen3.5-9B) |
 | 스트리밍 | Server-Sent Events (SSE) |
 
 ## 프로젝트 구조
