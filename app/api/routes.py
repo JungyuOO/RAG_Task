@@ -4,7 +4,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
@@ -36,8 +36,12 @@ async def index() -> FileResponse:
 
 
 @router.get("/api/library")
-async def get_library(container: AppContainer = Depends(get_container)) -> LibraryStatusResponse:
-    return LibraryStatusResponse(**container.pipeline.list_library_documents())
+async def get_library(request: Request, container: AppContainer = Depends(get_container)) -> LibraryStatusResponse:
+    data = container.pipeline.list_library_documents()
+    startup_state = getattr(request.app.state, "startup_indexing", None)
+    if startup_state:
+        data["startup_indexing"] = startup_state
+    return LibraryStatusResponse(**data)
 
 
 def resolve_library_pdf(settings, file_name: str) -> Path:
