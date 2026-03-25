@@ -2,12 +2,16 @@
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
+
+logger = logging.getLogger("rag.pipeline")
 
 from app.config import Settings
 from app.rag.cache import JsonFileCache
 from app.rag.chunking import StructuredMarkdownChunker, TextChunker
+from app.rag.e5_embeddings import E5Embedder
 from app.rag.embeddings import HashingEmbedder
 from app.rag.index import VectorIndex
 from app.rag.ingestion import DocumentIngestor
@@ -18,6 +22,7 @@ from app.rag.utils import stable_hash
 from app.repositories.cache_repository import CacheRepository
 from app.repositories.index_repository import IndexRepository
 from app.repositories.session_repository import SessionRepository
+from app.services.agent_service import JudgeAgent, QueryAgent
 from app.services.answer_service import AnswerService
 from app.services.indexing_service import IndexingService
 from app.services.retrieval_service import RetrievalService
@@ -33,14 +38,27 @@ class RagPipeline:
             settings.structured_chunk_size,
             settings.structured_chunk_overlap,
         )
-        self.embedder = HashingEmbedder(settings.vector_dim)
+        if settings.embedding_model == "e5":
+            self.embedder = E5Embedder()
+            settings.vector_dim = self.embedder.dim
+        else:
+            self.embedder = HashingEmbedder(settings.vector_dim)
         self.index = VectorIndex(settings.db_dsn)
+        # 임베딩 모델에 따른 검색 가중치 선택
+        if settings.embedding_model == "e5":
+            dense_w = settings.e5_retrieval_dense_weight
+            sparse_w = settings.e5_retrieval_sparse_weight
+            title_w = settings.e5_retrieval_title_weight
+        else:
+            dense_w = settings.retrieval_dense_weight
+            sparse_w = settings.retrieval_sparse_weight
+            title_w = settings.retrieval_title_weight
         self.retriever = HybridRetriever(
             top_k=settings.retrieval_top_k,
             candidate_pool_size=settings.candidate_pool_size,
-            dense_weight=settings.retrieval_dense_weight,
-            sparse_weight=settings.retrieval_sparse_weight,
-            title_weight=settings.retrieval_title_weight,
+            dense_weight=dense_w,
+            sparse_weight=sparse_w,
+            title_weight=title_w,
             bm25_k1=settings.bm25_k1,
             bm25_b=settings.bm25_b,
             rerank_base_weight=settings.rerank_base_weight,
@@ -78,6 +96,8 @@ class RagPipeline:
             index_repository=self.index_repository,
             embedding_cache_repository=self.embedding_cache_repository,
         )
+        self.query_agent = QueryAgent(self.llm)
+        self.judge_agent = JudgeAgent(self.llm)
         self.retrieval_service = RetrievalService(settings)
         self.answer_service = AnswerService(self.retrieval_service)
         self.turn_policy_service = TurnPolicyService()
@@ -463,15 +483,71 @@ class RagPipeline:
             if policy.use_memory_rewrite
             else user_message.strip()
         )
-        expanded_query = self._expand_query_with_context(rewritten_query, topic_state)
+
+        # --- QueryAgent: 검색 쿼리 최적화 및 대안 쿼리 생성 ---
+        available_sources = [
+            item["chunk"]["source_path"]
+            for item in self.index_repository.load()[:1]
+        ]
+        # 전체 소스 목록은 인덱스에서 유니크하게 추출
+        all_sources: list[str] = []
+        seen_sources: set[str] = set()
+        for item in self.index_repository.load():
+            src = item["chunk"]["source_path"]
+            if src not in seen_sources:
+                seen_sources.add(src)
+                all_sources.append(src)
+        self.query_agent.available_sources = all_sources
+
+        query_result = await self.query_agent.refine_query(
+            rewritten_query,
+            context={"active_topic": topic_state.get("active_topic"), "selected_sources": topic_state.get("selected_sources", [])},
+        )
+        refined_query = query_result["refined_query"]
+        alternative_queries = query_result.get("alternative_queries", [])
+        logger.info(
+            "[QueryAgent] 원본=%r → 최적화=%r | 대안=%r | 키워드=%r",
+            rewritten_query, refined_query, alternative_queries, query_result.get("search_keywords", []),
+        )
+
+        expanded_query = self._expand_query_with_context(refined_query, topic_state)
         query_vector = self.embedder.encode(expanded_query)
         index_items = self._filter_index_items(self.index_repository.load(), allowed_source_paths)
         retrieved = self.retriever.search(expanded_query, query_vector, index_items)
+
+        # 대안 쿼리로 추가 검색하여 더 나은 결과가 있으면 병합
+        for alt_query in alternative_queries[:2]:
+            alt_expanded = self._expand_query_with_context(alt_query, topic_state)
+            alt_vector = self.embedder.encode(alt_expanded)
+            alt_retrieved = self.retriever.search(alt_expanded, alt_vector, index_items)
+            if alt_retrieved and alt_retrieved[0].get("rerank_score", 0) > (retrieved[0].get("rerank_score", 0) if retrieved else 0):
+                retrieved = alt_retrieved
+                refined_query = alt_query
+
+        for i, item in enumerate(retrieved[:5]):
+            chunk = item["chunk"]
+            logger.info(
+                "[Retrieval] #%d %s p.%s | rerank=%.4f dense=%.4f sparse=%.4f title=%.4f title_bonus=%.4f compact=%.4f",
+                i + 1,
+                Path(chunk["source_path"]).name,
+                chunk.get("page_number", "?"),
+                item.get("rerank_score", 0),
+                item.get("dense_score", 0),
+                item.get("sparse_score", 0),
+                item.get("title_score", 0),
+                item.get("title_match_bonus", 0),
+                item.get("compact_match_bonus", 0),
+            )
+
         retrieval_metrics = self.retriever.compute_retrieval_metrics(
             retrieved, min_score=self.settings.retrieval_min_score,
         )
         top_score = retrieval_metrics["top_score"]
         use_retrieved_context = top_score >= self.settings.retrieval_min_score
+        logger.info(
+            "[Retrieval] top_score=%.4f use_context=%s min_score=%.4f",
+            top_score, use_retrieved_context, self.settings.retrieval_min_score,
+        )
         context_items = retrieved if use_retrieved_context else []
         grounded_pages = self._aggregate_page_grounding(context_items)
         ordered_context_items = self._order_context_items_by_grounded_pages(context_items, grounded_pages)
@@ -606,12 +682,14 @@ class RagPipeline:
     ) -> list[dict]:
         """LLM에 전달할 시스템 프롬프트, 세션 메모리, 최근 대화, 문맥을 조합한 메시지 목록을 구성한다."""
         system_prompt = (
-            "You are a RAG assistant. "
-            "If retrieved context is provided, answer from that context first and mention source file names and page numbers when possible. "
-            "If retrieved context is weak or missing, answer as a general assistant. "
+            "You are a document-grounded RAG assistant. "
+            "You ONLY answer questions based on the retrieved document context provided below. "
+            "If retrieved context is provided, answer from that context and mention source file names and page numbers when possible. "
+            "If retrieved context is weak, missing, or irrelevant to the user's question, do NOT answer the question. "
+            "Instead, respond with: '업로드된 문서에서 관련 내용을 찾을 수 없습니다. 다른 질문을 해주시거나, 관련 문서를 업로드해 주세요.' "
+            "Do NOT answer general knowledge questions, trivia, or anything not grounded in the retrieved context. "
             "If the user is simply reacting, acknowledging, or thanking you after a document-grounded answer, respond conversationally without reusing document citations. "
             "Do not mention unrelated prior questions or prior document topics unless the current user message explicitly asks for them. "
-            "When retrieval mode is general, do not mention source files, page numbers, uploaded library notes, or citations. "
             "When retrieved context is used, end the answer with a short source line such as '[file.pdf] p.5' or '[file.pdf] p.5-6'. "
             "Keep answers concise but grounded."
         )
@@ -671,6 +749,10 @@ class RagPipeline:
             allow_preview=use_retrieved_context,
             allow_citations=use_retrieved_context,
         )
+        logger.info(
+            "[TurnPolicy] type=%s mode=%s use_retrieval=%s",
+            policy_decision.turn_type, policy_decision.response_mode, policy_decision.use_retrieval,
+        )
         code_example_request = self._is_code_example_request(user_message)
         interleaved_context_items = self._interleave_context_items_by_source(selected_context_items)
         context_blocks, context_ids = self._build_context_blocks(interleaved_context_items)
@@ -694,6 +776,67 @@ class RagPipeline:
             response_mode, preview_finalized=False,
         )
         yield {"type": "context", **context_payload}
+
+        # --- 인사 응답: 간단한 안내 메시지로 응답 ---
+        if policy_decision.turn_type == "greeting":
+            greeting_answer = "안녕하세요! 업로드된 문서에 대해 질문해 주세요."
+            yield {"type": "token", "content": greeting_answer, "cached": False}
+            final_payload = self._build_context_payload(
+                rewritten_query, False, top_score,
+                None, [], [], [], [], "greeting", preview_finalized=True,
+            )
+            yield {"type": "context", **final_payload}
+            self.session_repository.add_turn(session_id, "assistant", greeting_answer, metadata=final_payload)
+            yield {"type": "done", "cached": False}
+            return
+
+        # --- 문서 무관 질문 거부: 일반 잡담은 답변하지 않음 ---
+        if policy_decision.turn_type == "general_chat":
+            reject_answer = "죄송합니다, 업로드된 문서와 관련된 질문에만 답변드릴 수 있습니다. 문서에 대해 궁금한 점을 질문해 주세요."
+            yield {"type": "token", "content": reject_answer, "cached": False}
+            final_payload = self._build_context_payload(
+                rewritten_query, False, top_score,
+                None, [], [], [], [], "general", preview_finalized=True,
+            )
+            yield {"type": "context", **final_payload}
+            self.session_repository.add_turn(session_id, "assistant", reject_answer, metadata=final_payload)
+            yield {"type": "done", "cached": False}
+            return
+
+        # --- 검색 실패 거부: 문서 질의인데 관련 내용을 찾지 못한 경우 ---
+        if policy_decision.turn_type == "document_query" and not use_retrieved_context:
+            no_result_answer = "업로드된 문서에서 관련 내용을 찾을 수 없습니다. 다른 질문을 해주시거나, 관련 문서를 업로드해 주세요."
+            yield {"type": "token", "content": no_result_answer, "cached": False}
+            final_payload = self._build_context_payload(
+                rewritten_query, False, top_score,
+                None, [], [], [], [], "general", preview_finalized=True,
+            )
+            yield {"type": "context", **final_payload}
+            self.session_repository.add_turn(session_id, "assistant", no_result_answer, metadata=final_payload)
+            yield {"type": "done", "cached": False}
+            return
+
+        # --- JudgeAgent: 검색 결과 적합성 판단 ---
+        if use_retrieved_context and context_blocks:
+            judge_result = await self.judge_agent.evaluate(
+                user_message, context_blocks, top_score,
+            )
+            logger.info(
+                "[JudgeAgent] relevant=%s confidence=%s message=%r",
+                judge_result["relevant"], judge_result["confidence"],
+                judge_result.get("clarification_message", "")[:100],
+            )
+            if not judge_result["relevant"]:
+                clarification = judge_result["clarification_message"]
+                yield {"type": "token", "content": clarification, "cached": False}
+                final_payload = self._build_context_payload(
+                    rewritten_query, False, top_score,
+                    None, [], [], [], [], "clarification", preview_finalized=True,
+                )
+                yield {"type": "context", **final_payload}
+                self.session_repository.add_turn(session_id, "assistant", clarification, metadata=final_payload)
+                yield {"type": "done", "cached": False}
+                return
 
         # --- 명확화 응답: 모호한 지시어에 대해 추가 질문으로 응답 ---
         if policy_decision.needs_clarification and policy_decision.clarification_prompt:
