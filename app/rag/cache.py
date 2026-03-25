@@ -15,8 +15,8 @@ class JsonFileCache:
     def __init__(
         self,
         cache_dir: Path,
-        max_entries: int = 500,
-        ttl_hours: int = 72,
+        max_entries: int,
+        ttl_hours: int,
     ) -> None:
         self.cache_dir = cache_dir
         self.max_entries = max_entries
