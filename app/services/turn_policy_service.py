@@ -114,6 +114,24 @@ class TurnPolicyService:
         "일정",
         "recommend",
     )
+    CASUAL_CHAT_MARKERS = (
+        "너",
+        "넌",
+        "니",
+        "애니",
+        "이름",
+        "누구",
+        "뭐해",
+        "뭐 하",
+        "뭐하는",
+        "무슨 역할",
+        "정체",
+        "자기소개",
+        "who are you",
+        "what are you",
+        "what do you do",
+        "your name",
+    )
     CLARIFICATION_REFERENT_MARKERS = (
         "그거",
         "그건",
@@ -252,6 +270,8 @@ class TurnPolicyService:
         질문에 언급되거나, 대문자 약어/전문 용어가 포함되면 문서 검색을 수행한다.
         하드코딩된 도메인 키워드 목록 대신 형태적 특성으로 판별한다.
         """
+        if self._looks_like_casual_chat(normalized):
+            return False
         if any(marker in normalized for marker in self.DOCUMENT_INTENT_MARKERS):
             return True
         for source in topic_state.get("selected_sources", []):
@@ -267,6 +287,9 @@ class TurnPolicyService:
 
     def _looks_like_general_chat(self, normalized: str) -> bool:
         return any(marker in normalized for marker in self.GENERAL_CHAT_MARKERS)
+
+    def _looks_like_casual_chat(self, normalized: str) -> bool:
+        return any(marker in normalized for marker in self.CASUAL_CHAT_MARKERS)
 
     def _build_clarification_decision(
         self,
