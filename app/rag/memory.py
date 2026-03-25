@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from contextlib import closing
 from contextlib import contextmanager
 import json
-import sqlite3
-from pathlib import Path
+
+import psycopg2
+import psycopg2.extras
 
 from app.rag.types import ChatTurn
 from app.rag.utils import normalize_text
@@ -50,119 +50,143 @@ _GENERIC_STOPWORDS = {
 class SessionStore:
     """LLM 히스토리에 의존하지 않는 애플리케이션 수준 세션 메모리.
 
-    SQLite에 대화 턴, 구조화된 요약, 토픽 상태를 저장하고,
+    PostgreSQL에 대화 턴, 구조화된 요약, 토픽 상태를 저장하고,
     매 턴마다 요약과 토픽을 자동 갱신한다. 질의 재작성(query rewrite)은
     대화 맥락과 엔티티를 사용하여 모호한 후속 질문을 보강한다.
     """
 
-    def __init__(self, db_path: Path, memory_window_turns: int = 6) -> None:
-        self.db_path = db_path
+    def __init__(self, dsn: str, memory_window_turns: int = 6) -> None:
+        self.dsn = dsn
         self.memory_window_turns = memory_window_turns
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
-        """SQLite 연결을 생성한다. WAL 모드와 busy_timeout으로 동시성을 확보한다."""
-        connection = sqlite3.connect(self.db_path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA busy_timeout=5000")
+    def _connect(self):
+        """PostgreSQL 연결을 생성한다."""
+        connection = psycopg2.connect(self.dsn)
+        connection.autocommit = False
         return connection
 
     @contextmanager
     def _connection(self):
-        with closing(self._connect()) as connection:
-            with connection:
-                yield connection
+        connection = self._connect()
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def _initialize(self) -> None:
         with self._connection() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS sessions (
-                    session_id TEXT PRIMARY KEY,
-                    summary TEXT NOT NULL DEFAULT '',
-                    summary_json TEXT NOT NULL DEFAULT '{}',
-                    topic_state_json TEXT NOT NULL DEFAULT '{}',
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-
-                CREATE TABLE IF NOT EXISTS session_turns (
-                    turn_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    metadata TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (session_id) REFERENCES sessions(session_id)
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_session_turns_session_id
-                ON session_turns(session_id, turn_id);
-                """
-            )
-            session_columns = {
-                row["name"]
-                for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
-            }
-            if "summary_json" not in session_columns:
-                connection.execute(
-                    "ALTER TABLE sessions ADD COLUMN summary_json TEXT NOT NULL DEFAULT '{}'"
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS sessions (
+                        session_id TEXT PRIMARY KEY,
+                        summary TEXT NOT NULL DEFAULT '',
+                        summary_json TEXT NOT NULL DEFAULT '{}',
+                        topic_state_json TEXT NOT NULL DEFAULT '{}',
+                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
                 )
-            if "topic_state_json" not in session_columns:
-                connection.execute(
-                    "ALTER TABLE sessions ADD COLUMN topic_state_json TEXT NOT NULL DEFAULT '{}'"
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS session_turns (
+                        turn_id SERIAL PRIMARY KEY,
+                        session_id TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        metadata TEXT NOT NULL DEFAULT '',
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_session_turns_session_id
+                    ON session_turns(session_id, turn_id)
+                    """
                 )
 
-            turn_columns = {
-                row["name"]
-                for row in connection.execute("PRAGMA table_info(session_turns)").fetchall()
-            }
-            if "metadata" not in turn_columns:
-                connection.execute(
-                    "ALTER TABLE session_turns ADD COLUMN metadata TEXT NOT NULL DEFAULT ''"
+                # 마이그레이션: 기존 테이블에 누락된 컬럼 추가
+                cursor.execute(
+                    """
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = 'sessions'
+                    """
                 )
+                session_columns = {row[0] for row in cursor.fetchall()}
+                if "summary_json" not in session_columns:
+                    cursor.execute(
+                        "ALTER TABLE sessions ADD COLUMN summary_json TEXT NOT NULL DEFAULT '{}'"
+                    )
+                if "topic_state_json" not in session_columns:
+                    cursor.execute(
+                        "ALTER TABLE sessions ADD COLUMN topic_state_json TEXT NOT NULL DEFAULT '{}'"
+                    )
+
+                cursor.execute(
+                    """
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = 'session_turns'
+                    """
+                )
+                turn_columns = {row[0] for row in cursor.fetchall()}
+                if "metadata" not in turn_columns:
+                    cursor.execute(
+                        "ALTER TABLE session_turns ADD COLUMN metadata TEXT NOT NULL DEFAULT ''"
+                    )
 
     def add_turn(self, session_id: str, role: str, content: str, metadata: dict | None = None) -> None:
         with self._connection() as connection:
-            connection.execute(
-                """
-                INSERT INTO sessions (session_id, summary, summary_json, topic_state_json, updated_at)
-                VALUES (?, '', '{}', '{}', CURRENT_TIMESTAMP)
-                ON CONFLICT(session_id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
-                """,
-                (session_id,),
-            )
-            connection.execute(
-                "INSERT INTO session_turns (session_id, role, content, metadata) VALUES (?, ?, ?, ?)",
-                (session_id, role, content, json.dumps(metadata or {}, ensure_ascii=False)),
-            )
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO sessions (session_id, summary, summary_json, topic_state_json, updated_at)
+                    VALUES (%s, '', '{}', '{}', CURRENT_TIMESTAMP)
+                    ON CONFLICT(session_id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (session_id,),
+                )
+                cursor.execute(
+                    "INSERT INTO session_turns (session_id, role, content, metadata) VALUES (%s, %s, %s, %s)",
+                    (session_id, role, content, json.dumps(metadata or {}, ensure_ascii=False)),
+                )
         self._refresh_summary(session_id)
 
     def delete_session(self, session_id: str) -> bool:
         with self._connection() as connection:
-            turn_result = connection.execute(
-                "DELETE FROM session_turns WHERE session_id = ?",
-                (session_id,),
-            )
-            session_result = connection.execute(
-                "DELETE FROM sessions WHERE session_id = ?",
-                (session_id,),
-            )
-        return bool(turn_result.rowcount or session_result.rowcount)
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM session_turns WHERE session_id = %s",
+                    (session_id,),
+                )
+                turn_count = cursor.rowcount
+                cursor.execute(
+                    "DELETE FROM sessions WHERE session_id = %s",
+                    (session_id,),
+                )
+                session_count = cursor.rowcount
+        return bool(turn_count or session_count)
 
     def recent_turns(self, session_id: str) -> list[ChatTurn]:
         with self._connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT role, content, metadata
-                FROM session_turns
-                WHERE session_id = ?
-                ORDER BY turn_id DESC
-                LIMIT ?
-                """,
-                (session_id, self.memory_window_turns),
-            ).fetchall()
+            with connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT role, content, metadata
+                    FROM session_turns
+                    WHERE session_id = %s
+                    ORDER BY turn_id DESC
+                    LIMIT %s
+                    """,
+                    (session_id, self.memory_window_turns),
+                )
+                rows = cursor.fetchall()
         return [
             ChatTurn(
                 role=row["role"],
@@ -174,28 +198,34 @@ class SessionStore:
 
     def summary(self, session_id: str) -> str:
         with self._connection() as connection:
-            row = connection.execute(
-                "SELECT summary FROM sessions WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
+            with connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                cursor.execute(
+                    "SELECT summary FROM sessions WHERE session_id = %s",
+                    (session_id,),
+                )
+                row = cursor.fetchone()
         return row["summary"] if row else ""
 
     def structured_summary(self, session_id: str) -> dict:
         with self._connection() as connection:
-            row = connection.execute(
-                "SELECT summary_json FROM sessions WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
+            with connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                cursor.execute(
+                    "SELECT summary_json FROM sessions WHERE session_id = %s",
+                    (session_id,),
+                )
+                row = cursor.fetchone()
         if not row:
             return DEFAULT_SUMMARY.copy()
         return self._merge_defaults(DEFAULT_SUMMARY, json.loads(row["summary_json"] or "{}"))
 
     def topic_state(self, session_id: str) -> dict:
         with self._connection() as connection:
-            row = connection.execute(
-                "SELECT topic_state_json FROM sessions WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
+            with connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                cursor.execute(
+                    "SELECT topic_state_json FROM sessions WHERE session_id = %s",
+                    (session_id,),
+                )
+                row = cursor.fetchone()
         if not row:
             return DEFAULT_TOPIC_STATE.copy()
         return self._merge_defaults(DEFAULT_TOPIC_STATE, json.loads(row["topic_state_json"] or "{}"))
@@ -255,16 +285,18 @@ class SessionStore:
 
     def last_turn(self, session_id: str) -> ChatTurn | None:
         with self._connection() as connection:
-            row = connection.execute(
-                """
-                SELECT role, content, metadata
-                FROM session_turns
-                WHERE session_id = ?
-                ORDER BY turn_id DESC
-                LIMIT 1
-                """,
-                (session_id,),
-            ).fetchone()
+            with connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT role, content, metadata
+                    FROM session_turns
+                    WHERE session_id = %s
+                    ORDER BY turn_id DESC
+                    LIMIT 1
+                    """,
+                    (session_id,),
+                )
+                row = cursor.fetchone()
         if not row:
             return None
         return ChatTurn(
@@ -281,15 +313,17 @@ class SessionStore:
 
     def all_turns(self, session_id: str) -> list[ChatTurn]:
         with self._connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT role, content, metadata
-                FROM session_turns
-                WHERE session_id = ?
-                ORDER BY turn_id ASC
-                """,
-                (session_id,),
-            ).fetchall()
+            with connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT role, content, metadata
+                    FROM session_turns
+                    WHERE session_id = %s
+                    ORDER BY turn_id ASC
+                    """,
+                    (session_id,),
+                )
+                rows = cursor.fetchall()
         return [
             ChatTurn(
                 role=row["role"],
@@ -301,41 +335,43 @@ class SessionStore:
 
     def list_sessions(self, limit: int = 50) -> list[dict]:
         with self._connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT s.session_id, s.summary, s.summary_json, s.updated_at,
-                       (
-                           SELECT content
-                           FROM session_turns
-                           WHERE session_id = s.session_id AND role = 'user'
-                           ORDER BY turn_id ASC
-                           LIMIT 1
-                       ) AS first_user_message,
-                       (
-                           SELECT content
-                           FROM session_turns
-                           WHERE session_id = s.session_id AND role = 'user'
-                           ORDER BY turn_id DESC
-                           LIMIT 1
-                       ) AS last_user_message,
-                       (
-                           SELECT created_at
-                           FROM session_turns
-                           WHERE session_id = s.session_id AND role = 'user'
-                           ORDER BY turn_id DESC
-                           LIMIT 1
-                       ) AS last_user_at,
-                       (
-                           SELECT COUNT(*)
-                           FROM session_turns
-                           WHERE session_id = s.session_id
-                       ) AS turn_count
-                FROM sessions s
-                ORDER BY datetime(s.updated_at) DESC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
+            with connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT s.session_id, s.summary, s.summary_json, s.updated_at,
+                           (
+                               SELECT content
+                               FROM session_turns
+                               WHERE session_id = s.session_id AND role = 'user'
+                               ORDER BY turn_id ASC
+                               LIMIT 1
+                           ) AS first_user_message,
+                           (
+                               SELECT content
+                               FROM session_turns
+                               WHERE session_id = s.session_id AND role = 'user'
+                               ORDER BY turn_id DESC
+                               LIMIT 1
+                           ) AS last_user_message,
+                           (
+                               SELECT created_at
+                               FROM session_turns
+                               WHERE session_id = s.session_id AND role = 'user'
+                               ORDER BY turn_id DESC
+                               LIMIT 1
+                           ) AS last_user_at,
+                           (
+                               SELECT COUNT(*)
+                               FROM session_turns
+                               WHERE session_id = s.session_id
+                           ) AS turn_count
+                    FROM sessions s
+                    ORDER BY s.updated_at DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+                rows = cursor.fetchall()
 
         sessions: list[dict] = []
         for row in rows:
@@ -348,7 +384,7 @@ class SessionStore:
                     "session_id": row["session_id"],
                     "title": title,
                     "summary": summary_text,
-                    "updated_at": row["updated_at"],
+                    "updated_at": str(row["updated_at"]),
                     "turn_count": int(row["turn_count"] or 0),
                     "last_user_message": normalize_text(str(row["last_user_message"] or ""))[:80],
                     "last_user_at": str(row["last_user_at"] or ""),
@@ -363,23 +399,24 @@ class SessionStore:
         summary = self._stringify_summary(summary_json, topic_state)
 
         with self._connection() as connection:
-            connection.execute(
-                """
-                INSERT INTO sessions (session_id, summary, summary_json, topic_state_json, updated_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(session_id) DO UPDATE
-                SET summary = excluded.summary,
-                    summary_json = excluded.summary_json,
-                    topic_state_json = excluded.topic_state_json,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (
-                    session_id,
-                    summary,
-                    json.dumps(summary_json, ensure_ascii=False),
-                    json.dumps(topic_state, ensure_ascii=False),
-                ),
-            )
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO sessions (session_id, summary, summary_json, topic_state_json, updated_at)
+                    VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT(session_id) DO UPDATE
+                    SET summary = EXCLUDED.summary,
+                        summary_json = EXCLUDED.summary_json,
+                        topic_state_json = EXCLUDED.topic_state_json,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        session_id,
+                        summary,
+                        json.dumps(summary_json, ensure_ascii=False),
+                        json.dumps(topic_state, ensure_ascii=False),
+                    ),
+                )
 
     def _build_structured_summary(self, turns: list[ChatTurn]) -> dict:
         recent_turns = turns[-10:]

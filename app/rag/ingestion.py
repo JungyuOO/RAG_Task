@@ -29,7 +29,7 @@ class DocumentIngestor:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    def ingest_paths(self, paths: list[Path]) -> tuple[list[Document], list[Path]]:
+    def ingest_paths(self, paths: list[Path], progress_callback=None) -> tuple[list[Document], list[Path]]:
         documents: list[Document] = []
         skipped: list[Path] = []
 
@@ -40,7 +40,7 @@ class DocumentIngestor:
 
             suffix = path.suffix.lower()
             if suffix == ".pdf":
-                pdf_documents, markdown_sections = self._ingest_pdf(path)
+                pdf_documents, markdown_sections = self._ingest_pdf(path, progress_callback=progress_callback)
                 documents.extend(pdf_documents)
                 self._export_pdf_markdown(path, pdf_documents, markdown_sections)
             elif suffix in {".txt", ".md"}:
@@ -62,7 +62,7 @@ class DocumentIngestor:
 
         return documents, skipped
 
-    def _ingest_pdf(self, path: Path) -> tuple[list[Document], list[dict[str, str | int]]]:
+    def _ingest_pdf(self, path: Path, progress_callback=None) -> tuple[list[Document], list[dict[str, str | int]]]:
         if fitz is None:
             raise RuntimeError("PyMuPDF is required to parse PDF files.")
 
@@ -72,6 +72,7 @@ class DocumentIngestor:
         documents: list[Document] = []
         markdown_sections: list[dict[str, str | int]] = []
 
+        total_pages = len(pdf)
         for index, page in enumerate(pdf, start=1):
             if is_slide:
                 structured_md = self._extract_slide_page(page)
@@ -101,7 +102,10 @@ class DocumentIngestor:
                     "text": structured_md,
                 }
             )
+            if progress_callback:
+                progress_callback("extract", index, total_pages)
         pdf.close()
+        self._merge_cross_page_tables(documents, markdown_sections)
         return documents, markdown_sections
 
     # ------------------------------------------------------------------
@@ -487,6 +491,160 @@ class DocumentIngestor:
             i += 1
 
         return "\n".join(result)
+
+    # ------------------------------------------------------------------
+    # 7) 페이지 경계 테이블 병합
+    # ------------------------------------------------------------------
+
+    def _merge_cross_page_tables(
+        self,
+        documents: list[Document],
+        markdown_sections: list[dict],
+    ) -> None:
+        """인접 페이지에 걸친 불완전한 테이블을 병합한다.
+
+        Page N이 테이블로 끝나고 Page N+1이 같은 컬럼 수의 테이블로 시작하면,
+        N+1의 테이블 행을 N의 테이블에 합치고 N+1에서는 제거한다.
+        """
+        if len(markdown_sections) < 2:
+            return
+
+        for i in range(len(markdown_sections) - 1):
+            curr_text = str(markdown_sections[i]["text"])
+            next_text = str(markdown_sections[i + 1]["text"])
+
+            # 현재 페이지의 마지막 테이블 찾기
+            curr_table_end = self._find_trailing_table(curr_text)
+            if curr_table_end is None:
+                continue
+
+            # 다음 페이지의 첫 테이블 찾기
+            next_table_start = self._find_leading_table(next_text)
+            if next_table_start is None:
+                continue
+
+            curr_table_lines = curr_table_end["lines"]
+            next_table_lines = next_table_start["lines"]
+
+            # 컬럼 수 비교
+            curr_col_count = curr_table_lines[0].count("|") - 1
+            next_col_count = next_table_lines[0].count("|") - 1
+            if curr_col_count != next_col_count:
+                continue
+
+            # N+1 테이블에서 본문 행만 추출 (헤더, 구분선 제거)
+            body_rows = self._extract_table_body_rows(next_table_lines)
+            if not body_rows:
+                continue
+
+            # 현재 페이지 테이블에 행 추가
+            merged_curr_text = (
+                curr_text[:curr_table_end["end_pos"]].rstrip()
+                + "\n" + "\n".join(body_rows)
+                + curr_text[curr_table_end["end_pos"]:]
+            )
+
+            # 다음 페이지에서 선행 테이블 제거
+            merged_next_text = next_text[next_table_start["end_pos"]:].lstrip("\n")
+
+            # 업데이트
+            markdown_sections[i]["text"] = merged_curr_text.strip()
+            markdown_sections[i]["chars"] = len(merged_curr_text.strip())
+            markdown_sections[i + 1]["text"] = merged_next_text.strip()
+            markdown_sections[i + 1]["chars"] = len(merged_next_text.strip())
+
+            # Document 객체도 동기화
+            for doc in documents:
+                if doc.page_number == markdown_sections[i]["page_number"]:
+                    doc.text = normalize_text(merged_curr_text)
+                elif doc.page_number == markdown_sections[i + 1]["page_number"]:
+                    doc.text = normalize_text(merged_next_text)
+
+    def _find_trailing_table(self, text: str) -> dict | None:
+        """텍스트 끝에 있는 마크다운 테이블을 찾아 라인과 위치를 반환한다."""
+        lines = text.rstrip().splitlines()
+        if not lines:
+            return None
+
+        # 끝에서부터 파이프 테이블 행을 수집
+        table_lines = []
+        for j in range(len(lines) - 1, -1, -1):
+            stripped = lines[j].strip()
+            if stripped and "|" in stripped:
+                table_lines.insert(0, stripped)
+            elif stripped:
+                break
+            # 빈 줄은 건너뜀 (테이블과 다른 내용 사이)
+
+        if len(table_lines) < 2:
+            return None
+
+        # 구분선(| --- | --- |) 확인
+        separator_re = re.compile(r"^\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?$")
+        has_separator = any(separator_re.match(line) for line in table_lines)
+        if not has_separator:
+            return None
+
+        # 테이블 시작 위치 계산
+        start_pos = text.rfind(table_lines[0])
+        end_pos = len(text.rstrip())
+
+        return {"lines": table_lines, "start_pos": start_pos, "end_pos": end_pos}
+
+    def _find_leading_table(self, text: str) -> dict | None:
+        """텍스트 시작에 있는 마크다운 테이블을 찾아 라인과 위치를 반환한다."""
+        lines = text.lstrip().splitlines()
+        if not lines:
+            return None
+
+        table_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped and "|" in stripped:
+                table_lines.append(stripped)
+            elif stripped:
+                break
+            # 빈 줄이면 테이블 끝
+
+        if len(table_lines) < 1:
+            return None
+
+        # 테이블 끝 위치 계산
+        end_pos = 0
+        remaining = text.lstrip()
+        for tl in table_lines:
+            idx = remaining.find(tl, end_pos)
+            if idx >= 0:
+                end_pos = idx + len(tl)
+
+        # lstrip으로 제거된 공백 보정
+        leading_whitespace = len(text) - len(text.lstrip())
+        end_pos += leading_whitespace
+
+        return {"lines": table_lines, "end_pos": end_pos}
+
+    def _extract_table_body_rows(self, table_lines: list[str]) -> list[str]:
+        """테이블에서 헤더와 구분선을 제외한 본문 행만 추출한다."""
+        separator_re = re.compile(r"^\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?$")
+        body_rows = []
+        found_separator = False
+        for line in table_lines:
+            if separator_re.match(line):
+                found_separator = True
+                continue
+            if found_separator:
+                body_rows.append(line)
+            # separator 이전의 줄은 헤더이므로 skip
+
+        # separator가 없으면 (불완전한 테이블 continuation), 모든 행이 body
+        if not found_separator:
+            # 첫 행이 빈 셀이면 skip (빈 헤더)
+            for line in table_lines:
+                cells = [c.strip() for c in line.strip("|").split("|")]
+                if any(c for c in cells):  # 내용이 있는 행만
+                    body_rows.append(line)
+
+        return body_rows
 
     # ------------------------------------------------------------------
     # 마크다운 내보내기

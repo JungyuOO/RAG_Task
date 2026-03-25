@@ -27,7 +27,7 @@ def build_container(settings: Settings | None = None) -> AppContainer:
     """Settings를 주입받아 파이프라인과 태스크 서비스를 초기화하고 컨테이너를 반환한다."""
     resolved_settings = settings or get_settings()
     pipeline = RagPipeline(resolved_settings)
-    task_repository = TaskRepository(resolved_settings.rag_index_dir / "task_store.sqlite3")
+    task_repository = TaskRepository(resolved_settings.db_dsn)
     task_service = TaskService(task_repository)
     return AppContainer(
         settings=resolved_settings,

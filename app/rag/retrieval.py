@@ -100,7 +100,22 @@ class HybridRetriever:
             )
 
         scored.sort(key=lambda entry: entry["score"], reverse=True)
-        reranked = self._rerank(query_tokens, scored[: self.candidate_pool_size])
+
+        # 1차 후보 풀에서도 소스 다양성 보장: 각 소스(파일)에서 best-scored 청크 1개를 먼저
+        # 확보한 뒤 나머지 슬롯을 점수 순으로 채운다.
+        # HashingEmbedder처럼 토큰 겹침 기반 dense 점수를 쓸 때 한 문서가 pool을 독점해서
+        # 다른 문서의 청크가 rerank 단계에 아예 진입하지 못하는 문제를 방지한다.
+        source_best_scored: dict[str, dict] = {}
+        for entry in scored:
+            src = entry["chunk"]["source_path"]
+            if src not in source_best_scored:
+                source_best_scored[src] = entry
+        diversity_pool = list(source_best_scored.values())
+        diversity_ids = {id(e) for e in diversity_pool}
+        fill_pool = [e for e in scored if id(e) not in diversity_ids]
+        candidate_pool = (diversity_pool + fill_pool)[: self.candidate_pool_size]
+
+        reranked = self._rerank(query_tokens, candidate_pool)
         return reranked[: self.top_k]
 
     def _bm25(

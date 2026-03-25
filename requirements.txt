@@ -4,4 +4,5 @@ numpy==2.3.4
 pydantic-settings==2.13.1
 pymupdf==1.27.2
 python-multipart==0.0.22
+psycopg2-binary==2.9.10
 uvicorn==0.42.0

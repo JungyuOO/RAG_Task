@@ -23,8 +23,8 @@ class Settings(BaseSettings):
     llm_timeout_cooldown_seconds: float = 8.0
     llm_failure_cooldown_seconds: float = 45.0
     llm_prompt_recent_turns: int = 4
-    llm_prompt_context_items: int = 3
-    llm_prompt_context_char_limit: int = 2200
+    llm_prompt_context_items: int = 5
+    llm_prompt_context_char_limit: int = 4000
 
     rag_data_dir: Path = Path("./data")
     rag_source_dir: Path = Path("./data/corpus/pdfs")
@@ -41,8 +41,8 @@ class Settings(BaseSettings):
     vector_dim: int = 768
     retrieval_top_k: int = 6
     candidate_pool_size: int = 14
-    grounded_page_top_n: int = 3
-    grounded_chunk_top_n: int = 4
+    grounded_page_top_n: int = 4
+    grounded_chunk_top_n: int = 6
     memory_window_turns: int = 6
     # 검색 최소 점수 임계값.
     # 코퍼스 대비 실측: 관련 청크 rerank_score 평균 0.25~0.45,
@@ -80,9 +80,21 @@ class Settings(BaseSettings):
     rerank_title_bonus_weight: float = 0.07
     rerank_compact_bonus_weight: float = 0.12
 
+    # PostgreSQL 설정
+    db_host: str = "localhost"
+    db_port: int = 5432
+    db_name: str = "rag_db"
+    db_user: str = "rag_user"
+    db_password: str = "rag_password"
+
     # 캐시 설정
     cache_max_entries: int = 500
     cache_ttl_hours: int = 72
+
+    @property
+    def db_dsn(self) -> str:
+        """PostgreSQL 연결 문자열을 반환한다."""
+        return f"host={self.db_host} port={self.db_port} dbname={self.db_name} user={self.db_user} password={self.db_password}"
 
     @field_validator(
         "llm_connect_timeout_seconds", "llm_read_timeout_seconds",

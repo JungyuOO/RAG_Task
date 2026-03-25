@@ -55,6 +55,45 @@ class IndexingService:
             "skipped_files": len(skipped),
         }
 
+    def index_single_file(self, source_path: Path, progress_callback=None) -> dict:
+        """단일 파일을 인제스트·청킹·임베딩하여 인덱스에 upsert한다."""
+        documents, skipped = self.ingestor.ingest_paths([source_path], progress_callback=progress_callback)
+        if not documents:
+            return {"indexed_chunks": 0, "indexed_pages": 0, "skipped": True}
+
+        markdown_text = self.load_extracted_markdown(source_path)
+        strategy = self.select_chunking_strategy(markdown_text, documents)
+        chunker = self.structured_chunker if strategy == "structured_markdown" else self.chunker
+        chunks = chunker.split(documents, markdown_text=markdown_text)
+
+        loaders = [doc.metadata.get("loader") for doc in documents if doc.metadata.get("loader")]
+        representative_loader = loaders[0] if loaders else None
+        for chunk in chunks:
+            chunk.metadata["chunking_strategy"] = strategy
+            if representative_loader and "loader" not in chunk.metadata:
+                chunk.metadata["loader"] = representative_loader
+
+        total_chunks = len(chunks)
+        vectors: list[list[float]] = []
+        for i, chunk in enumerate(chunks):
+            cache_key = stable_hash(chunk.text)
+            cached = self.embedding_cache_repository.get(cache_key)
+            if cached is None:
+                vector = self.embedder.encode(chunk.text)
+                self.embedding_cache_repository.set(cache_key, {"vector": vector})
+            else:
+                vector = cached["vector"]
+            vectors.append(vector)
+            if progress_callback and total_chunks > 0:
+                progress_callback("embed", i + 1, total_chunks)
+
+        self.index_repository.upsert_document(str(source_path), chunks, vectors)
+        return {
+            "indexed_chunks": len(chunks),
+            "indexed_pages": len(documents),
+            "skipped": False,
+        }
+
     def chunk_documents(self, documents: list) -> list:
         documents_by_path: dict[str, list] = defaultdict(list)
         for document in documents:
@@ -66,8 +105,12 @@ class IndexingService:
             strategy = self.select_chunking_strategy(markdown_text, source_documents)
             chunker = self.structured_chunker if strategy == "structured_markdown" else self.chunker
             source_chunks = chunker.split(source_documents, markdown_text=markdown_text)
+            loaders = [doc.metadata.get("loader") for doc in source_documents if doc.metadata.get("loader")]
+            representative_loader = loaders[0] if loaders else None
             for chunk in source_chunks:
                 chunk.metadata["chunking_strategy"] = strategy
+                if representative_loader and "loader" not in chunk.metadata:
+                    chunk.metadata["loader"] = representative_loader
             chunks.extend(source_chunks)
         return chunks
 
