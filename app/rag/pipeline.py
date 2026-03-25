@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -33,16 +34,16 @@ class RagPipeline:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.ingestor = DocumentIngestor(settings)
-        self.chunker = TextChunker(settings.chunk_size, settings.chunk_overlap)
+        self.chunker = TextChunker(chunk_size=settings.chunk_size, overlap=settings.chunk_overlap)
         self.structured_chunker = StructuredMarkdownChunker(
-            settings.structured_chunk_size,
-            settings.structured_chunk_overlap,
+            chunk_size=settings.structured_chunk_size,
+            overlap=settings.structured_chunk_overlap,
         )
         if settings.embedding_model == "e5":
             self.embedder = E5Embedder()
             settings.vector_dim = self.embedder.dim
         else:
-            self.embedder = HashingEmbedder(settings.vector_dim)
+            self.embedder = HashingEmbedder(dim=settings.vector_dim)
         self.index = VectorIndex(settings.db_dsn)
         # 임베딩 모델에 따른 검색 가중치 선택
         if settings.embedding_model == "e5":
@@ -119,9 +120,8 @@ class RagPipeline:
         if not entities and not sources:
             return query
 
-        import re as _re
         # 원본 쿼리에서 대문자 약어(2자 이상)를 직접 탐지 — tokenize()는 lower()를 적용하므로 사용 불가
-        _uppercase_re = _re.compile(r"[A-Z]{2,}")
+        _uppercase_re = re.compile(r"[A-Z]{2,}")
         has_explicit_keyword = bool(_uppercase_re.search(query))
 
         query_lower = query.lower()
@@ -485,23 +485,19 @@ class RagPipeline:
         )
 
         # --- QueryAgent: 검색 쿼리 최적화 및 대안 쿼리 생성 ---
-        available_sources = [
-            item["chunk"]["source_path"]
-            for item in self.index_repository.load()[:1]
-        ]
+        index_items_all = self.index_repository.load()
         # 전체 소스 목록은 인덱스에서 유니크하게 추출
         all_sources: list[str] = []
         seen_sources: set[str] = set()
-        for item in self.index_repository.load():
+        for item in index_items_all:
             src = item["chunk"]["source_path"]
             if src not in seen_sources:
                 seen_sources.add(src)
                 all_sources.append(src)
-        self.query_agent.available_sources = all_sources
-
         query_result = await self.query_agent.refine_query(
             rewritten_query,
             context={"active_topic": topic_state.get("active_topic"), "selected_sources": topic_state.get("selected_sources", [])},
+            available_sources=all_sources,
         )
         refined_query = query_result["refined_query"]
         alternative_queries = query_result.get("alternative_queries", [])
@@ -512,7 +508,7 @@ class RagPipeline:
 
         expanded_query = self._expand_query_with_context(refined_query, topic_state)
         query_vector = self.embedder.encode(expanded_query)
-        index_items = self._filter_index_items(self.index_repository.load(), allowed_source_paths)
+        index_items = self._filter_index_items(index_items_all, allowed_source_paths)
         retrieved = self.retriever.search(expanded_query, query_vector, index_items)
 
         # 대안 쿼리로 추가 검색하여 더 나은 결과가 있으면 병합

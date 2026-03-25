@@ -14,7 +14,7 @@ class HashingEmbedder:
     결정론적이며 외부 임베딩 서비스를 사용하지 않는다.
     """
 
-    def __init__(self, dim: int = 768) -> None:
+    def __init__(self, *, dim: int) -> None:
         self.dim = dim
 
     def encode(self, text: str) -> list[float]:

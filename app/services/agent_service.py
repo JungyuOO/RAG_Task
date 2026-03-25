@@ -17,11 +17,10 @@ class QueryAgent:
     - 검색 의도가 불명확하면 여러 후보 쿼리 생성
     """
 
-    def __init__(self, llm: LlmClient, available_sources: list[str] | None = None) -> None:
+    def __init__(self, llm: LlmClient) -> None:
         self.llm = llm
-        self.available_sources = available_sources or []
 
-    async def refine_query(self, user_message: str, context: dict | None = None) -> dict:
+    async def refine_query(self, user_message: str, context: dict | None = None, available_sources: list[str] | None = None) -> dict:
         """사용자 메시지를 분석하여 검색용 쿼리와 메타데이터를 반환한다.
 
         Returns:
@@ -31,7 +30,7 @@ class QueryAgent:
                 "search_keywords": list,    # 핵심 검색 키워드
             }
         """
-        source_names = [Path(s).stem for s in self.available_sources[:10]]
+        source_names = [Path(s).stem for s in (available_sources or [])[:10]]
         source_hint = ", ".join(source_names) if source_names else "없음"
 
         context_parts: list[str] = []
