@@ -34,7 +34,7 @@ class RagPipeline:
             settings.structured_chunk_overlap,
         )
         self.embedder = HashingEmbedder(settings.vector_dim)
-        self.index = VectorIndex(settings.rag_index_dir)
+        self.index = VectorIndex(settings.db_dsn)
         self.retriever = HybridRetriever(
             top_k=settings.retrieval_top_k,
             candidate_pool_size=settings.candidate_pool_size,
@@ -60,7 +60,7 @@ class RagPipeline:
             ttl_hours=settings.cache_ttl_hours,
         )
         self.session_store = SessionStore(
-            db_path=settings.rag_index_dir / "session_store.sqlite3",
+            dsn=settings.db_dsn,
             memory_window_turns=settings.memory_window_turns,
         )
         self.llm = LlmClient(settings)
@@ -81,6 +81,52 @@ class RagPipeline:
         self.retrieval_service = RetrievalService(settings)
         self.answer_service = AnswerService(self.retrieval_service)
         self.turn_policy_service = TurnPolicyService()
+
+    def _expand_query_with_context(self, query: str, topic_state: dict) -> str:
+        """세션 토픽 상태의 엔티티와 출처를 쿼리에 주입하여 키워드 매칭을 보강한다.
+
+        대명사("그거", "이거")나 생략된 주어가 있는 후속 질문에서,
+        active_entities의 핵심 용어를 쿼리 앞에 추가하여
+        HashingEmbedder의 키워드 기반 검색 정확도를 높인다.
+        이미 쿼리에 포함된 토큰은 중복 추가하지 않는다.
+        쿼리에 이미 명확한 기술 용어(대문자 약어 등)가 있으면 확장을 최소화한다.
+        """
+        if not topic_state:
+            return query
+
+        entities = topic_state.get("active_entities", [])
+        sources = topic_state.get("selected_sources", [])
+        if not entities and not sources:
+            return query
+
+        import re as _re
+        # 원본 쿼리에서 대문자 약어(2자 이상)를 직접 탐지 — tokenize()는 lower()를 적용하므로 사용 불가
+        _uppercase_re = _re.compile(r"[A-Z]{2,}")
+        has_explicit_keyword = bool(_uppercase_re.search(query))
+
+        query_lower = query.lower()
+        expansion_tokens: list[str] = []
+
+        if not has_explicit_keyword:
+            # 출처 파일명에서 확장자 제거 후 핵심 키워드 추출
+            for source in sources[:2]:
+                stem = Path(source).stem
+                if stem.lower() not in query_lower:
+                    expansion_tokens.append(stem)
+
+            # 엔티티 중 쿼리에 없는 것만 추가 (최대 3개)
+            added = 0
+            for entity in entities:
+                if added >= 3:
+                    break
+                if entity.lower() not in query_lower and len(entity) >= 2:
+                    expansion_tokens.append(entity)
+                    added += 1
+
+        if not expansion_tokens:
+            return query
+
+        return " ".join(expansion_tokens) + " " + query
 
     def _build_llm_failure_fallback(
         self,
@@ -178,6 +224,9 @@ class RagPipeline:
 
     def rebuild_index(self, source_paths: list[Path]) -> dict:
         return self.indexing_service.rebuild_index(source_paths)
+
+    def index_single_file(self, source_path: Path, progress_callback=None) -> dict:
+        return self.indexing_service.index_single_file(source_path, progress_callback=progress_callback)
 
     def _chunk_documents(self, documents: list) -> list:
         return self.indexing_service.chunk_documents(documents)
@@ -414,9 +463,10 @@ class RagPipeline:
             if policy.use_memory_rewrite
             else user_message.strip()
         )
-        query_vector = self.embedder.encode(rewritten_query)
+        expanded_query = self._expand_query_with_context(rewritten_query, topic_state)
+        query_vector = self.embedder.encode(expanded_query)
         index_items = self._filter_index_items(self.index_repository.load(), allowed_source_paths)
-        retrieved = self.retriever.search(rewritten_query, query_vector, index_items)
+        retrieved = self.retriever.search(expanded_query, query_vector, index_items)
         retrieval_metrics = self.retriever.compute_retrieval_metrics(
             retrieved, min_score=self.settings.retrieval_min_score,
         )
@@ -466,6 +516,26 @@ class RagPipeline:
 
     def delete_library_document(self, source_path: Path) -> dict:
         return self.indexing_service.delete_library_document(source_path)
+
+    def _interleave_context_items_by_source(self, items: list[dict]) -> list[dict]:
+        """소스별로 청크를 인터리브하여 char_limit 내에서 다양한 소스가 앞 순서에 오도록 한다.
+
+        [RBAC1, RBAC2, SCC1] → [RBAC1, SCC1, RBAC2]
+        RBAC가 char_limit을 독점해서 SCC 내용이 잘리는 문제를 방지한다.
+        """
+        source_groups: dict[str, list[dict]] = {}
+        for item in items:
+            src = item["chunk"]["source_path"]
+            source_groups.setdefault(src, []).append(item)
+        interleaved: list[dict] = []
+        max_len = max((len(v) for v in source_groups.values()), default=0)
+        sources = list(source_groups.keys())
+        for i in range(max_len):
+            for src in sources:
+                group = source_groups[src]
+                if i < len(group):
+                    interleaved.append(group[i])
+        return interleaved
 
     def _build_context_blocks(self, context_items: list[dict]) -> tuple[list[str], list[str]]:
         """검색된 문맥 아이템에서 LLM 프롬프트용 텍스트 블록과 청크 ID 목록을 생성한다."""
@@ -602,7 +672,8 @@ class RagPipeline:
             allow_citations=use_retrieved_context,
         )
         code_example_request = self._is_code_example_request(user_message)
-        context_blocks, context_ids = self._build_context_blocks(selected_context_items)
+        interleaved_context_items = self._interleave_context_items_by_source(selected_context_items)
+        context_blocks, context_ids = self._build_context_blocks(interleaved_context_items)
 
         memory_snapshot = self.session_repository.memory_snapshot(session_id)
         cache_key = stable_hash(
