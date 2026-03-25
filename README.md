@@ -12,7 +12,7 @@ PDF 문서 기반 지식베이스를 구축하고, 멀티턴 대화를 지원하
 | Database | PostgreSQL |
 | PDF 파싱 | PyMuPDF (fitz) |
 | 임베딩 | HashingEmbedder (자체 구현) / multilingual-e5-small (선택) |
-| LLM 통신 | httpx (OpenAI-compatible API) |
+| LLM 통신 | httpx (사내 LLM 엔드포인트 — Qwen3.5-9B) |
 | 스트리밍 | Server-Sent Events (SSE) |
 
 ## 프로젝트 구조
@@ -164,6 +164,21 @@ PostgreSQL  LLM API   File Cache  Extracted MD
 | Dense (코사인 유사도) | 0.45 | 0.30 | 임베딩 벡터 기반 의미 검색 |
 | Sparse (BM25) | 0.25 | 0.35 | Okapi BM25 키워드 검색 (한국어 조사 스트리핑 적용) |
 | Title Match | 0.15 | 0.20 | 문서 제목 매칭 보너스 |
+
+> **가중치가 다른 이유:** HashingEmbedder는 바이그램+위치 가중 해싱으로 토큰 순서를 일부 반영하므로 Dense 비중을 높게 설정(0.45)합니다.
+> 반면 E5는 사전학습된 의미 임베딩이라 Dense 자체가 강력하지만, 한국어 기술 문서에서 정확한 용어 매칭이 중요하므로 Sparse(BM25)와 Title 비중을 상대적으로 높여(0.35, 0.20) Dense의 과신을 보정합니다.
+
+**검색 파라미터:**
+
+| 파라미터 | 값 | 설명 |
+|----------|-----|------|
+| `retrieval_top_k` | 3 | 최종 반환 청크 수 |
+| `candidate_pool_size` | 8 | 리랭킹 전 1차 후보 수 |
+| `retrieval_min_score` | 0.12 | 최소 점수 임계값 (미달 시 컨텍스트 제외) |
+| `bm25_k1` | 1.2 | BM25 TF 포화 계수 |
+| `bm25_b` | 0.75 | BM25 문서 길이 정규화 계수 |
+| `chunk_size` | 700 / 1000 | 청크 크기 (TextChunker / StructuredMarkdownChunker) |
+| `chunk_overlap` | 120 / 150 | 청크 오버랩 |
 
 1차 검색 후 2차 리랭킹을 수행합니다:
 - 키워드 오버랩 점수 (0.17)
