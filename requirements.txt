@@ -3,6 +3,7 @@ httpx==0.28.1
 numpy==2.3.4
 pydantic-settings==2.13.1
 pymupdf==1.27.2
+python-dotenv==1.1.1
 python-multipart==0.0.22
 psycopg2-binary==2.9.10
 sentence-transformers==3.4.1
