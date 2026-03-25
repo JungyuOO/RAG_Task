@@ -144,14 +144,27 @@ class StructuredMarkdownChunker:
                     order += 1
                 continue
 
-            if current_blocks and (
-                block.page_start != current_blocks[-1].page_end
-                or self._should_force_boundary(current_blocks, block)
-            ):
-                chunks.append(self._build_chunk(doc_id, documents[0].source_path, current_blocks, order))
-                order += 1
-                current_blocks = []
-                current_length = 0
+            if current_blocks and self._should_force_boundary(current_blocks, block):
+                # heading 하나만 있는 청크는 플러시하지 않고 다음 블록과 합침.
+                # 단독 heading 청크가 되면 내용 없이 제목만 retrieval되어 LLM이
+                # "관련 내용 없음"으로 오답할 수 있음.
+                is_lone_heading = (
+                    len(current_blocks) == 1 and current_blocks[0].kind == "heading"
+                )
+                if not is_lone_heading:
+                    chunks.append(self._build_chunk(doc_id, documents[0].source_path, current_blocks, order))
+                    order += 1
+                    # 다음 블록이 새 heading이 아닐 경우, 직전 섹션 heading을 이월하여
+                    # 청크마다 소속 섹션 제목이 포함되도록 함.
+                    if block.kind != "heading":
+                        last_heading = next(
+                            (b for b in reversed(current_blocks) if b.kind == "heading"), None
+                        )
+                        current_blocks = [last_heading] if last_heading else []
+                        current_length = len(last_heading.text) if last_heading else 0
+                    else:
+                        current_blocks = []
+                        current_length = 0
 
             # +2는 블록 간 "\n\n" 구분자 길이. 빈 상태에서는 구분자 불필요.
             projected = current_length + len(block.text) + (2 if current_blocks else 0)
@@ -171,17 +184,36 @@ class StructuredMarkdownChunker:
         return chunks
 
     def _should_force_boundary(self, current_blocks: list[MarkdownBlock], next_block: MarkdownBlock) -> bool:
+        """현재 블록 그룹과 다음 블록 사이에서 청크 경계를 강제할지 결정한다.
+
+        페이지 경계에서도 같은 섹션(동일 블록 유형 흐름) 내이면 분리하지 않는다.
+        헤딩 전환이나 구조적 유형 변경에서만 강제 분리한다.
+        """
         if not current_blocks:
             return False
 
         current_kinds = {block.kind for block in current_blocks}
         structured_kinds = {"heading", "list", "table", "code"}
+
+        # 새 헤딩은 항상 새 청크 시작
         if next_block.kind == "heading":
             return True
+
+        # 짧은 도입 문단(≤150자) 직후의 표는 분리하지 않는다.
+        if next_block.kind == "table" and current_blocks[-1].kind == "paragraph":
+            if len(current_blocks[-1].text) <= 150:
+                return False
+
+        # 같은 블록 유형이 이어지면 페이지가 달라도 분리하지 않는다.
+        if next_block.kind == current_blocks[-1].kind:
+            return False
+
+        # 구조적 블록 유형이 변경되면 분리
         if next_block.kind in structured_kinds and current_kinds - {next_block.kind}:
             return True
         if next_block.kind == "paragraph" and current_kinds & structured_kinds:
             return True
+
         return False
 
     def _blocks_from_markdown(self, markdown_text: str) -> list[MarkdownBlock]:
