@@ -47,7 +47,7 @@ class TextChunker:
     청크 크기와 중복 구간을 조절한다.
     """
 
-    def __init__(self, chunk_size: int = 700, overlap: int = 120) -> None:
+    def __init__(self, *, chunk_size: int, overlap: int) -> None:
         self.chunk_size = chunk_size
         self.overlap = overlap
 
@@ -102,7 +102,7 @@ class StructuredMarkdownChunker:
     긴 블록은 슬라이딩 윈도우로 분할한다. 페이지 번호는 메타데이터로만 추적한다.
     """
 
-    def __init__(self, chunk_size: int = 1000, overlap: int = 150, max_block_chars: int = 1400) -> None:
+    def __init__(self, *, chunk_size: int, overlap: int, max_block_chars: int = 1400) -> None:
         self.chunk_size = chunk_size
         self.overlap = overlap
         self.max_block_chars = max_block_chars
