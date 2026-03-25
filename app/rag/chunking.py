@@ -97,8 +97,9 @@ class TextChunker:
 class StructuredMarkdownChunker:
     """마크다운 블록 구조(heading/list/table/code)를 인식하여 의미 단위로 청킹한다.
 
-    페이지 경계와 블록 유형 전환에서 청크를 분리하여 구조적 일관성을 유지하며,
-    긴 블록은 슬라이딩 윈도우로 분할한다.
+    페이지 경계를 무시하고 문서 전체를 하나의 연속 텍스트로 처리한다.
+    헤딩 전환이나 블록 유형 변경에서만 청크를 분리하여 구조적 일관성을 유지하며,
+    긴 블록은 슬라이딩 윈도우로 분할한다. 페이지 번호는 메타데이터로만 추적한다.
     """
 
     def __init__(self, chunk_size: int = 1000, overlap: int = 150, max_block_chars: int = 1400) -> None:
@@ -217,6 +218,10 @@ class StructuredMarkdownChunker:
         return False
 
     def _blocks_from_markdown(self, markdown_text: str) -> list[MarkdownBlock]:
+        """마크다운에서 페이지 경계를 제거하고 전체 문서를 하나의 연속 텍스트로 파싱한다.
+
+        페이지 번호는 각 블록의 메타데이터(page_start/page_end)로만 추적한다.
+        """
         text = _normalize_markdown_text(markdown_text)
         if not text:
             return []
@@ -225,20 +230,90 @@ class StructuredMarkdownChunker:
         if len(sections) <= 1:
             return []
 
-        blocks: list[MarkdownBlock] = []
+        # 1단계: 페이지별 콘텐츠를 추출하면서 각 줄에 페이지 번호를 매핑
+        annotated_lines: list[tuple[str, int]] = []  # (line_text, page_number)
         for index in range(1, len(sections), 2):
             page_number = int(sections[index])
             body = sections[index + 1]
             if body.startswith("\n"):
                 body = body[1:]
             body = body.split("\n---", 1)[0]
-            lines = [line.rstrip() for line in body.splitlines()]
-            content_lines = [line for line in lines if not line.startswith("- loader:") and not line.startswith("- chars:")]
-            body_text = "\n".join(content_lines).strip()
-            if not body_text:
+            for line in body.splitlines():
+                stripped = line.rstrip()
+                # 메타데이터 줄 제거
+                if stripped.startswith("- loader:") or stripped.startswith("- chars:"):
+                    continue
+                annotated_lines.append((stripped, page_number))
+
+        if not annotated_lines:
+            return []
+
+        # 2단계: 전체 문서를 하나의 텍스트로 합치고, 섹션 단위로 파싱
+        full_text = "\n".join(line for line, _ in annotated_lines).strip()
+        if not full_text:
+            return []
+
+        # 3단계: 블록 파싱 (페이지 번호 없이 전체 텍스트 기준)
+        raw_blocks = self._parse_markdown_blocks(full_text, page_number=0)
+
+        # 4단계: 각 블록의 텍스트 위치를 기반으로 실제 페이지 범위를 역산
+        self._assign_page_numbers(raw_blocks, annotated_lines)
+
+        return raw_blocks
+
+    def _assign_page_numbers(
+        self,
+        blocks: list[MarkdownBlock],
+        annotated_lines: list[tuple[str, int]],
+    ) -> None:
+        """블록 텍스트의 첫/마지막 줄이 어느 페이지에 속하는지 역추적하여 할당한다."""
+        content_lines = [(line.strip(), page) for line, page in annotated_lines if line.strip()]
+
+        search_start = 0
+        last_known_page = content_lines[0][1] if content_lines else 1
+
+        for block in blocks:
+            block_lines = [ln.strip() for ln in block.text.strip().splitlines() if ln.strip()]
+            if not block_lines:
+                block.page_start = last_known_page
+                block.page_end = last_known_page
                 continue
-            blocks.extend(self._parse_markdown_blocks(body_text, page_number))
-        return blocks
+
+            # 블록의 각 줄에서 의미 있는 검색 키 추출 (마크다운 구문 제거)
+            first_key = self._line_match_key(block_lines[0])
+            last_key = self._line_match_key(block_lines[-1])
+
+            page_start = last_known_page
+            page_end = last_known_page
+            found_start = False
+
+            for i in range(search_start, len(content_lines)):
+                line_text, page = content_lines[i]
+                if not found_start and first_key and first_key in line_text:
+                    page_start = page
+                    search_start = i
+                    found_start = True
+                if found_start and last_key and last_key in line_text:
+                    page_end = page
+                    break
+
+            # fallback: 시작을 못 찾았으면 직전 블록의 마지막 페이지 사용
+            if not found_start:
+                page_start = last_known_page
+                page_end = last_known_page
+
+            block.page_start = page_start
+            block.page_end = page_end
+            last_known_page = page_end
+
+    @staticmethod
+    def _line_match_key(line: str) -> str:
+        """매칭에 사용할 핵심 텍스트를 추출한다. 마크다운 구문(```, #)을 제거."""
+        cleaned = line.strip().lstrip("#").strip()
+        if cleaned.startswith("```"):
+            return ""  # 펜스 라인은 매칭 불가
+        # 너무 짧은 키는 오매칭 방지를 위해 비활성
+        return cleaned if len(cleaned) >= 4 else ""
 
     def _parse_markdown_blocks(self, body_text: str, page_number: int) -> list[MarkdownBlock]:
         blocks: list[MarkdownBlock] = []
