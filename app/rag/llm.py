@@ -35,7 +35,7 @@ class LlmClient:
         payload = {
             "model": self.settings.cllm_model,
             "messages": messages,
-            "temperature": 0.2,
+            "temperature": 0.1,
             "stream": True,
         }
 
@@ -80,7 +80,31 @@ class LlmClient:
             self._disabled_until = time.monotonic() + max(self.settings.llm_failure_cooldown_seconds, 0.0)
             raise
 
-    async def generate(self, messages: list[dict], max_tokens: int = 256) -> str:
+    @staticmethod
+    def _extract_from_reasoning(reasoning: str) -> str:
+        """Qwen3.5 reasoning 필드에서 최종 답변 형식을 추출한다.
+
+        reasoning에 '검색쿼리:', '판정:' 등 구조화된 응답이 포함되어 있으면
+        해당 부분을 추출하여 반환한다.
+        """
+        import re
+        markers = ("검색쿼리:", "판정:", "대안1:", "키워드:", "확신도:", "재질문:")
+        lines = reasoning.strip().splitlines()
+        result_lines: list[str] = []
+        capturing = False
+        for line in lines:
+            stripped = line.strip()
+            if any(stripped.startswith(m) for m in markers):
+                capturing = True
+            if capturing:
+                result_lines.append(stripped)
+        if result_lines:
+            return "\n".join(result_lines)
+        # 마지막 문단을 fallback으로 반환
+        paragraphs = re.split(r"\n{2,}", reasoning.strip())
+        return paragraphs[-1].strip() if paragraphs else ""
+
+    async def generate(self, messages: list[dict], max_tokens: int = 512) -> str:
         """비스트리밍 LLM 호출. 질의 재작성 등 짧은 생성 작업에 사용한다."""
         now = time.monotonic()
         if now < self._disabled_until:
@@ -98,6 +122,7 @@ class LlmClient:
             "temperature": 0.0,
             "max_tokens": max_tokens,
             "stream": False,
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
         }
         try:
             async with asyncio.timeout(self.settings.llm_total_timeout_seconds):
@@ -111,7 +136,12 @@ class LlmClient:
                     data = response.json()
                     self._disabled_until = 0.0
                     self._last_error = ""
-                    return data["choices"][0]["message"]["content"].strip()
+                    message = data["choices"][0]["message"]
+                    content = message.get("content") or ""
+                    # Qwen3.5: content가 비어있으면 reasoning 필드에서 답변 추출 시도
+                    if not content.strip() and message.get("reasoning"):
+                        content = self._extract_from_reasoning(message["reasoning"])
+                    return content.strip()
         except TimeoutError as exc:
             self._last_error = str(exc) or "LLM timeout on generate."
             self._disabled_until = time.monotonic() + max(self.settings.llm_timeout_cooldown_seconds, 0.0)
