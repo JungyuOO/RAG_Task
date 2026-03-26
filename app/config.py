@@ -55,10 +55,13 @@ class Settings(BaseSettings):
     grounded_chunk_top_n: int = 3
     memory_window_turns: int = 6
     # 검색 최소 점수 임계값.
+    # 이 점수 미만이면 검색 결과를 사용하지 않고, 자료보기도 표시하지 않는다.
     # 코퍼스 대비 실측: 관련 청크 rerank_score 평균 0.25~0.45,
-    # 비관련 청크 0.03~0.10 범위. 0.12는 비관련 청크를 걸러내면서
-    # 부분 매칭(제목만 일치 등)도 허용하는 보수적 하한선.
-    retrieval_min_score: float = 0.12
+    # 비관련 청크 0.03~0.10 범위.
+    retrieval_min_score: float = 0.25
+    # 재질문 유도 최소 점수 — 이 점수 이상 retrieval_min_score 미만이면
+    # "못 찾았다" 대신 구체적 재질문을 유도한다. 이 점수 미만이면 완전 실패.
+    retrieval_retry_min_score: float = 0.10
 
     # 하이브리드 검색 가중치.
     # dense(의미 유사도) 0.45 + sparse(키워드 정확도) 0.25 + title(문서 매칭) 0.15 = 0.85.
