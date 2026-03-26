@@ -402,26 +402,29 @@ class TurnPolicyService:
         return bool(informative_parts)
 
     def _extract_scope_candidates(self, recent_turns: list[ChatTurn], topic_state: dict) -> list[str]:
+        """최근 대화에서 경쟁하는 토픽 후보를 동적으로 추출한다.
+
+        하드코딩된 도메인 키워드 대신, 세션 토픽 상태의 recent_user_topics와
+        최근 어시스턴트 답변의 엔티티(대문자 약어, 한글 명사 등)를 후보로 사용한다.
+        """
         candidates: list[str] = []
-        marker_groups = {
-            "pv_pvc": ("pv/pvc", "persistentvolumeclaim", "persistentvolume", "pvc", "pv"),
-            "storageclass": ("storageclass",),
-            "deployment": ("deployment",),
-            "hostpath": ("hostpath",),
-            "nfs": ("nfs",),
-            "csi": ("csi",),
-        }
 
-        recent_assistant = next((turn for turn in reversed(recent_turns) if turn.role == "assistant"), None)
-        search_space = []
+        # recent_user_topics에서 후보 추출
+        for item in topic_state.get("recent_user_topics", []):
+            normalized = self._normalize(str(item))
+            if normalized and normalized not in candidates:
+                candidates.append(normalized)
+
+        # 최근 어시스턴트 답변에서 대문자 약어 추출 (PV, PVC, RBAC 등)
+        recent_assistant = next(
+            (turn for turn in reversed(recent_turns) if turn.role == "assistant"), None,
+        )
         if recent_assistant:
-            search_space.append(self._normalize(recent_assistant.content))
-        search_space.extend(self._normalize(str(item)) for item in topic_state.get("recent_user_topics", []))
+            for token in recent_assistant.content.split():
+                cleaned = token.strip(".,;:()[]{}!?\"'")
+                if len(cleaned) >= 2 and cleaned.isupper() and cleaned.isalpha():
+                    lowered = cleaned.lower()
+                    if lowered not in candidates:
+                        candidates.append(lowered)
 
-        for text in search_space:
-            for scope_name, markers in marker_groups.items():
-                if scope_name in candidates:
-                    continue
-                if any(marker in text for marker in markers):
-                    candidates.append(scope_name)
         return candidates
