@@ -393,8 +393,33 @@ class SessionStore:
             )
         return sessions
 
+    def _recent_turns_for_refresh(self, session_id: str, limit: int = 10) -> list[ChatTurn]:
+        with self._connection() as connection:
+            with connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT role, content, metadata FROM (
+                        SELECT role, content, metadata, turn_id
+                        FROM session_turns
+                        WHERE session_id = %s
+                        ORDER BY turn_id DESC
+                        LIMIT %s
+                    ) sub ORDER BY turn_id ASC
+                    """,
+                    (session_id, limit),
+                )
+                rows = cursor.fetchall()
+        return [
+            ChatTurn(
+                role=row["role"],
+                content=row["content"],
+                metadata=json.loads(row["metadata"] or "{}"),
+            )
+            for row in rows
+        ]
+
     def _refresh_summary(self, session_id: str) -> None:
-        turns = self.all_turns(session_id)
+        turns = self._recent_turns_for_refresh(session_id, limit=10)
         summary_json = self._build_structured_summary(turns)
         topic_state = self._build_topic_state(turns)
         summary = self._stringify_summary(summary_json, topic_state)
