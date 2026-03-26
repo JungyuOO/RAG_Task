@@ -166,7 +166,7 @@ class JudgeAgent:
                 max_tokens=300,
             )
             logger.info("[JudgeAgent] LLM 응답: %r", response[:200])
-            return self._parse_judge_response(response)
+            return self._parse_judge_response(response, top_score=top_score)
         except Exception as exc:
             logger.warning("[JudgeAgent] LLM 호출 실패: %s", exc)
             # LLM 실패 시 점수 기반 fallback
@@ -178,24 +178,44 @@ class JudgeAgent:
                 "clarification_message": "질문을 좀 더 구체적으로 해주시겠어요? 어떤 문서의 어떤 내용이 궁금하신지 알려주시면 더 정확한 답변을 드릴 수 있습니다.",
             }
 
-    def _parse_judge_response(self, response: str) -> dict:
+    _RELEVANT_KEYWORDS = {"적합", "suitable", "relevant", "yes"}
+    _IRRELEVANT_KEYWORDS = {"부적합", "unsuitable", "irrelevant", "no"}
+
+    def _parse_judge_response(self, response: str, top_score: float = 0.0) -> dict:
         relevant = True
         confidence = "medium"
         clarification = ""
+        found_verdict = False
 
         for line in response.strip().splitlines():
             line = line.strip()
             if line.startswith("판정:"):
-                value = line[len("판정:"):].strip()
-                relevant = "적합" in value and "부적합" not in value
+                value = line[len("판정:"):].strip().lower()
+                # bracket placeholder("[suitable/unsuitable]" 등)는 실제 판정이 아니므로 무시
+                if value.startswith("[") and value.endswith("]"):
+                    continue
+                found_verdict = True
+                # 부적합 키워드 체크 시 "적합"만 단독 포함된 경우를 잘못 잡지 않도록
+                # "부적합"을 먼저 제거한 뒤 "적합"을 확인
+                if any(kw in value for kw in self._IRRELEVANT_KEYWORDS):
+                    relevant = False
+                elif any(kw in value for kw in self._RELEVANT_KEYWORDS):
+                    relevant = True
+                else:
+                    # 파싱 불가 시 점수 기반 fallback
+                    relevant = top_score >= 0.2
             elif line.startswith("확신도:"):
                 value = line[len("확신도:"):].strip().lower()
                 if value in ("high", "medium", "low"):
                     confidence = value
             elif line.startswith("재질문:"):
                 value = line[len("재질문:"):].strip()
-                if value and value != "없음":
+                if value and value != "없음" and value.lower() != "none":
                     clarification = value
+
+        # 판정 라인 자체를 찾지 못한 경우 점수 기반 fallback
+        if not found_verdict:
+            relevant = top_score >= 0.2
 
         if not relevant and not clarification:
             clarification = "질문을 좀 더 구체적으로 해주시겠어요? 어떤 내용이 궁금하신지 알려주시면 더 정확한 답변을 드릴 수 있습니다."

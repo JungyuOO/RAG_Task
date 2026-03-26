@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     llm_total_timeout_seconds: float = 90.0
     llm_timeout_cooldown_seconds: float = 8.0
     llm_failure_cooldown_seconds: float = 45.0
+    llm_stream_temperature: float = 0.1
+    llm_generate_temperature: float = 0.0
+    llm_generate_max_tokens: int = 512
     llm_prompt_recent_turns: int = 4
     llm_prompt_context_items: int = 5
     llm_prompt_context_char_limit: int = 4000
@@ -91,6 +94,12 @@ class Settings(BaseSettings):
     rerank_title_weight: float = 0.08
     rerank_title_bonus_weight: float = 0.07
     rerank_compact_bonus_weight: float = 0.12
+
+    # 제목 정확 매칭 보너스 — 질의에 파일명이 포함될 때 부여하는 가산점.
+    retrieval_title_match_bonus: float = 0.35
+
+    # PDF 페이지 이미지 렌더링 DPI
+    pdf_render_dpi: int = 170
 
     # PostgreSQL 설정
     db_host: str

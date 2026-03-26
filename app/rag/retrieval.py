@@ -30,6 +30,7 @@ class HybridRetriever:
         rerank_title_weight: float,
         rerank_title_bonus_weight: float,
         rerank_compact_bonus_weight: float,
+        title_match_bonus: float,
     ) -> None:
         self.top_k = top_k
         self.candidate_pool_size = candidate_pool_size
@@ -43,6 +44,7 @@ class HybridRetriever:
         self.rerank_title_weight = rerank_title_weight
         self.rerank_title_bonus_weight = rerank_title_bonus_weight
         self.rerank_compact_bonus_weight = rerank_compact_bonus_weight
+        self.title_match_bonus_value = title_match_bonus
 
     def search(self, query: str, query_vector: list[float], index_items: list[dict]) -> list[dict]:
         """질의 벡터와 텍스트를 사용해 index_items에서 상위 top_k개를 검색한다."""
@@ -77,7 +79,7 @@ class HybridRetriever:
             compact_match_bonus = 0.0
             if query_compact and source_compact:
                 if source_compact in query_compact or query_compact in source_compact:
-                    title_match_bonus = 0.35
+                    title_match_bonus = self.title_match_bonus_value
             if query_compact and candidate_compact and len(query_compact) >= 4:
                 compact_match_bonus = self._compact_overlap_bonus(query_compact, candidate_compact)
 

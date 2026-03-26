@@ -107,7 +107,7 @@ async def preview_library_page_image(
         if page > pdf.page_count:
             raise HTTPException(status_code=404, detail="PDF page not found.")
         pdf_page = pdf.load_page(page - 1)
-        pix = pdf_page.get_pixmap(dpi=170, alpha=False)
+        pix = pdf_page.get_pixmap(dpi=container.settings.pdf_render_dpi, alpha=False)
         return Response(content=pix.tobytes("png"), media_type="image/png")
     finally:
         pdf.close()

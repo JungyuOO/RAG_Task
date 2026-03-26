@@ -54,7 +54,7 @@ class LlmClient:
         payload = {
             "model": self.settings.cllm_model,
             "messages": messages,
-            "temperature": 0.1,
+            "temperature": self.settings.llm_stream_temperature,
             "stream": True,
         }
 
@@ -115,7 +115,7 @@ class LlmClient:
         paragraphs = re.split(r"\n{2,}", reasoning.strip())
         return paragraphs[-1].strip() if paragraphs else ""
 
-    async def generate(self, messages: list[dict], max_tokens: int = 512) -> str:
+    async def generate(self, messages: list[dict], max_tokens: int | None = None) -> str:
         """비스트리밍 LLM 호출. 질의 재작성 등 짧은 생성 작업에 사용한다."""
         now = time.monotonic()
         if now < self._disabled_until:
@@ -124,8 +124,8 @@ class LlmClient:
         payload = {
             "model": self.settings.cllm_model,
             "messages": messages,
-            "temperature": 0.0,
-            "max_tokens": max_tokens,
+            "temperature": self.settings.llm_generate_temperature,
+            "max_tokens": max_tokens if max_tokens is not None else self.settings.llm_generate_max_tokens,
             "stream": False,
             "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
         }
