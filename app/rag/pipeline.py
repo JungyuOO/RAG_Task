@@ -547,7 +547,10 @@ class RagPipeline:
             else []
         )
         final_answer = self.answer_service.ensure_answer_source_line(answer, answer_citations, use_retrieved_context)
-        if policy_decision.allow_preview:
+        # 검색 점수가 충분히 높을 때만 자료보기를 표시한다.
+        # 점수가 낮은 애매한 결과에 자료보기를 보여주면 신뢰도가 떨어진다.
+        show_preview = policy_decision.allow_preview and top_score >= self.settings.retrieval_min_score
+        if show_preview:
             final_source, final_preview_pages = self.answer_service.build_answer_aligned_preview_pages(
                 answer_citations, selected_context_items, preferred_preview_source, grounded_pages,
             )
@@ -713,9 +716,17 @@ class RagPipeline:
             yield {"type": "done", "cached": False}
             return
 
-        # --- 검색 실패 거부: 문서 질의인데 관련 내용을 찾지 못한 경우 ---
+        # --- 검색 실패/재질문: 문서 질의인데 관련 내용을 찾지 못한 경우 ---
         if policy_decision.turn_type == "document_query" and not use_retrieved_context:
-            no_result_answer = "업로드된 문서에서 관련 내용을 찾을 수 없습니다. 다른 질문을 해주시거나, 관련 문서를 업로드해 주세요."
+            if top_score >= self.settings.retrieval_retry_min_score:
+                # 0.10~0.25: 약간의 관련성은 있으나 부족 → 재질문 유도
+                no_result_answer = (
+                    "관련 내용을 찾기 어렵습니다. 좀 더 구체적으로 질문해 주시겠어요?\n"
+                    "예: '스토리지에서 PV 설명해줘', '네트워킹 Service 종류 알려줘'"
+                )
+            else:
+                # 0.10 미만: 완전 실패
+                no_result_answer = "업로드된 문서에서 관련 내용을 찾을 수 없습니다. 다른 질문을 해주시거나, 관련 문서를 업로드해 주세요."
             yield {"type": "token", "content": no_result_answer, "cached": False}
             final_payload = self.answer_service.build_context_payload(
                 rewritten_query, "general", top_score,
