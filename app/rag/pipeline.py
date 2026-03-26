@@ -671,6 +671,20 @@ class RagPipeline:
         )
         yield {"type": "context", **context_payload}
 
+        # --- 단순 반응(ㅇㅇ, 넵, 응 등): 검색 없이 간단한 안내 ---
+        if policy_decision.turn_type == "conversational_ack":
+            ack_answer = "네! 문서에 대해 궁금한 점이 있으시면 질문해 주세요."
+            yield {"type": "token", "content": ack_answer, "cached": False}
+            final_payload = self.answer_service.build_context_payload(
+                rewritten_query, "conversational", top_score,
+                None, [], [], [], [],
+                preview_finalized=True,
+            )
+            yield {"type": "context", **final_payload}
+            self.session_repository.add_turn(session_id, "assistant", ack_answer, metadata=final_payload)
+            yield {"type": "done", "cached": False}
+            return
+
         # --- 인사 응답: 간단한 안내 메시지로 응답 ---
         if policy_decision.turn_type == "greeting":
             greeting_answer = "안녕하세요! 업로드된 문서에 대해 질문해 주세요."
