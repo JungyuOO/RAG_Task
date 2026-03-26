@@ -79,7 +79,6 @@ function renderAnswerPreview(payload) {
 
   const primary = pages[0];
   answerPreviewMeta.innerHTML = '<div class="answer-preview-title">' + escapeHtml(primary.fileName) + ' · p.' + primary.pageNumber + '</div><div class="answer-preview-copy">답변에 사용된 해당 페이지가 먼저 열리도록 표시합니다.</div>';
-  loadAnswerPreviewPage(primary.fileName, primary.pageNumber);
 
   if (pages.length > 1) {
     pages.forEach((page, index) => {
@@ -96,5 +95,8 @@ function renderAnswerPreview(payload) {
     });
   }
 
+  // 패널을 먼저 열어서 레이아웃(너비)이 확정된 후 iframe을 로드한다.
+  // 순서가 반대면 iframe이 너비 0 상태에서 PDF를 렌더링하여 극단적으로 축소된다.
   showPreviewPanel();
+  loadAnswerPreviewPage(primary.fileName, primary.pageNumber);
 }

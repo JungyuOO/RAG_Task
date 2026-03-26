@@ -52,6 +52,17 @@ class TurnPolicyService:
         "그렇구나",
         "이해했어",
         "이해했습니다",
+        "ㅇㅇ",
+        "ㅇㅋ",
+        "ㅇㅋㅇㅋ",
+        "ㄱㅅ",
+        "ㄳ",
+        "넵",
+        "네",
+        "응",
+        "웅",
+        "ㅎㅎ",
+        "ㅋㅋ",
         "nice",
         "great",
         "good",
@@ -235,9 +246,13 @@ class TurnPolicyService:
         last_retrieval_mode: str,
         had_document_grounding: bool,
     ) -> bool:
-        if last_retrieval_mode != "rag" or not had_document_grounding:
+        if not any(marker in normalized for marker in self.ACK_MARKERS):
             return False
-        return len(normalized) <= 40 and any(marker in normalized for marker in self.ACK_MARKERS)
+        # 이전 RAG 컨텍스트가 있으면 40자 이하 허용,
+        # 없어도 ACK 마커와 정확히 일치하면 의미 없는 메시지로 판단
+        if last_retrieval_mode == "rag" and had_document_grounding:
+            return len(normalized) <= 40
+        return normalized in self.ACK_MARKERS
 
     def _is_document_follow_up(
         self,
@@ -254,7 +269,13 @@ class TurnPolicyService:
         if self._should_clarify_referent(raw_lower, normalized, recent_turns, summary, topic_state):
             return False
         if any(marker in normalized for marker in self.FOLLOW_UP_MARKERS):
-            return True
+            # 후속 마커만으로는 부족 — 문서 관련 의도(설명, 알려, 보여 등)가 함께 있거나
+            # 충분히 구체적인 메시지(15자 이상)여야 문서 후속 질문으로 판단한다.
+            # "그거 알아?", "그거 뭐야" 같은 짧은 일상 표현은 제외.
+            doc_intent_markers = ("설명", "정리", "비교", "차이", "종류", "찾아", "알려", "보여", "어떻게")
+            has_doc_intent = any(m in normalized for m in doc_intent_markers)
+            if has_doc_intent or len(normalized) >= 15:
+                return True
         if topic_state.get("last_user_focus") and len(normalized) <= 32 and not self._looks_like_general_chat(normalized):
             return True
         if len(normalized) <= 24 and summary.get("topic") and not self._looks_like_general_chat(normalized):
@@ -272,7 +293,15 @@ class TurnPolicyService:
         """
         if self._looks_like_casual_chat(normalized):
             return False
-        if any(marker in normalized for marker in self.DOCUMENT_INTENT_MARKERS):
+        # "?"만으로는 문서 질의로 판단하지 않음 — 실질적인 의문사/요청 동사가 필요
+        substantive_markers = [m for m in self.DOCUMENT_INTENT_MARKERS if m != "?"]
+        has_substantive_intent = any(marker in normalized for marker in substantive_markers)
+        has_question_mark = "?" in normalized
+        # 의문사/요청 동사가 있어도 메시지가 너무 짧으면 (예: "뭐") 의미 없는 입력
+        if has_substantive_intent and len(normalized) >= 4:
+            return True
+        # "?"만 있고 실질적 마커가 없으면 최소 길이 이상이어야 문서 질의로 판단
+        if has_question_mark and len(normalized) >= 12:
             return True
         for source in topic_state.get("selected_sources", []):
             source_name = str(source).lower()
