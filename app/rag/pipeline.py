@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import json
@@ -67,6 +67,7 @@ class RagPipeline:
             rerank_title_weight=settings.rerank_title_weight,
             rerank_title_bonus_weight=settings.rerank_title_bonus_weight,
             rerank_compact_bonus_weight=settings.rerank_compact_bonus_weight,
+            title_match_bonus=settings.retrieval_title_match_bonus,
         )
         self.embedding_cache = JsonFileCache(
             settings.rag_cache_dir / "embeddings",
@@ -248,146 +249,32 @@ class RagPipeline:
     def index_single_file(self, source_path: Path, progress_callback=None) -> dict:
         return self.indexing_service.index_single_file(source_path, progress_callback=progress_callback)
 
-    def _chunk_documents(self, documents: list) -> list:
-        return self.indexing_service.chunk_documents(documents)
-
-    def _load_extracted_markdown(self, source_path: Path) -> str | None:
-        return self.indexing_service.load_extracted_markdown(source_path)
-
-    def _select_chunking_strategy(self, markdown_text: str | None, documents: list) -> str:
-        return self.indexing_service.select_chunking_strategy(markdown_text, documents)
-
-    def _build_context_items_payload(self, context_items: list[dict]) -> list[dict]:
-        return self.retrieval_service.build_context_items_payload(context_items)
-
-    def _aggregate_page_grounding(self, context_items: list[dict]) -> list[dict]:
-        return self.retrieval_service.aggregate_page_grounding(context_items)
-
-    def _aggregate_source_grounding(self, grounded_pages: list[dict]) -> list[dict]:
-        return self.retrieval_service.aggregate_source_grounding(grounded_pages)
-
-    def _select_grounded_preview_source(self, grounded_pages: list[dict]) -> str | None:
-        return self.retrieval_service.select_grounded_preview_source(grounded_pages)
-
-    def _build_grounded_preview_pages(
+    def _should_use_retrieved_context(
         self,
-        preferred_preview_source: str | None,
-        grounded_pages: list[dict],
-        limit: int = 3,
-    ) -> list[dict]:
-        return self.retrieval_service.build_grounded_preview_pages(
-            preferred_preview_source,
-            grounded_pages,
-            limit=limit,
-        )
-
-    def _chunk_page_numbers(self, item: dict) -> list[int]:
-        return self.retrieval_service.chunk_page_numbers(item)
-
-    def _order_context_items_by_grounded_pages(
-        self,
-        context_items: list[dict],
-        grounded_pages: list[dict],
-    ) -> list[dict]:
-        return self.retrieval_service.order_context_items_by_grounded_pages(context_items, grounded_pages)
-
-    def _select_context_items_by_grounded_pages(
-        self,
-        ordered_context_items: list[dict],
-        grounded_pages: list[dict],
-    ) -> list[dict]:
-        return self.retrieval_service.select_context_items_by_grounded_pages(
-            ordered_context_items,
-            grounded_pages,
-        )
-
-    def _build_answer_citation_payload(
-        self,
-        answer: str,
-        context_items: list[dict],
-        grounded_pages: list[dict],
-        preferred_preview_source: str | None,
-    ) -> list[dict]:
-        return self.answer_service.build_answer_citation_payload(
-            answer,
-            context_items,
-            grounded_pages,
-            preferred_preview_source,
-        )
-
-    def _sanitize_answer(
-        self,
-        answer: str,
-        use_retrieved_context: bool,
-    ) -> str:
-        return self.answer_service.sanitize_answer(answer, use_retrieved_context)
-
-    def _extract_answer_citations(self, answer: str) -> list[tuple[str, int, int]]:
-        return self.answer_service.extract_answer_citations(answer)
-
-    def _build_answer_aligned_preview_pages(
-        self,
-        answer_citations: list[dict],
-        context_items: list[dict],
-        preferred_preview_source: str | None,
-        grounded_pages: list[dict],
-    ) -> tuple[str | None, list[dict]]:
-        return self.answer_service.build_answer_aligned_preview_pages(
-            answer_citations,
-            context_items,
-            preferred_preview_source,
-            grounded_pages,
-        )
-
-    def _build_source_line(self, answer_citations: list[dict]) -> str:
-        return self.answer_service.build_source_line(answer_citations)
-
-    def _ensure_answer_source_line(
-        self,
-        answer: str,
-        answer_citations: list[dict],
-        use_retrieved_context: bool,
-    ) -> str:
-        return self.answer_service.ensure_answer_source_line(
-            answer,
-            answer_citations,
-            use_retrieved_context,
-        )
-
-    def _build_context_payload(
-        self,
-        rewritten_query: str,
-        use_retrieved_context: bool,
+        policy: TurnPolicyDecision,
+        retrieved: list[dict],
         top_score: float,
-        preferred_preview_source: str | None,
-        preview_pages: list[dict],
-        context_items: list[dict],
-        grounded_pages: list[dict],
-        answer_citations: list[dict],
-        response_mode: str,
-        preview_finalized: bool = False,
-    ) -> dict:
-        return self.answer_service.build_context_payload(
-            rewritten_query,
-            response_mode,
-            top_score,
-            preferred_preview_source,
-            preview_pages,
-            context_items,
-            grounded_pages,
-            answer_citations,
-            preview_finalized=preview_finalized,
+    ) -> bool:
+        if top_score < self.settings.retrieval_min_score or not retrieved:
+            return False
+
+        top_item = retrieved[0]
+        lexical_signal = (
+            float(top_item.get("sparse_score", 0.0))
+            + float(top_item.get("title_score", 0.0))
+            + float(top_item.get("title_match_bonus", 0.0))
+            + float(top_item.get("compact_match_bonus", 0.0))
         )
 
-    def _build_extractive_code_answer(self, context_items: list[dict]) -> str | None:
-        return self.answer_service.build_extractive_code_answer(context_items)
-
-    def _filter_index_items(
-        self,
-        index_items: list[dict],
-        allowed_source_paths: set[str] | None,
-    ) -> list[dict]:
-        return self.retrieval_service.filter_index_items(index_items, allowed_source_paths)
+        # Dense similarity alone can surface semantically adjacent but irrelevant chunks.
+        # For first-turn document queries, require either stronger overall evidence or some lexical match.
+        if (
+            policy.turn_type == "document_query"
+            and top_score < 0.2
+            and lexical_signal <= 0.0
+        ):
+            return False
+        return True
 
     async def _rewrite_query_with_llm(self, session_id: str, user_message: str) -> str:
         """LLM을 사용하여 대화 맥락을 반영한 독립적 검색 질의로 재작성한다.
@@ -508,17 +395,26 @@ class RagPipeline:
 
         expanded_query = self._expand_query_with_context(refined_query, topic_state)
         query_vector = self.embedder.encode(expanded_query)
-        index_items = self._filter_index_items(index_items_all, allowed_source_paths)
+        index_items = self.retrieval_service.filter_index_items(index_items_all, allowed_source_paths)
         retrieved = self.retriever.search(expanded_query, query_vector, index_items)
 
-        # 대안 쿼리로 추가 검색하여 더 나은 결과가 있으면 병합
+        # 대안 쿼리 결과를 원본과 병합하여 recall을 높인다.
+        # chunk_id 기준 중복 제거 후 rerank_score 내림차순으로 top_k개를 선택한다.
+        seen_chunk_ids: set[str] = {r["chunk"]["chunk_id"] for r in retrieved}
+        merged_extras: list[dict] = []
         for alt_query in alternative_queries[:2]:
             alt_expanded = self._expand_query_with_context(alt_query, topic_state)
             alt_vector = self.embedder.encode(alt_expanded)
             alt_retrieved = self.retriever.search(alt_expanded, alt_vector, index_items)
-            if alt_retrieved and alt_retrieved[0].get("rerank_score", 0) > (retrieved[0].get("rerank_score", 0) if retrieved else 0):
-                retrieved = alt_retrieved
-                refined_query = alt_query
+            for item in alt_retrieved:
+                cid = item["chunk"]["chunk_id"]
+                if cid not in seen_chunk_ids:
+                    seen_chunk_ids.add(cid)
+                    merged_extras.append(item)
+        if merged_extras:
+            combined = retrieved + merged_extras
+            combined.sort(key=lambda x: x.get("rerank_score", 0), reverse=True)
+            retrieved = combined[: self.retriever.top_k]
 
         for i, item in enumerate(retrieved[:5]):
             chunk = item["chunk"]
@@ -539,17 +435,17 @@ class RagPipeline:
             retrieved, min_score=self.settings.retrieval_min_score,
         )
         top_score = retrieval_metrics["top_score"]
-        use_retrieved_context = top_score >= self.settings.retrieval_min_score
+        use_retrieved_context = self._should_use_retrieved_context(policy, retrieved, top_score)
         logger.info(
             "[Retrieval] top_score=%.4f use_context=%s min_score=%.4f",
             top_score, use_retrieved_context, self.settings.retrieval_min_score,
         )
         context_items = retrieved if use_retrieved_context else []
-        grounded_pages = self._aggregate_page_grounding(context_items)
-        ordered_context_items = self._order_context_items_by_grounded_pages(context_items, grounded_pages)
-        selected_context_items = self._select_context_items_by_grounded_pages(ordered_context_items, grounded_pages)
-        preferred_preview_source = self._select_grounded_preview_source(grounded_pages)
-        preview_pages = self._build_grounded_preview_pages(preferred_preview_source, grounded_pages)
+        grounded_pages = self.retrieval_service.aggregate_page_grounding(context_items)
+        ordered_context_items = self.retrieval_service.order_context_items_by_grounded_pages(context_items, grounded_pages)
+        selected_context_items = self.retrieval_service.select_context_items_by_grounded_pages(ordered_context_items, grounded_pages)
+        preferred_preview_source = self.retrieval_service.select_grounded_preview_source(grounded_pages)
+        preview_pages = self.retrieval_service.build_grounded_preview_pages(preferred_preview_source, grounded_pages)
         return {
             "rewritten_query": rewritten_query,
             "top_score": top_score,
@@ -570,16 +466,15 @@ class RagPipeline:
         allowed_source_paths: set[str] | None = None,
     ) -> dict:
         state = await self._prepare_retrieval_state(session_id, user_message, allowed_source_paths)
-        return self._build_context_payload(
+        return self.answer_service.build_context_payload(
             state["rewritten_query"],
-            state["use_retrieved_context"],
+            state["response_mode"],
             state["top_score"],
             state["preferred_preview_source"],
             state["preview_pages"],
             state["selected_context_items"],
             state["grounded_pages"],
             [],
-            state["response_mode"],
             preview_finalized=False,
         )
 
@@ -643,26 +538,26 @@ class RagPipeline:
         Returns:
             (final_answer, answer_citations, final_payload) 튜플.
         """
-        answer = self._sanitize_answer(answer, use_retrieved_context)
+        answer = self.answer_service.sanitize_answer(answer, use_retrieved_context)
         answer_citations = (
-            self._build_answer_citation_payload(
+            self.answer_service.build_answer_citation_payload(
                 answer, selected_context_items, grounded_pages, preferred_preview_source,
             )
             if policy_decision.allow_citations
             else []
         )
-        final_answer = self._ensure_answer_source_line(answer, answer_citations, use_retrieved_context)
+        final_answer = self.answer_service.ensure_answer_source_line(answer, answer_citations, use_retrieved_context)
         if policy_decision.allow_preview:
-            final_source, final_preview_pages = self._build_answer_aligned_preview_pages(
+            final_source, final_preview_pages = self.answer_service.build_answer_aligned_preview_pages(
                 answer_citations, selected_context_items, preferred_preview_source, grounded_pages,
             )
         else:
             final_source, final_preview_pages = None, []
-        final_payload = self._build_context_payload(
-            rewritten_query, use_retrieved_context, top_score,
+        final_payload = self.answer_service.build_context_payload(
+            rewritten_query, response_mode, top_score,
             final_source, final_preview_pages,
             selected_context_items, grounded_pages, answer_citations,
-            response_mode, preview_finalized=True,
+            preview_finalized=True,
         )
         return final_answer, answer_citations, final_payload
 
@@ -691,9 +586,12 @@ class RagPipeline:
         )
         if code_example_request:
             system_prompt += (
-                " If the retrieved context contains YAML, commands, manifests, or configuration examples, "
-                "preserve resource names, field names, values, and command syntax exactly as written in the source whenever possible. "
-                "Do not invent alternate example names if a concrete example already exists in the retrieved context."
+                " The user is asking for code/YAML examples. "
+                "ONLY include code blocks that are directly relevant to the user's specific question. "
+                "Do NOT include unrelated code from the same page or nearby sections. "
+                "Preserve resource names, field names, values, and command syntax exactly as written in the source. "
+                "Format code blocks with proper ```yaml or ```bash fencing. "
+                "Briefly explain what each code block does before showing it."
             )
         summary = self.session_repository.summary(session_id)
         prompt_memory = self._build_prompt_memory_snapshot(session_id)
@@ -765,11 +663,11 @@ class RagPipeline:
         if not policy_decision.allow_preview:
             preview_pages = []
             preferred_preview_source = None
-        context_payload = self._build_context_payload(
-            rewritten_query, use_retrieved_context, top_score,
+        context_payload = self.answer_service.build_context_payload(
+            rewritten_query, response_mode, top_score,
             preferred_preview_source, preview_pages,
             selected_context_items, grounded_pages, [],
-            response_mode, preview_finalized=False,
+            preview_finalized=False,
         )
         yield {"type": "context", **context_payload}
 
@@ -777,9 +675,10 @@ class RagPipeline:
         if policy_decision.turn_type == "greeting":
             greeting_answer = "안녕하세요! 업로드된 문서에 대해 질문해 주세요."
             yield {"type": "token", "content": greeting_answer, "cached": False}
-            final_payload = self._build_context_payload(
-                rewritten_query, False, top_score,
-                None, [], [], [], [], "greeting", preview_finalized=True,
+            final_payload = self.answer_service.build_context_payload(
+                rewritten_query, "greeting", top_score,
+                None, [], [], [], [],
+                preview_finalized=True,
             )
             yield {"type": "context", **final_payload}
             self.session_repository.add_turn(session_id, "assistant", greeting_answer, metadata=final_payload)
@@ -790,9 +689,10 @@ class RagPipeline:
         if policy_decision.turn_type == "general_chat":
             reject_answer = "죄송합니다, 업로드된 문서와 관련된 질문에만 답변드릴 수 있습니다. 문서에 대해 궁금한 점을 질문해 주세요."
             yield {"type": "token", "content": reject_answer, "cached": False}
-            final_payload = self._build_context_payload(
-                rewritten_query, False, top_score,
-                None, [], [], [], [], "general", preview_finalized=True,
+            final_payload = self.answer_service.build_context_payload(
+                rewritten_query, "general", top_score,
+                None, [], [], [], [],
+                preview_finalized=True,
             )
             yield {"type": "context", **final_payload}
             self.session_repository.add_turn(session_id, "assistant", reject_answer, metadata=final_payload)
@@ -803,9 +703,10 @@ class RagPipeline:
         if policy_decision.turn_type == "document_query" and not use_retrieved_context:
             no_result_answer = "업로드된 문서에서 관련 내용을 찾을 수 없습니다. 다른 질문을 해주시거나, 관련 문서를 업로드해 주세요."
             yield {"type": "token", "content": no_result_answer, "cached": False}
-            final_payload = self._build_context_payload(
-                rewritten_query, False, top_score,
-                None, [], [], [], [], "general", preview_finalized=True,
+            final_payload = self.answer_service.build_context_payload(
+                rewritten_query, "general", top_score,
+                None, [], [], [], [],
+                preview_finalized=True,
             )
             yield {"type": "context", **final_payload}
             self.session_repository.add_turn(session_id, "assistant", no_result_answer, metadata=final_payload)
@@ -825,9 +726,10 @@ class RagPipeline:
             if not judge_result["relevant"]:
                 clarification = judge_result["clarification_message"]
                 yield {"type": "token", "content": clarification, "cached": False}
-                final_payload = self._build_context_payload(
-                    rewritten_query, False, top_score,
-                    None, [], [], [], [], "clarification", preview_finalized=True,
+                final_payload = self.answer_service.build_context_payload(
+                    rewritten_query, "clarification", top_score,
+                    None, [], [], [], [],
+                    preview_finalized=True,
                 )
                 yield {"type": "context", **final_payload}
                 self.session_repository.add_turn(session_id, "assistant", clarification, metadata=final_payload)
@@ -838,9 +740,10 @@ class RagPipeline:
         if policy_decision.needs_clarification and policy_decision.clarification_prompt:
             clarification_answer = policy_decision.clarification_prompt.strip()
             yield {"type": "token", "content": clarification_answer, "cached": False}
-            final_payload = self._build_context_payload(
-                rewritten_query, use_retrieved_context, top_score,
-                None, [], [], [], [], response_mode, preview_finalized=True,
+            final_payload = self.answer_service.build_context_payload(
+                rewritten_query, response_mode, top_score,
+                None, [], [], [], [],
+                preview_finalized=True,
             )
             yield {"type": "context", **final_payload}
             self.session_repository.add_turn(session_id, "assistant", clarification_answer, metadata=final_payload)
@@ -848,33 +751,9 @@ class RagPipeline:
             yield {"type": "done", "cached": False}
             return
 
-        # --- 추출형 코드 응답: 문맥에서 코드/YAML을 직접 추출하여 반환 ---
-        if code_example_request and use_retrieved_context:
-            extractive_answer = self._build_extractive_code_answer(selected_context_items)
-            if extractive_answer:
-                streamed = ""
-                for token in extractive_answer.split(" "):
-                    chunk = token + " "
-                    streamed += chunk
-                    yield {"type": "token", "content": chunk, "cached": False}
-                final_answer, answer_citations, final_payload = self._finalize_answer(
-                    streamed.strip(), rewritten_query, use_retrieved_context, top_score,
-                    selected_context_items, grounded_pages, preferred_preview_source,
-                    response_mode, policy_decision,
-                )
-                if final_answer != streamed.strip():
-                    suffix = final_answer[len(streamed.strip()):]
-                    if suffix:
-                        yield {"type": "token", "content": suffix, "cached": False}
-                yield {"type": "context", **final_payload}
-                self.session_repository.add_turn(session_id, "assistant", final_answer, metadata=final_payload)
-                self.answer_cache_repository.set(cache_key, {"answer": final_answer})
-                yield {"type": "done", "cached": False}
-                return
-
         # --- 캐시 히트: 동일 질의+문맥에 대해 저장된 답변을 재사용 ---
         if cached_answer is not None:
-            full_text = self._sanitize_answer(cached_answer["answer"], use_retrieved_context)
+            full_text = self.answer_service.sanitize_answer(cached_answer["answer"], use_retrieved_context)
             streamed = ""
             for token in full_text.split(" "):
                 chunk = token + " "
@@ -924,5 +803,9 @@ class RagPipeline:
         yield {"type": "context", **final_payload}
         self.session_repository.add_turn(session_id, "assistant", final_answer, metadata=final_payload)
         self.answer_cache_repository.set(cache_key, {"answer": final_answer})
+        logger.info(
+            "[Cache] embedding %s | answer %s",
+            self.embedding_cache.stats(),
+            self.answer_cache.stats(),
+        )
         yield {"type": "done", "cached": False}
-
