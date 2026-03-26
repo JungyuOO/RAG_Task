@@ -57,41 +57,30 @@ function renderLibrary(documents) {
   libraryList.appendChild(wrap);
 }
 
-// 업로드 진행 중 libraryList 렌더링:
-// completedDocs = 이미 완료된 파일들, currentFile = 지금 처리 중인 파일명, pct = 진행률 0~100
+// 업로드 진행 중 상태 렌더링:
+// progress bar는 status panel 바로 아래(uploadProgressArea)에,
+// 문서 목록은 그대로 libraryList에 표시한다.
 function _renderUploadState(completedDocs, currentFile, pct, completedCount, totalFiles) {
-  libraryList.innerHTML = "";
+  const progressArea = document.getElementById("uploadProgressArea");
 
-  // 완료된 파일 테이블
-  if (completedDocs.length > 0) {
-    const wrap = document.createElement("div");
-    wrap.className = "library-table-wrap";
-    const table = document.createElement("table");
-    table.className = "library-table";
-    table.innerHTML = '<thead><tr><th>파일</th><th>상태</th><th>인덱싱</th><th>형식</th><th>액션</th></tr></thead><tbody></tbody>';
-    const tbody = table.querySelector("tbody");
-    completedDocs.forEach((doc) => tbody.appendChild(_makeDocRow(doc)));
-    wrap.appendChild(table);
-    libraryList.appendChild(wrap);
-  }
+  // 문서 목록 갱신
+  renderLibrary(completedDocs);
 
-  // 현재 파일 진행률 바
+  // 진행률 바를 status panel 바로 아래에 표시
   if (currentFile) {
-    const el = document.createElement("div");
-    el.id = "upload-progress-item";
-    el.style.cssText =
-      "padding:14px 16px;border:1px solid #bfd3fb;border-radius:12px;" +
-      "background:#f0f6ff;margin-top:" + (completedDocs.length > 0 ? "10px" : "0") + ";";
-    el.innerHTML =
-      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">' +
-        '<span style="font-size:13px;font-weight:700;color:#182538;">' + escapeHtml(currentFile) + '</span>' +
-        '<span id="upload-pct-label" style="font-size:12px;color:#2a57df;font-weight:700;">' + pct + '%</span>' +
-      '</div>' +
-      '<div style="background:#dde4ef;border-radius:999px;height:6px;overflow:hidden;">' +
-        '<div id="upload-pct-bar" style="height:100%;background:#2a57df;border-radius:999px;transition:width 0.15s ease;width:' + pct + '%;"></div>' +
-      '</div>' +
-      '<div style="font-size:11px;color:#66758a;margin-top:6px;">처리 중 (' + (completedCount + 1) + '/' + totalFiles + ')</div>';
-    libraryList.appendChild(el);
+    progressArea.innerHTML =
+      '<div id="upload-progress-item" style="padding:14px 16px;border:1px solid #bfd3fb;border-radius:12px;background:#f0f6ff;margin-top:10px;">' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">' +
+          '<span style="font-size:13px;font-weight:700;color:#182538;">' + escapeHtml(currentFile) + '</span>' +
+          '<span id="upload-pct-label" style="font-size:12px;color:#2a57df;font-weight:700;">' + pct + '%</span>' +
+        '</div>' +
+        '<div style="background:#dde4ef;border-radius:999px;height:6px;overflow:hidden;">' +
+          '<div id="upload-pct-bar" style="height:100%;background:#2a57df;border-radius:999px;transition:width 0.15s ease;width:' + pct + '%;"></div>' +
+        '</div>' +
+        '<div style="font-size:11px;color:#66758a;margin-top:6px;">처리 중 (' + (completedCount + 1) + '/' + totalFiles + ')</div>' +
+      '</div>';
+  } else {
+    progressArea.innerHTML = "";
   }
 }
 
@@ -106,6 +95,8 @@ function _updateProgressBar(pct) {
 let _startupPollTimer = null;
 
 async function loadLibrary() {
+  const progressArea = document.getElementById("uploadProgressArea");
+  if (progressArea) progressArea.innerHTML = "";
   setLibraryStatus("자료실 상태를 불러오는 중입니다.", "loading", "Loading");
   try {
     const response = await fetch("/api/library");
