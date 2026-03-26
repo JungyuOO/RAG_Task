@@ -104,14 +104,15 @@ class HybridRetriever:
 
         scored.sort(key=lambda entry: entry["score"], reverse=True)
 
-        # 1차 후보 풀에서도 소스 다양성 보장: 각 소스(파일)에서 best-scored 청크 1개를 먼저
-        # 확보한 뒤 나머지 슬롯을 점수 순으로 채운다.
-        # HashingEmbedder처럼 토큰 겹침 기반 dense 점수를 쓸 때 한 문서가 pool을 독점해서
-        # 다른 문서의 청크가 rerank 단계에 아예 진입하지 못하는 문제를 방지한다.
+        # 1차 후보 풀에서 소스 다양성을 보장하되, 1위 대비 점수가 현저히 낮은
+        # 소스는 제외한다. 무관한 소스가 슬롯을 차지하여 관련 소스의 청크가
+        # rerank 단계에 진입하지 못하는 문제를 방지한다.
+        top_entry_score = scored[0]["score"] if scored else 0.0
+        diversity_threshold = top_entry_score * 0.3  # 1위의 30% 미만이면 다양성 풀에서 제외
         source_best_scored: dict[str, dict] = {}
         for entry in scored:
             src = entry["chunk"]["source_path"]
-            if src not in source_best_scored:
+            if src not in source_best_scored and entry["score"] >= diversity_threshold:
                 source_best_scored[src] = entry
         diversity_pool = list(source_best_scored.values())
         diversity_ids = {id(e) for e in diversity_pool}
