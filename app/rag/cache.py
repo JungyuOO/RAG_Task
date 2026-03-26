@@ -22,24 +22,30 @@ class JsonFileCache:
         self.max_entries = max_entries
         self.ttl_seconds = ttl_hours * 3600
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._hits = 0
+        self._misses = 0
 
     def get(self, key: str) -> dict | None:
         """캐시 항목을 조회한다. TTL이 만료된 항목은 삭제 후 None을 반환한다."""
         path = self.cache_dir / f"{key}.json"
         if not path.exists():
+            self._misses += 1
             return None
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
+            self._misses += 1
             return None
 
         # TTL 확인: _created_at이 없는 레거시 항목은 만료하지 않음
         created_at = raw.get("_created_at")
         if created_at is not None and (time.time() - created_at) > self.ttl_seconds:
             path.unlink(missing_ok=True)
+            self._misses += 1
             return None
 
         # 내부 메타 필드를 제외하고 반환
+        self._hits += 1
         return {k: v for k, v in raw.items() if not k.startswith("_")}
 
     def set(self, key: str, value: dict) -> None:
@@ -48,6 +54,16 @@ class JsonFileCache:
         path = self.cache_dir / f"{key}.json"
         payload = {**value, "_created_at": time.time()}
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def stats(self) -> dict:
+        """캐시 적중률 통계를 반환한다."""
+        total = self._hits + self._misses
+        return {
+            "hits": self._hits,
+            "misses": self._misses,
+            "total": total,
+            "hit_rate": round(self._hits / total, 4) if total > 0 else 0.0,
+        }
 
     def _evict_if_needed(self) -> None:
         """최대 항목 수 초과 시 가장 오래된 파일부터 삭제한다."""
