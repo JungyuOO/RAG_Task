@@ -691,7 +691,9 @@ class RagPipeline:
         # --- 인사 응답: 간단한 안내 메시지로 응답 ---
         if policy_decision.turn_type == "greeting":
             greeting_answer = "안녕하세요! 업로드된 문서에 대해 질문해 주세요."
-            yield {"type": "token", "content": greeting_answer, "cached": False}
+            for char in greeting_answer:
+                yield {"type": "token", "content": char, "cached": False}
+                await asyncio.sleep(0.03)
             final_payload = self.answer_service.build_context_payload(
                 rewritten_query, "greeting", top_score,
                 None, [], [], [], [],
@@ -705,7 +707,9 @@ class RagPipeline:
         # --- 문서 무관 질문 거부: 일반 잡담은 답변하지 않음 ---
         if policy_decision.turn_type == "general_chat":
             reject_answer = "죄송합니다, 업로드된 문서와 관련된 질문에만 답변드릴 수 있습니다. 문서에 대해 궁금한 점을 질문해 주세요."
-            yield {"type": "token", "content": reject_answer, "cached": False}
+            for char in reject_answer:
+                yield {"type": "token", "content": char, "cached": False}
+                await asyncio.sleep(0.03)
             final_payload = self.answer_service.build_context_payload(
                 rewritten_query, "general", top_score,
                 None, [], [], [], [],
@@ -727,7 +731,9 @@ class RagPipeline:
             else:
                 # 0.10 미만: 완전 실패
                 no_result_answer = "업로드된 문서에서 관련 내용을 찾을 수 없습니다. 다른 질문을 해주시거나, 관련 문서를 업로드해 주세요."
-            yield {"type": "token", "content": no_result_answer, "cached": False}
+            for char in no_result_answer:
+                yield {"type": "token", "content": char, "cached": False}
+                await asyncio.sleep(0.03)
             final_payload = self.answer_service.build_context_payload(
                 rewritten_query, "general", top_score,
                 None, [], [], [], [],
@@ -750,7 +756,9 @@ class RagPipeline:
             )
             if not judge_result["relevant"]:
                 clarification = judge_result["clarification_message"]
-                yield {"type": "token", "content": clarification, "cached": False}
+                for char in clarification:
+                    yield {"type": "token", "content": char, "cached": False}
+                    await asyncio.sleep(0.03)
                 final_payload = self.answer_service.build_context_payload(
                     rewritten_query, "clarification", top_score,
                     None, [], [], [], [],
@@ -764,7 +772,9 @@ class RagPipeline:
         # --- 명확화 응답: 모호한 지시어에 대해 추가 질문으로 응답 ---
         if policy_decision.needs_clarification and policy_decision.clarification_prompt:
             clarification_answer = policy_decision.clarification_prompt.strip()
-            yield {"type": "token", "content": clarification_answer, "cached": False}
+            for char in clarification_answer:
+                yield {"type": "token", "content": char, "cached": False}
+                await asyncio.sleep(0.03)
             final_payload = self.answer_service.build_context_payload(
                 rewritten_query, response_mode, top_score,
                 None, [], [], [], [],
