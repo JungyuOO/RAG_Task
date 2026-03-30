@@ -101,7 +101,7 @@ class RagPipeline:
         self.reranker = OllamaReranker(
             base_url=settings.ollama_base_url,
             model=settings.ollama_reranker_model,
-            top_k=settings.reranker_top_k,
+            top_k=5,
             timeout=settings.ollama_timeout,
         )
 
@@ -442,7 +442,7 @@ class RagPipeline:
         query_vector = self.embedder.encode(expanded_query)
         index_items = self.retrieval_service.filter_index_items(index_items_all, allowed_source_paths)
         retrieved = self.retriever.search_rrf(
-            expanded_query, query_vector, index_items, rrf_k=self.settings.rrf_k,
+            expanded_query, query_vector, index_items, rrf_k=60,
         )
 
         # 대안 쿼리 결과를 원본과 병합하여 recall을 높인다.
@@ -453,7 +453,7 @@ class RagPipeline:
             alt_expanded = self._expand_query_with_context(alt_query, topic_state)
             alt_vector = self.embedder.encode(alt_expanded)
             alt_retrieved = self.retriever.search_rrf(
-                alt_expanded, alt_vector, index_items, rrf_k=self.settings.rrf_k,
+                alt_expanded, alt_vector, index_items, rrf_k=60,
             )
             for item in alt_retrieved:
                 cid = item["chunk"]["chunk_id"]
@@ -484,9 +484,9 @@ class RagPipeline:
         if retrieved:
             extended = self.retriever.search_rrf(
                 expanded_query, query_vector, index_items,
-                rrf_k=self.settings.rrf_k,
+                rrf_k=60,
             )
-            extended = extended[: self.settings.reranker_candidate_k]
+            extended = extended[:20]
             retrieved = self.reranker.rerank(expanded_query, extended)
 
         retrieval_metrics = self.retriever.compute_retrieval_metrics(

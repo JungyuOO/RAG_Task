@@ -45,12 +45,6 @@ class Settings(BaseSettings):
     ollama_reranker_model: str = "bge-reranker-v2-m3"
     ollama_timeout: float = 120.0
 
-    # RRF 설정
-    rrf_k: int = 60
-
-    # 리랭킹 설정
-    reranker_top_k: int = 5
-    reranker_candidate_k: int = 20
 
     chunk_size: int = 700
     chunk_overlap: int = 120
