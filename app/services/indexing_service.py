@@ -37,12 +37,13 @@ class IndexingService:
         """청크 텍스트를 임베딩 벡터로 인코딩한다."""
         return self.embedder.encode_passage(text)
 
-    def rebuild_index(self, source_paths: list[Path]) -> dict:
+    def rebuild_index(self, source_paths: list[Path], progress_callback=None) -> dict:
         documents, skipped = self.ingestor.ingest_paths(source_paths)
         chunks = self.chunk_documents(documents)
 
         vectors: list[list[float]] = []
-        for chunk in chunks:
+        total_chunks = len(chunks)
+        for i, chunk in enumerate(chunks):
             cache_key = stable_hash(chunk.text)
             cached = self.embedding_cache_repository.get(cache_key)
             if cached is None:
@@ -51,6 +52,13 @@ class IndexingService:
             else:
                 vector = cached["vector"]
             vectors.append(vector)
+            if progress_callback and total_chunks > 0:
+                progress_callback(
+                    "embed",
+                    i + 1,
+                    total_chunks,
+                    {"file_name": Path(chunk.source_path).name, "source_path": chunk.source_path},
+                )
 
         self.index_repository.save(chunks, vectors)
         return {
@@ -89,7 +97,7 @@ class IndexingService:
                 vector = cached["vector"]
             vectors.append(vector)
             if progress_callback and total_chunks > 0:
-                progress_callback("embed", i + 1, total_chunks)
+                progress_callback("embed", i + 1, total_chunks, {"file_name": source_path.name})
 
         self.index_repository.upsert_document(str(source_path), chunks, vectors)
         return {
