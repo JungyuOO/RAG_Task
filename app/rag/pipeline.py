@@ -12,8 +12,10 @@ logger = logging.getLogger("rag.pipeline")
 from app.config import Settings
 from app.rag.cache import JsonFileCache
 from app.rag.chunking import StructuredMarkdownChunker, TextChunker
+from app.rag.bge_embeddings import BGEOllamaEmbedder
 from app.rag.e5_embeddings import E5Embedder
 from app.rag.embeddings import HashingEmbedder
+from app.rag.reranker import OllamaReranker
 from app.rag.index import VectorIndex
 from app.rag.ingestion import DocumentIngestor
 from app.rag.llm import LlmClient
@@ -42,6 +44,13 @@ class RagPipeline:
         if settings.embedding_model == "e5":
             self.embedder = E5Embedder()
             settings.vector_dim = self.embedder.dim
+        elif settings.embedding_model == "bge":
+            self.embedder = BGEOllamaEmbedder(
+                base_url=settings.ollama_base_url,
+                model=settings.ollama_embedding_model,
+                timeout=settings.ollama_timeout,
+            )
+            settings.vector_dim = self.embedder.dim  # 1024
         else:
             self.embedder = HashingEmbedder(dim=settings.vector_dim)
         self.index = VectorIndex(settings.db_dsn)
@@ -103,6 +112,14 @@ class RagPipeline:
         self.retrieval_service = RetrievalService(settings)
         self.answer_service = AnswerService(self.retrieval_service)
         self.turn_policy_service = TurnPolicyService()
+        self.reranker: OllamaReranker | None = None
+        if settings.use_reranker:
+            self.reranker = OllamaReranker(
+                base_url=settings.ollama_base_url,
+                model=settings.ollama_reranker_model,
+                top_k=settings.reranker_top_k,
+                timeout=settings.ollama_timeout,
+            )
 
     def _expand_query_with_context(self, query: str, topic_state: dict) -> str:
         """세션 토픽 상태의 엔티티와 출처를 쿼리에 주입하여 키워드 매칭을 보강한다.
@@ -440,7 +457,12 @@ class RagPipeline:
         expanded_query = self._expand_query_with_context(refined_query, topic_state)
         query_vector = self.embedder.encode(expanded_query)
         index_items = self.retrieval_service.filter_index_items(index_items_all, allowed_source_paths)
-        retrieved = self.retriever.search(expanded_query, query_vector, index_items)
+        if self.settings.use_rrf:
+            retrieved = self.retriever.search_rrf(
+                expanded_query, query_vector, index_items, rrf_k=self.settings.rrf_k,
+            )
+        else:
+            retrieved = self.retriever.search(expanded_query, query_vector, index_items)
 
         # 대안 쿼리 결과를 원본과 병합하여 recall을 높인다.
         # chunk_id 기준 중복 제거 후 rerank_score 내림차순으로 top_k개를 선택한다.
@@ -449,7 +471,12 @@ class RagPipeline:
         for alt_query in alternative_queries[:2]:
             alt_expanded = self._expand_query_with_context(alt_query, topic_state)
             alt_vector = self.embedder.encode(alt_expanded)
-            alt_retrieved = self.retriever.search(alt_expanded, alt_vector, index_items)
+            if self.settings.use_rrf:
+                alt_retrieved = self.retriever.search_rrf(
+                    alt_expanded, alt_vector, index_items, rrf_k=self.settings.rrf_k,
+                )
+            else:
+                alt_retrieved = self.retriever.search(alt_expanded, alt_vector, index_items)
             for item in alt_retrieved:
                 cid = item["chunk"]["chunk_id"]
                 if cid not in seen_chunk_ids:
@@ -474,6 +501,23 @@ class RagPipeline:
                 item.get("title_match_bonus", 0),
                 item.get("compact_match_bonus", 0),
             )
+
+        # --- Reranker: 후보 top-N을 cross-encoder로 재순위 ---
+        if self.reranker is not None and retrieved:
+            # reranker_candidate_k만큼 확장된 후보를 가져온 뒤 리랭킹
+            if self.settings.use_rrf:
+                extended = self.retriever.search_rrf(
+                    expanded_query, query_vector, index_items,
+                    rrf_k=self.settings.rrf_k,
+                )
+            else:
+                # top_k를 임시로 늘려서 후보 확장
+                original_top_k = self.retriever.top_k
+                self.retriever.top_k = self.settings.reranker_candidate_k
+                extended = self.retriever.search(expanded_query, query_vector, index_items)
+                self.retriever.top_k = original_top_k
+            extended = extended[: self.settings.reranker_candidate_k]
+            retrieved = self.reranker.rerank(expanded_query, extended)
 
         retrieval_metrics = self.retriever.compute_retrieval_metrics(
             retrieved, min_score=self.settings.retrieval_min_score,
