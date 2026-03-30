@@ -107,6 +107,7 @@ class DocumentIngestor:
                     progress_callback("extract", index, total_pages)
 
         self._merge_cross_page_tables(documents, markdown_sections)
+        self._merge_cross_page_yaml_blocks(documents, markdown_sections)
         return documents, markdown_sections
 
     # ------------------------------------------------------------------
@@ -560,6 +561,102 @@ class DocumentIngestor:
                     doc.text = normalize_text(merged_curr_text)
                 elif doc.page_number == markdown_sections[i + 1]["page_number"]:
                     doc.text = normalize_text(merged_next_text)
+
+    def _merge_cross_page_yaml_blocks(
+        self,
+        documents: list[Document],
+        markdown_sections: list[dict],
+    ) -> None:
+        """인접 페이지에 나뉜 fenced YAML 블록을 하나로 합친다."""
+        if len(markdown_sections) < 2:
+            return
+
+        for i in range(len(markdown_sections) - 1):
+            curr_text = str(markdown_sections[i]["text"])
+            next_text = str(markdown_sections[i + 1]["text"])
+
+            curr_yaml = self._find_trailing_yaml_block(curr_text)
+            if curr_yaml is None:
+                continue
+
+            next_yaml = self._find_leading_yaml_block(next_text)
+            if next_yaml is None:
+                continue
+
+            merged_body_lines = curr_yaml["body_lines"] + next_yaml["body_lines"]
+            if len([line for line in merged_body_lines if line.strip()]) < 3:
+                continue
+
+            merged_block = "```yaml\n" + "\n".join(merged_body_lines).rstrip() + "\n```"
+            merged_curr_text = (
+                curr_text[:curr_yaml["start_pos"]].rstrip()
+                + ("\n\n" if curr_text[:curr_yaml["start_pos"]].strip() else "")
+                + merged_block
+            )
+            merged_next_text = next_text[next_yaml["end_pos"]:].lstrip("\n")
+
+            markdown_sections[i]["text"] = merged_curr_text.strip()
+            markdown_sections[i]["chars"] = len(merged_curr_text.strip())
+            markdown_sections[i + 1]["text"] = merged_next_text.strip()
+            markdown_sections[i + 1]["chars"] = len(merged_next_text.strip())
+
+            for doc in documents:
+                if doc.page_number == markdown_sections[i]["page_number"]:
+                    doc.text = normalize_text(merged_curr_text)
+                elif doc.page_number == markdown_sections[i + 1]["page_number"]:
+                    doc.text = normalize_text(merged_next_text)
+
+    def _find_trailing_yaml_block(self, text: str) -> dict | None:
+        """텍스트 끝의 fenced YAML 블록을 찾아 위치와 본문을 반환한다."""
+        stripped_text = text.rstrip()
+        match = re.search(r"```yaml\s*\n(?P<body>[\s\S]*?)\n```$", stripped_text, flags=re.IGNORECASE)
+        if not match:
+            return None
+
+        body_lines = [line.rstrip() for line in match.group("body").splitlines()]
+        if not self._looks_like_yaml_lines(body_lines):
+            return None
+
+        return {
+            "start_pos": match.start(),
+            "end_pos": match.end(),
+            "body_lines": body_lines,
+        }
+
+    def _find_leading_yaml_block(self, text: str) -> dict | None:
+        """텍스트 시작의 fenced YAML 블록을 찾아 위치와 본문을 반환한다."""
+        leading_whitespace = len(text) - len(text.lstrip())
+        stripped_text = text.lstrip()
+        match = re.match(r"```yaml\s*\n(?P<body>[\s\S]*?)\n```", stripped_text, flags=re.IGNORECASE)
+        if not match:
+            return None
+
+        body_lines = [line.rstrip() for line in match.group("body").splitlines()]
+        if not self._looks_like_yaml_lines(body_lines):
+            return None
+
+        return {
+            "start_pos": leading_whitespace + match.start(),
+            "end_pos": leading_whitespace + match.end(),
+            "body_lines": body_lines,
+        }
+
+    def _looks_like_yaml_lines(self, lines: list[str]) -> bool:
+        meaningful = [line for line in lines if line.strip()]
+        if len(meaningful) < 2:
+            return False
+        yaml_like = 0
+        for line in meaningful:
+            stripped = line.strip()
+            if (
+                _YAML_START_RE.match(stripped)
+                or stripped.startswith("- ")
+                or re.match(r"^[\w.-]+\s*:", stripped)
+                or line.startswith(" ")
+                or line.startswith("\t")
+            ):
+                yaml_like += 1
+        return yaml_like >= max(2, len(meaningful) // 2)
 
     def _find_trailing_table(self, text: str) -> dict | None:
         """텍스트 끝에 있는 마크다운 테이블을 찾아 라인과 위치를 반환한다."""
