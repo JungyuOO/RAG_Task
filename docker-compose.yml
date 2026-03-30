@@ -18,30 +18,43 @@ services:
       retries: 5
       start_period: 5s
 
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
   app:
     build: .
     ports:
       - "8000:8000"
-    # .env 파일에서 환경 변수 주입 (CLLM_BASE_URL, RAG_SOURCE_DIR 등)
-    # Docker 실행 시 RAG_*_DIR 값을 /app/data/... 경로로 변경할 것 (.env.example 주석 참고)
     env_file:
       - .env
     depends_on:
       postgres:
         condition: service_healthy
+      ollama:
+        condition: service_started
     volumes:
-      - ./data/corpus/pdfs:/app/data/corpus/pdfs           # 원본 PDF — 영속 필수
-      - ./data/cache:/app/data/cache                        # JSON 캐시 — 재생성 가능
-      - ./data/extracted_markdown:/app/data/extracted_markdown  # PDF 추출 마크다운 — 재생성 가능
-      - model-cache:/app/data/models                        # HuggingFace 모델 캐시 — 재다운로드 방지
+      - ./data/corpus/pdfs:/app/data/corpus/pdfs
+      - ./data/cache:/app/data/cache
+      - ./data/extracted_markdown:/app/data/extracted_markdown
+      - model-cache:/app/data/models
     healthcheck:
-      # python:3.13-slim에는 curl 미포함 → Python 내장 urllib 사용
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/library')"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s  # 첫 배포 후 실측하여 조정 권장
+      start_period: 10s
 
 volumes:
   pgdata:
   model-cache:
+  ollama-data:
