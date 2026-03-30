@@ -9,28 +9,43 @@ logger = logging.getLogger("rag.agent")
 
 
 class QueryAgent:
-    """사용자 질문을 분석하여 검색에 최적화된 쿼리를 생성하는 에이전트.
+    """사용자 질문을 검색 친화적인 짧은 질의로 정리한다."""
 
-    기존 query rewrite(대명사 해소)보다 넓은 범위를 담당한다:
-    - 모호한 표현을 구체화
-    - 문서 제목/키워드와 매칭될 수 있도록 용어 확장
-    - 검색 의도가 불명확하면 여러 후보 쿼리 생성
-    """
+    INTENT_MARKERS = {
+        "yaml": ("yaml",),
+        "manifest": ("manifest",),
+        "code": ("code", "코드"),
+        "example": ("example", "sample", "예시"),
+        "create": ("create", "생성", "작성"),
+        "compare": ("compare", "difference", "diff", "차이", "비교"),
+        "explain": ("explain", "설명", "정리"),
+        "config": ("설정", "config", "configuration"),
+    }
+    FILLER_TOKENS = {
+        "그럼",
+        "거기서",
+        "기준으로",
+        "알려줘",
+        "알려주세요",
+        "보여줘",
+        "보여주세요",
+        "다시",
+        "좀",
+        "조금",
+        "파일",
+        "파일로",
+    }
 
     def __init__(self, llm: LlmClient) -> None:
         self.llm = llm
 
-    async def refine_query(self, user_message: str, context: dict | None = None, available_sources: list[str] | None = None) -> dict:
-        """사용자 메시지를 분석하여 검색용 쿼리와 메타데이터를 반환한다.
-
-        Returns:
-            {
-                "refined_query": str,       # 검색에 최적화된 쿼리
-                "alternative_queries": list, # 대안 쿼리 (최대 2개)
-                "search_keywords": list,    # 핵심 검색 키워드
-            }
-        """
-        source_names = [Path(s).stem for s in (available_sources or [])[:10]]
+    async def refine_query(
+        self,
+        user_message: str,
+        context: dict | None = None,
+        available_sources: list[str] | None = None,
+    ) -> dict:
+        source_names = [Path(source).stem for source in (available_sources or [])[:10]]
         source_hint = ", ".join(source_names) if source_names else "없음"
 
         context_parts: list[str] = []
@@ -42,42 +57,61 @@ class QueryAgent:
         context_text = "\n".join(context_parts) if context_parts else "없음"
 
         prompt = (
-            "쿼리 최적화 에이전트. 설명·분석·사고과정 없이 아래 형식만 출력하라.\n\n"
+            "너는 RAG 검색 질의 정리기다.\n"
+            "목표는 질문을 짧게 만드는 것이 아니라 검색 성공률을 높이면서 사용자 의도를 유지하는 것이다.\n\n"
             "규칙:\n"
-            "- 원본 질문의 의도를 반드시 유지하라\n"
-            "- 외부 지식(L2/L3, OSI 모델 등)을 절대 추가하지 마라\n"
-            "- 질문과 직접 관련 있는 문서명만 키워드에 추가하라. 관련 없는 문서명은 절대 추가하지 마라\n"
-            "- 키워드는 질문에 등장하는 단어 위주로 사용하라\n\n"
+            "- 질문에 있는 핵심 주제와 요청 타입을 유지하라.\n"
+            "- 요청 타입 예: 설명, 비교, 차이, 예시, 코드, yaml, manifest, 생성, 설정.\n"
+            "- 질문에 없는 요청 타입을 새로 추가하지 마라.\n"
+            "- 질문에 있는 요청 타입은 제거하지 마라.\n"
+            "- 외부 지식이나 새로운 개념을 추가하지 마라.\n"
+            "- 후속 질문의 대명사는 맥락으로만 복원하라.\n"
+            "- 문서명은 질문과 직접 관련 있을 때만 보강하라.\n"
+            "- 답변하지 말고 검색용 질의만 출력하라.\n"
+            "- 분석 문장, 사고과정, 설명 문장은 출력하지 마라.\n\n"
             f"문서목록: {source_hint}\n"
             f"맥락: {context_text}\n"
             f"질문: {user_message}\n\n"
-            "예시)\n"
-            "문서목록: 네트워킹, 스토리지, 변수\n"
-            "질문: PV, PVC 종류 알려줘\n"
-            "검색쿼리: PV PVC 종류 유형\n"
-            "대안1: PersistentVolume PersistentVolumeClaim 분류\n"
-            "대안2: PV PVC 스토리지 개념\n"
-            "키워드: PV, PVC, 스토리지, 종류\n\n"
-            "출력:\n"
-            "검색쿼리: \n"
-            "대안1: \n"
-            "대안2: \n"
-            "키워드: "
+            "예시 1)\n"
+            "질문: ConfigMap 생성 예시 yaml로 보여줘\n"
+            "검색쿼리: ConfigMap 생성 예시 yaml\n"
+            "대안1: ConfigMap yaml manifest example\n"
+            "대안2: ConfigMap 생성 방법\n"
+            "키워드: ConfigMap, 생성, 예시, yaml\n\n"
+            "예시 2)\n"
+            "질문: ConfigMap과 Secret 차이\n"
+            "검색쿼리: ConfigMap Secret 차이 비교\n"
+            "대안1: ConfigMap Secret difference\n"
+            "대안2: ConfigMap Secret compare\n"
+            "키워드: ConfigMap, Secret, 차이, 비교\n\n"
+            "예시 3)\n"
+            "질문: 아까 그거 다시 설명해줘\n"
+            "맥락: 현재 토픽 SCC, 참조 문서: SCC.pdf\n"
+            "검색쿼리: SCC 다시 설명\n"
+            "대안1: SCC 개념 설명\n"
+            "대안2: SCC 요약 설명\n"
+            "키워드: SCC, 설명\n\n"
+            "출력 형식:\n"
+            "검색쿼리: ...\n"
+            "대안1: ...\n"
+            "대안2: ...\n"
+            "키워드: ..."
         )
 
         try:
             response = await self.llm.generate(
                 [{"role": "user", "content": prompt}],
-                max_tokens=400,
+                max_tokens=300,
             )
             logger.info("[QueryAgent] LLM 응답: %r", response[:200])
-            return self._parse_query_response(response, user_message)
+            parsed = self._parse_query_response(response, user_message)
+            return self._validate_and_normalize(user_message, parsed)
         except Exception as exc:
             logger.warning("[QueryAgent] LLM 호출 실패: %s", exc)
             return {
-                "refined_query": user_message.strip(),
+                "refined_query": self._compact_query_from_user_message(user_message) or user_message.strip(),
                 "alternative_queries": [],
-                "search_keywords": [],
+                "search_keywords": self._keywords_from_user_message(user_message),
             }
 
     def _parse_query_response(self, response: str, fallback: str) -> dict:
@@ -85,8 +119,8 @@ class QueryAgent:
         alternatives: list[str] = []
         keywords: list[str] = []
 
-        for line in response.strip().splitlines():
-            line = line.strip()
+        for raw_line in response.strip().splitlines():
+            line = raw_line.strip()
             if line.startswith("검색쿼리:"):
                 value = line[len("검색쿼리:"):].strip()
                 if value:
@@ -102,20 +136,101 @@ class QueryAgent:
             elif line.startswith("키워드:"):
                 value = line[len("키워드:"):].strip()
                 if value:
-                    keywords = [kw.strip() for kw in value.split(",") if kw.strip()]
+                    keywords = [keyword.strip() for keyword in value.split(",") if keyword.strip()]
 
         return {
             "refined_query": refined,
-            "alternative_queries": alternatives,
-            "search_keywords": keywords,
+            "alternative_queries": alternatives[:2],
+            "search_keywords": keywords[:8],
         }
+
+    def _validate_and_normalize(self, user_message: str, parsed: dict) -> dict:
+        refined = str(parsed.get("refined_query") or user_message).strip()
+        alternatives = [str(item).strip() for item in parsed.get("alternative_queries", []) if str(item).strip()]
+        keywords = [str(item).strip() for item in parsed.get("search_keywords", []) if str(item).strip()]
+
+        if not refined:
+            refined = user_message.strip()
+
+        if len(refined) > max(len(user_message) * 2, 80):
+            refined = user_message.strip()
+
+        user_intents = self._detect_intents(user_message)
+        refined_intents = self._detect_intents(refined)
+
+        missing_intents = user_intents - refined_intents
+        invented_intents = refined_intents - user_intents
+
+        if missing_intents:
+            refined = self._merge_missing_intents(user_message, refined, missing_intents)
+
+        if invented_intents:
+            refined = user_message.strip()
+            alternatives = []
+            keywords = []
+
+        compact = self._compact_query_from_user_message(refined)
+        if compact:
+            refined = compact
+
+        if not keywords:
+            keywords = self._keywords_from_user_message(user_message)
+
+        return {
+            "refined_query": refined,
+            "alternative_queries": alternatives[:2],
+            "search_keywords": keywords[:8],
+        }
+
+    def _detect_intents(self, text: str) -> set[str]:
+        normalized = text.casefold()
+        found: set[str] = set()
+        for intent, markers in self.INTENT_MARKERS.items():
+            if any(marker.casefold() in normalized for marker in markers):
+                found.add(intent)
+        return found
+
+    def _merge_missing_intents(self, user_message: str, refined: str, missing_intents: set[str]) -> str:
+        merged = refined
+        normalized_user = user_message.casefold()
+        for intent in missing_intents:
+            markers = self.INTENT_MARKERS.get(intent, ())
+            for marker in markers:
+                if marker.casefold() in normalized_user and marker.casefold() not in merged.casefold():
+                    merged = f"{merged} {marker}".strip()
+                    break
+        return merged
+
+    def _keywords_from_user_message(self, user_message: str) -> list[str]:
+        raw_tokens = [token.strip(" ,.?/\\()[]{}:;'\"") for token in user_message.split()]
+        keywords: list[str] = []
+        for token in raw_tokens:
+            if len(token) < 2:
+                continue
+            if token in self.FILLER_TOKENS:
+                continue
+            if token not in keywords:
+                keywords.append(token)
+        return keywords[:8]
+
+    def _compact_query_from_user_message(self, user_message: str) -> str:
+        raw_tokens = [token.strip(" ,.?/\\()[]{}:;'\"") for token in user_message.split()]
+        compact_tokens: list[str] = []
+        for token in raw_tokens:
+            if len(token) < 2:
+                continue
+            if token in self.FILLER_TOKENS:
+                continue
+            normalized = token.casefold()
+            if normalized in {"해주세요", "해줘", "주세요"}:
+                continue
+            if token not in compact_tokens:
+                compact_tokens.append(token)
+        return " ".join(compact_tokens[:8]).strip()
 
 
 class JudgeAgent:
-    """검색 결과가 사용자 질문에 적합한지 판단하는 에이전트.
-
-    적합하면 답변 생성을 허용하고, 부적합하면 사용자에게 재질문을 생성한다.
-    """
+    """검색 결과가 질문에 답할 수 있는지 판단한다."""
 
     def __init__(self, llm: LlmClient) -> None:
         self.llm = llm
@@ -126,15 +241,6 @@ class JudgeAgent:
         context_texts: list[str],
         top_score: float,
     ) -> dict:
-        """검색 결과의 적합성을 판단한다.
-
-        Returns:
-            {
-                "relevant": bool,            # 적합 여부
-                "confidence": str,           # "high", "medium", "low"
-                "clarification_message": str # 부적합 시 재질문 메시지 (적합 시 빈 문자열)
-            }
-        """
         if not context_texts:
             return {
                 "relevant": False,
@@ -143,82 +249,66 @@ class JudgeAgent:
             }
 
         context_preview = "\n---\n".join(text[:300] for text in context_texts[:3])
-
         prompt = (
-            "검색 품질 판단 에이전트. 설명·분석·사고과정 없이 아래 형식만 출력하라.\n\n"
+            "너는 검색 품질 판단기다. 아래 형식만 출력하라.\n\n"
             f"질문: {user_message}\n"
             f"검색점수: {top_score:.4f}\n"
             f"검색내용:\n{context_preview}\n\n"
-            "규칙: 검색내용이 질문에 답할 수 있으면 적합, 아니면 부적합+재질문 생성.\n\n"
-            "예시)\n"
-            "판정: 적합\n"
-            "확신도: high\n"
-            "재질문: 없음\n\n"
-            "출력:\n"
-            "판정: \n"
-            "확신도: \n"
-            "재질문: "
+            "규칙:\n"
+            "- 검색 내용이 질문에 답할 수 있으면 적합\n"
+            "- 아니면 부적합과 함께 짧은 추가 질문을 제안\n\n"
+            "출력 형식:\n"
+            "판정: 적합 또는 부적합\n"
+            "확신도: high 또는 medium 또는 low\n"
+            "추가질문: ..."
         )
 
         try:
             response = await self.llm.generate(
                 [{"role": "user", "content": prompt}],
-                max_tokens=300,
+                max_tokens=220,
             )
             logger.info("[JudgeAgent] LLM 응답: %r", response[:200])
             return self._parse_judge_response(response, top_score=top_score)
         except Exception as exc:
             logger.warning("[JudgeAgent] LLM 호출 실패: %s", exc)
-            # LLM 실패 시 점수 기반 fallback
             if top_score >= 0.2:
                 return {"relevant": True, "confidence": "low", "clarification_message": ""}
             return {
                 "relevant": False,
                 "confidence": "low",
-                "clarification_message": "질문을 좀 더 구체적으로 해주시겠어요? 어떤 문서의 어떤 내용이 궁금하신지 알려주시면 더 정확한 답변을 드릴 수 있습니다.",
+                "clarification_message": "질문을 조금 더 구체적으로 적어주시면 어떤 내용을 찾아야 하는지 더 정확히 판단할 수 있습니다.",
             }
 
-    _RELEVANT_KEYWORDS = {"적합", "suitable", "relevant", "yes"}
-    _IRRELEVANT_KEYWORDS = {"부적합", "unsuitable", "irrelevant", "no"}
-
     def _parse_judge_response(self, response: str, top_score: float = 0.0) -> dict:
-        relevant = True
+        relevant = top_score >= 0.2
         confidence = "medium"
         clarification = ""
         found_verdict = False
 
-        for line in response.strip().splitlines():
-            line = line.strip()
+        for raw_line in response.strip().splitlines():
+            line = raw_line.strip()
             if line.startswith("판정:"):
-                value = line[len("판정:"):].strip().lower()
-                # bracket placeholder("[suitable/unsuitable]" 등)는 실제 판정이 아니므로 무시
-                if value.startswith("[") and value.endswith("]"):
-                    continue
+                value = line[len("판정:"):].strip().casefold()
                 found_verdict = True
-                # 부적합 키워드 체크 시 "적합"만 단독 포함된 경우를 잘못 잡지 않도록
-                # "부적합"을 먼저 제거한 뒤 "적합"을 확인
-                if any(kw in value for kw in self._IRRELEVANT_KEYWORDS):
+                if "부적합" in value or "irrelevant" in value or value == "no":
                     relevant = False
-                elif any(kw in value for kw in self._RELEVANT_KEYWORDS):
+                elif "적합" in value or "relevant" in value or value == "yes":
                     relevant = True
-                else:
-                    # 파싱 불가 시 점수 기반 fallback
-                    relevant = top_score >= 0.2
             elif line.startswith("확신도:"):
                 value = line[len("확신도:"):].strip().lower()
-                if value in ("high", "medium", "low"):
+                if value in {"high", "medium", "low"}:
                     confidence = value
-            elif line.startswith("재질문:"):
-                value = line[len("재질문:"):].strip()
-                if value and value != "없음" and value.lower() != "none":
+            elif line.startswith("추가질문:"):
+                value = line[len("추가질문:"):].strip()
+                if value and value not in {"없음", "none"}:
                     clarification = value
 
-        # 판정 라인 자체를 찾지 못한 경우 점수 기반 fallback
         if not found_verdict:
             relevant = top_score >= 0.2
 
         if not relevant and not clarification:
-            clarification = "질문을 좀 더 구체적으로 해주시겠어요? 어떤 내용이 궁금하신지 알려주시면 더 정확한 답변을 드릴 수 있습니다."
+            clarification = "질문을 조금 더 구체적으로 적어주시면 어떤 내용을 찾아야 하는지 더 정확히 판단할 수 있습니다."
 
         return {
             "relevant": relevant,

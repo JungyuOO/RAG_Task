@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+from uuid import uuid4
 
 import psycopg2
 import psycopg2.extras
@@ -29,6 +30,19 @@ DEFAULT_TOPIC_STATE = {
     "last_answer_citations": [],
     "last_user_focus": "",
     "recent_user_topics": [],
+}
+
+DEFAULT_TOPIC_THREAD_SUMMARY = {
+    "topic_label": "",
+    "summary": "",
+    "entities": [],
+    "sources": [],
+    "important_pages": [],
+    "open_questions": [],
+    "resolved_facts": [],
+    "last_user_focus": "",
+    "last_retrieval_mode": "",
+    "turn_count": 0,
 }
 
 _GENERIC_STOPWORDS = {
@@ -112,6 +126,56 @@ class SessionStore:
                     ON session_turns(session_id, turn_id)
                     """
                 )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS session_topics (
+                        topic_id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL,
+                        topic_label TEXT NOT NULL DEFAULT '',
+                        status TEXT NOT NULL DEFAULT 'active',
+                        summary_json TEXT NOT NULL DEFAULT '{}',
+                        source_state_json TEXT NOT NULL DEFAULT '{}',
+                        entity_state_json TEXT NOT NULL DEFAULT '{}',
+                        open_questions_json TEXT NOT NULL DEFAULT '[]',
+                        resolved_facts_json TEXT NOT NULL DEFAULT '[]',
+                        last_user_focus TEXT NOT NULL DEFAULT '',
+                        last_retrieval_mode TEXT NOT NULL DEFAULT '',
+                        turn_count INTEGER NOT NULL DEFAULT 0,
+                        last_active_turn_id INTEGER,
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_session_topics_session_id
+                    ON session_topics(session_id, updated_at DESC)
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS turn_topic_links (
+                        turn_id INTEGER NOT NULL,
+                        session_id TEXT NOT NULL,
+                        topic_id TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        link_type TEXT NOT NULL,
+                        confidence REAL NOT NULL DEFAULT 0.0,
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (turn_id, topic_id),
+                        FOREIGN KEY (topic_id) REFERENCES session_topics(topic_id),
+                        FOREIGN KEY (turn_id) REFERENCES session_turns(turn_id)
+                    )
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_turn_topic_links_session_id
+                    ON turn_topic_links(session_id, topic_id, turn_id)
+                    """
+                )
 
                 # 마이그레이션: 기존 테이블에 누락된 컬럼 추가
                 cursor.execute(
@@ -141,27 +205,67 @@ class SessionStore:
                     cursor.execute(
                         "ALTER TABLE session_turns ADD COLUMN metadata TEXT NOT NULL DEFAULT ''"
                     )
-
-    def add_turn(self, session_id: str, role: str, content: str, metadata: dict | None = None) -> None:
-        with self._connection() as connection:
-            with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    INSERT INTO sessions (session_id, summary, summary_json, topic_state_json, updated_at)
-                    VALUES (%s, '', '{}', '{}', CURRENT_TIMESTAMP)
-                    ON CONFLICT(session_id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
-                    """,
-                    (session_id,),
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = 'session_topics'
+                    """
                 )
+                topic_columns = {row[0] for row in cursor.fetchall()}
+                topic_defaults = {
+                    "summary_json": "TEXT NOT NULL DEFAULT '{}'",
+                    "source_state_json": "TEXT NOT NULL DEFAULT '{}'",
+                    "entity_state_json": "TEXT NOT NULL DEFAULT '{}'",
+                    "open_questions_json": "TEXT NOT NULL DEFAULT '[]'",
+                    "resolved_facts_json": "TEXT NOT NULL DEFAULT '[]'",
+                    "last_user_focus": "TEXT NOT NULL DEFAULT ''",
+                    "last_retrieval_mode": "TEXT NOT NULL DEFAULT ''",
+                    "turn_count": "INTEGER NOT NULL DEFAULT 0",
+                    "last_active_turn_id": "INTEGER",
+                }
+                for column_name, column_def in topic_defaults.items():
+                    if column_name not in topic_columns:
+                        cursor.execute(
+                            f"ALTER TABLE session_topics ADD COLUMN {column_name} {column_def}"
+                        )
+
+    def _ensure_session_row(self, cursor, session_id: str) -> None:
+        cursor.execute(
+            """
+            INSERT INTO sessions (session_id, summary, summary_json, topic_state_json, updated_at)
+            VALUES (%s, '', '{}', '{}', CURRENT_TIMESTAMP)
+            ON CONFLICT(session_id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+            """,
+            (session_id,),
+        )
+
+    def add_turn(self, session_id: str, role: str, content: str, metadata: dict | None = None) -> int:
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                self._ensure_session_row(cursor, session_id)
                 cursor.execute(
-                    "INSERT INTO session_turns (session_id, role, content, metadata) VALUES (%s, %s, %s, %s)",
+                    """
+                    INSERT INTO session_turns (session_id, role, content, metadata)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING turn_id
+                    """,
                     (session_id, role, content, json.dumps(metadata or {}, ensure_ascii=False)),
                 )
+                turn_id = int(cursor.fetchone()[0])
         self._refresh_summary(session_id)
+        return turn_id
 
     def delete_session(self, session_id: str) -> bool:
         with self._connection() as connection:
             with connection.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM turn_topic_links WHERE session_id = %s",
+                    (session_id,),
+                )
+                cursor.execute(
+                    "DELETE FROM session_topics WHERE session_id = %s",
+                    (session_id,),
+                )
                 cursor.execute(
                     "DELETE FROM session_turns WHERE session_id = %s",
                     (session_id,),
@@ -238,6 +342,221 @@ class SessionStore:
             "topic_state": self.topic_state(session_id),
         }
 
+    def create_topic(self, session_id: str, seed_label: str, seed_turn_id: int | None = None) -> dict:
+        topic_id = f"topic_{uuid4().hex}"
+        topic_label = normalize_text(seed_label)[:120] or "Untitled topic"
+        topic_summary = DEFAULT_TOPIC_THREAD_SUMMARY.copy()
+        topic_summary["topic_label"] = topic_label
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                self._ensure_session_row(cursor, session_id)
+                cursor.execute(
+                    """
+                    INSERT INTO session_topics (
+                        topic_id, session_id, topic_label, status, summary_json,
+                        source_state_json, entity_state_json, open_questions_json,
+                        resolved_facts_json, last_user_focus, last_retrieval_mode,
+                        turn_count, last_active_turn_id, updated_at
+                    )
+                    VALUES (%s, %s, %s, 'active', %s, '{}', '{}', '[]', '[]', '', '', 0, %s, CURRENT_TIMESTAMP)
+                    """,
+                    (
+                        topic_id,
+                        session_id,
+                        topic_label,
+                        json.dumps(topic_summary, ensure_ascii=False),
+                        seed_turn_id,
+                    ),
+                )
+                self._update_session_topic_meta(
+                    cursor,
+                    session_id,
+                    last_active_topic_id=topic_id,
+                    known_topic_id=topic_id,
+                )
+        return self.get_topic(topic_id) or {
+            "topic_id": topic_id,
+            "session_id": session_id,
+            "topic_label": topic_label,
+            "status": "active",
+        }
+
+    def list_topics(self, session_id: str) -> list[dict]:
+        with self._connection() as connection:
+            with connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT topic_id, session_id, topic_label, status, summary_json,
+                           source_state_json, entity_state_json, open_questions_json,
+                           resolved_facts_json, last_user_focus, last_retrieval_mode,
+                           turn_count, last_active_turn_id, created_at, updated_at
+                    FROM session_topics
+                    WHERE session_id = %s
+                    ORDER BY updated_at DESC, created_at DESC
+                    """,
+                    (session_id,),
+                )
+                rows = cursor.fetchall()
+        return [self._deserialize_topic_row(row) for row in rows]
+
+    def get_topic(self, topic_id: str) -> dict | None:
+        with self._connection() as connection:
+            with connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT topic_id, session_id, topic_label, status, summary_json,
+                           source_state_json, entity_state_json, open_questions_json,
+                           resolved_facts_json, last_user_focus, last_retrieval_mode,
+                           turn_count, last_active_turn_id, created_at, updated_at
+                    FROM session_topics
+                    WHERE topic_id = %s
+                    """,
+                    (topic_id,),
+                )
+                row = cursor.fetchone()
+        if not row:
+            return None
+        return self._deserialize_topic_row(row)
+
+    def get_last_active_topic(self, session_id: str) -> dict | None:
+        topic_state = self.topic_state(session_id)
+        last_active_topic_id = str(topic_state.get("last_active_topic_id") or "")
+        if last_active_topic_id:
+            topic = self.get_topic(last_active_topic_id)
+            if topic is not None:
+                return topic
+        topics = self.list_topics(session_id)
+        return topics[0] if topics else None
+
+    def link_turn_to_topic(
+        self,
+        turn_id: int,
+        session_id: str,
+        topic_id: str,
+        role: str,
+        link_type: str,
+        confidence: float,
+    ) -> None:
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                self._ensure_session_row(cursor, session_id)
+                cursor.execute(
+                    """
+                    INSERT INTO turn_topic_links (
+                        turn_id, session_id, topic_id, role, link_type, confidence
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (turn_id, topic_id) DO UPDATE
+                    SET role = EXCLUDED.role,
+                        link_type = EXCLUDED.link_type,
+                        confidence = EXCLUDED.confidence
+                    """,
+                    (turn_id, session_id, topic_id, role, link_type, confidence),
+                )
+                cursor.execute(
+                    """
+                    UPDATE session_topics
+                    SET last_active_turn_id = %s,
+                        turn_count = (
+                            SELECT COUNT(*)
+                            FROM turn_topic_links
+                            WHERE topic_id = %s
+                        ),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE topic_id = %s
+                    """,
+                    (turn_id, topic_id, topic_id),
+                )
+                self._update_session_topic_meta(
+                    cursor,
+                    session_id,
+                    last_active_topic_id=topic_id,
+                    known_topic_id=topic_id,
+                )
+        self.refresh_topic_memory(session_id, topic_id)
+
+    def recent_topic_turns(self, session_id: str, topic_id: str, limit: int | None = None) -> list[ChatTurn]:
+        query_limit = limit if limit is not None else self.memory_window_turns
+        with self._connection() as connection:
+            with connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT role, content, metadata FROM (
+                        SELECT st.role, st.content, st.metadata, st.turn_id
+                        FROM turn_topic_links ttl
+                        JOIN session_turns st ON st.turn_id = ttl.turn_id
+                        WHERE ttl.session_id = %s AND ttl.topic_id = %s
+                        ORDER BY st.turn_id DESC
+                        LIMIT %s
+                    ) sub
+                    ORDER BY turn_id ASC
+                    """,
+                    (session_id, topic_id, query_limit),
+                )
+                rows = cursor.fetchall()
+        return [
+            ChatTurn(
+                role=row["role"],
+                content=row["content"],
+                metadata=json.loads(row["metadata"] or "{}"),
+            )
+            for row in rows
+        ]
+
+    def topic_memory_snapshot(self, session_id: str, topic_id: str) -> dict:
+        topic = self.get_topic(topic_id)
+        if topic is None or topic.get("session_id") != session_id:
+            return DEFAULT_TOPIC_THREAD_SUMMARY.copy()
+        snapshot = DEFAULT_TOPIC_THREAD_SUMMARY.copy()
+        snapshot.update(topic.get("summary", {}))
+        snapshot["sources"] = topic.get("sources", [])
+        snapshot["entities"] = topic.get("entities", [])
+        snapshot["open_questions"] = topic.get("open_questions", [])
+        snapshot["resolved_facts"] = topic.get("resolved_facts", [])
+        snapshot["last_user_focus"] = topic.get("last_user_focus", "")
+        snapshot["last_retrieval_mode"] = topic.get("last_retrieval_mode", "")
+        snapshot["turn_count"] = int(topic.get("turn_count", 0))
+        return snapshot
+
+    def refresh_topic_memory(self, session_id: str, topic_id: str) -> None:
+        turns = self.recent_topic_turns(session_id, topic_id, limit=10)
+        topic = self.get_topic(topic_id)
+        if topic is None or topic.get("session_id") != session_id:
+            return
+        summary_json = self._build_topic_thread_summary(
+            topic_label=str(topic.get("topic_label") or ""),
+            turns=turns,
+        )
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE session_topics
+                    SET summary_json = %s,
+                        source_state_json = %s,
+                        entity_state_json = %s,
+                        open_questions_json = %s,
+                        resolved_facts_json = %s,
+                        last_user_focus = %s,
+                        last_retrieval_mode = %s,
+                        turn_count = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE topic_id = %s AND session_id = %s
+                    """,
+                    (
+                        json.dumps(summary_json, ensure_ascii=False),
+                        json.dumps({"sources": summary_json["sources"]}, ensure_ascii=False),
+                        json.dumps({"entities": summary_json["entities"]}, ensure_ascii=False),
+                        json.dumps(summary_json["open_questions"], ensure_ascii=False),
+                        json.dumps(summary_json["resolved_facts"], ensure_ascii=False),
+                        summary_json["last_user_focus"],
+                        summary_json["last_retrieval_mode"],
+                        summary_json["turn_count"],
+                        topic_id,
+                        session_id,
+                    ),
+                )
+
     def build_rewrite_context(self, session_id: str, user_message: str) -> dict | None:
         """LLM 질의 재작성에 필요한 대화 맥락을 구성한다.
 
@@ -281,6 +600,7 @@ class SessionStore:
             "session_id": session_id,
             "summary": self.summary(session_id),
             "memory": self.memory_snapshot(session_id),
+            "topics": self.list_topics(session_id),
             "turns": [turn.to_dict() for turn in turns],
         }
 
@@ -545,6 +865,30 @@ class SessionStore:
             parts.append("Open: " + " | ".join(summary_json["unresolved_questions"][:2]))
         return normalize_text(" ; ".join(parts)[:700])
 
+    def _build_topic_thread_summary(self, topic_label: str, turns: list[ChatTurn]) -> dict:
+        structured_summary = self._build_structured_summary(turns)
+        topic_state = self._build_topic_state(turns)
+        resolved_facts: list[str] = []
+        for turn in turns:
+            if turn.role != "assistant":
+                continue
+            normalized = normalize_text(turn.content)
+            if normalized and normalized not in resolved_facts:
+                resolved_facts.append(normalized[:180])
+        summary_text = self._stringify_summary(structured_summary, topic_state)
+        return {
+            "topic_label": topic_label or structured_summary.get("topic") or "",
+            "summary": summary_text,
+            "entities": topic_state.get("active_entities", [])[:6],
+            "sources": structured_summary.get("recent_documents", [])[:3],
+            "important_pages": structured_summary.get("recent_pages", [])[:5],
+            "open_questions": structured_summary.get("unresolved_questions", [])[:3],
+            "resolved_facts": resolved_facts[:5],
+            "last_user_focus": topic_state.get("last_user_focus", ""),
+            "last_retrieval_mode": topic_state.get("last_retrieval_mode", ""),
+            "turn_count": len(turns),
+        }
+
     def _extract_topic_from_turns(self, user_turns: list[ChatTurn]) -> str:
         for turn in reversed(user_turns):
             entities = self._extract_entities(turn.content)
@@ -619,3 +963,71 @@ class SessionStore:
         merged = default.copy()
         merged.update(loaded or {})
         return merged
+
+    def _update_session_topic_meta(
+        self,
+        cursor,
+        session_id: str,
+        last_active_topic_id: str,
+        known_topic_id: str,
+    ) -> None:
+        cursor.execute(
+            "SELECT topic_state_json FROM sessions WHERE session_id = %s",
+            (session_id,),
+        )
+        row = cursor.fetchone()
+        current_topic_state = json.loads(row[0] or "{}") if row else {}
+        known_topic_ids = [
+            str(topic_id)
+            for topic_id in current_topic_state.get("known_topic_ids", [])
+            if topic_id
+        ]
+        if known_topic_id and known_topic_id not in known_topic_ids:
+            known_topic_ids.append(known_topic_id)
+        current_topic_state["last_active_topic_id"] = last_active_topic_id
+        current_topic_state["known_topic_ids"] = known_topic_ids
+        cursor.execute(
+            """
+            UPDATE sessions
+            SET topic_state_json = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE session_id = %s
+            """,
+            (json.dumps(current_topic_state, ensure_ascii=False), session_id),
+        )
+
+    def _deserialize_topic_row(self, row: dict) -> dict:
+        summary = self._merge_defaults(
+            DEFAULT_TOPIC_THREAD_SUMMARY,
+            json.loads(row["summary_json"] or "{}"),
+        )
+        source_state = json.loads(row["source_state_json"] or "{}")
+        entity_state = json.loads(row["entity_state_json"] or "{}")
+        open_questions = json.loads(row["open_questions_json"] or "[]")
+        resolved_facts = json.loads(row["resolved_facts_json"] or "[]")
+        if source_state.get("sources"):
+            summary["sources"] = [str(source) for source in source_state["sources"] if source][:3]
+        if entity_state.get("entities"):
+            summary["entities"] = [str(entity) for entity in entity_state["entities"] if entity][:6]
+        summary["open_questions"] = [str(item) for item in open_questions if item][:3]
+        summary["resolved_facts"] = [str(item) for item in resolved_facts if item][:5]
+        summary["last_user_focus"] = str(row["last_user_focus"] or summary.get("last_user_focus") or "")
+        summary["last_retrieval_mode"] = str(row["last_retrieval_mode"] or summary.get("last_retrieval_mode") or "")
+        summary["turn_count"] = int(row["turn_count"] or summary.get("turn_count") or 0)
+        return {
+            "topic_id": row["topic_id"],
+            "session_id": row["session_id"],
+            "topic_label": row["topic_label"],
+            "status": row["status"],
+            "summary": summary,
+            "sources": summary.get("sources", []),
+            "entities": summary.get("entities", []),
+            "open_questions": summary.get("open_questions", []),
+            "resolved_facts": summary.get("resolved_facts", []),
+            "last_user_focus": summary.get("last_user_focus", ""),
+            "last_retrieval_mode": summary.get("last_retrieval_mode", ""),
+            "turn_count": summary.get("turn_count", 0),
+            "last_active_turn_id": row["last_active_turn_id"],
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+        }

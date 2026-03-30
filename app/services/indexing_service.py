@@ -7,8 +7,7 @@ from pathlib import Path
 from app.config import Settings
 from app.rag.artifacts import extracted_markdown_path
 from app.rag.chunking import StructuredMarkdownChunker, TextChunker
-from app.rag.e5_embeddings import E5Embedder
-from app.rag.embeddings import HashingEmbedder
+from app.rag.bge_embeddings import BGEOllamaEmbedder
 from app.rag.ingestion import DocumentIngestor
 from app.rag.utils import stable_hash
 from app.repositories.cache_repository import CacheRepository
@@ -22,7 +21,7 @@ class IndexingService:
         ingestor: DocumentIngestor,
         chunker: TextChunker,
         structured_chunker: StructuredMarkdownChunker,
-        embedder: HashingEmbedder | E5Embedder,
+        embedder: BGEOllamaEmbedder,
         index_repository: IndexRepository,
         embedding_cache_repository: CacheRepository,
     ) -> None:
@@ -35,18 +34,16 @@ class IndexingService:
         self.embedding_cache_repository = embedding_cache_repository
 
     def _encode_chunk(self, text: str) -> list[float]:
-        """청크 텍스트를 임베딩 벡터로 인코딩한다.
-        E5Embedder는 passage 접두사가 필요하므로 encode_passage를 사용한다."""
-        if isinstance(self.embedder, E5Embedder):
-            return self.embedder.encode_passage(text)
-        return self.embedder.encode(text)
+        """청크 텍스트를 임베딩 벡터로 인코딩한다."""
+        return self.embedder.encode_passage(text)
 
-    def rebuild_index(self, source_paths: list[Path]) -> dict:
+    def rebuild_index(self, source_paths: list[Path], progress_callback=None) -> dict:
         documents, skipped = self.ingestor.ingest_paths(source_paths)
         chunks = self.chunk_documents(documents)
 
         vectors: list[list[float]] = []
-        for chunk in chunks:
+        total_chunks = len(chunks)
+        for i, chunk in enumerate(chunks):
             cache_key = stable_hash(chunk.text)
             cached = self.embedding_cache_repository.get(cache_key)
             if cached is None:
@@ -55,6 +52,13 @@ class IndexingService:
             else:
                 vector = cached["vector"]
             vectors.append(vector)
+            if progress_callback and total_chunks > 0:
+                progress_callback(
+                    "embed",
+                    i + 1,
+                    total_chunks,
+                    {"file_name": Path(chunk.source_path).name, "source_path": chunk.source_path},
+                )
 
         self.index_repository.save(chunks, vectors)
         return {
@@ -93,7 +97,7 @@ class IndexingService:
                 vector = cached["vector"]
             vectors.append(vector)
             if progress_callback and total_chunks > 0:
-                progress_callback("embed", i + 1, total_chunks)
+                progress_callback("embed", i + 1, total_chunks, {"file_name": source_path.name})
 
         self.index_repository.upsert_document(str(source_path), chunks, vectors)
         return {

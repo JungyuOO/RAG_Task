@@ -1,15 +1,20 @@
+const reindexBtn = document.getElementById("reindexBtn");
+const refreshLibraryBtn = document.getElementById("refreshLibraryBtn");
+const uploadProgressArea = document.getElementById("uploadProgressArea");
+
+let _startupIndexingFile = "";
+let _startupPollTimer = null;
+let _isReindexSubmitting = false;
+
 function updateLibraryStats(data) {
   const documents = data.indexed_documents || [];
   const totalFiles = Number(data.total_files || documents.length || 0);
-  const indexedFiles = documents.length;
+  const indexedFiles = documents.filter((doc) => Number(doc.indexed_chunks || 0) > 0).length;
   const totalChunks = documents.reduce((sum, doc) => sum + Number(doc.indexed_chunks || 0), 0);
   if (totalFilesStat) totalFilesStat.textContent = totalFiles.toLocaleString("ko-KR");
   if (indexedFilesStat) indexedFilesStat.textContent = indexedFiles.toLocaleString("ko-KR");
   if (indexedChunksStat) indexedChunksStat.textContent = totalChunks.toLocaleString("ko-KR");
 }
-
-// 현재 자동 인덱싱 중인 파일명 (폴링 시 갱신)
-let _startupIndexingFile = "";
 
 function _makeDocRow(doc) {
   const tr = document.createElement("tr");
@@ -20,20 +25,20 @@ function _makeDocRow(doc) {
   if (isIndexed) {
     statusBadge = '<span class="status-badge">인덱싱 완료</span>';
   } else if (isCurrentlyIndexing) {
-    statusBadge = '<span class="status-badge indexing">인덱싱 중…</span>';
+    statusBadge = '<span class="status-badge indexing">인덱싱 중</span>';
   } else {
     statusBadge = '<span class="status-badge not-indexed">대기 중</span>';
   }
   tr.innerHTML =
-    '<td><div class="item-title">' + escapeHtml(doc.file_name) + '</div>' +
-    '<div class="item-copy">로드 방식: ' + escapeHtml(loaders) + '</div></td>' +
-    '<td>' + statusBadge + '</td>' +
-    '<td>청크 ' + doc.indexed_chunks + '<br />페이지 ' + doc.indexed_pages + '</td>' +
-    '<td>' + escapeHtml(String(doc.extension || "").toUpperCase()) + '</td>' +
+    '<td><div class="item-title">' + escapeHtml(doc.file_name) + "</div>" +
+    '<div class="item-copy">로드 방식: ' + escapeHtml(loaders) + "</div></td>" +
+    "<td>" + statusBadge + "</td>" +
+    "<td>청크 " + doc.indexed_chunks + "<br />페이지 " + doc.indexed_pages + "</td>" +
+    "<td>" + escapeHtml(String(doc.extension || "").toUpperCase()) + "</td>" +
     '<td><div class="row-actions">' +
     '<button class="secondary mini-button preview-button" type="button">미리보기</button>' +
     '<button class="secondary mini-button delete-button" type="button">삭제</button>' +
-    '</div></td>';
+    "</div></td>";
   tr.querySelector(".preview-button").addEventListener("click", () => openPdf(doc.file_name));
   tr.querySelector(".delete-button").addEventListener("click", () => deleteLibraryFile(doc.file_name));
   return tr;
@@ -42,7 +47,7 @@ function _makeDocRow(doc) {
 function renderLibrary(documents) {
   libraryList.innerHTML = "";
   if (!documents.length) {
-    libraryList.innerHTML = '<div class="empty">업로드된 PDF가 없습니다. 위 영역에 파일을 올려 주세요.</div>';
+    libraryList.innerHTML = '<div class="empty">업로드된 PDF가 없습니다. 아래 영역에 파일을 올려 주세요.</div>';
     return;
   }
 
@@ -50,41 +55,63 @@ function renderLibrary(documents) {
   wrap.className = "library-table-wrap";
   const table = document.createElement("table");
   table.className = "library-table";
-  table.innerHTML = '<thead><tr><th>파일</th><th>상태</th><th>인덱싱</th><th>형식</th><th>액션</th></tr></thead><tbody></tbody>';
+  table.innerHTML = "<thead><tr><th>파일</th><th>상태</th><th>인덱스</th><th>형식</th><th>액션</th></tr></thead><tbody></tbody>";
   const tbody = table.querySelector("tbody");
   documents.forEach((doc) => tbody.appendChild(_makeDocRow(doc)));
   wrap.appendChild(table);
   libraryList.appendChild(wrap);
 }
 
-// 업로드 진행 중 상태 렌더링:
-// progress bar는 status panel 바로 아래(uploadProgressArea)에,
-// 문서 목록은 그대로 libraryList에 표시한다.
 function _renderUploadState(completedDocs, currentFile, pct, completedCount, totalFiles) {
-  const progressArea = document.getElementById("uploadProgressArea");
-
-  // 문서 목록 갱신
   renderLibrary(completedDocs);
 
-  // 진행률 바를 status panel 바로 아래에 표시
   if (currentFile) {
-    progressArea.innerHTML =
+    uploadProgressArea.innerHTML =
       '<div id="upload-progress-item" style="padding:14px 16px;border:1px solid #bfd3fb;border-radius:12px;background:#f0f6ff;margin-top:10px;">' +
         '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">' +
-          '<span style="font-size:13px;font-weight:700;color:#182538;">' + escapeHtml(currentFile) + '</span>' +
-          '<span id="upload-pct-label" style="font-size:12px;color:#2a57df;font-weight:700;">' + pct + '%</span>' +
-        '</div>' +
+          '<span style="font-size:13px;font-weight:700;color:#182538;">' + escapeHtml(currentFile) + "</span>" +
+          '<span id="upload-pct-label" style="font-size:12px;color:#2a57df;font-weight:700;">' + pct + "%</span>" +
+        "</div>" +
         '<div style="background:#dde4ef;border-radius:999px;height:6px;overflow:hidden;">' +
           '<div id="upload-pct-bar" style="height:100%;background:#2a57df;border-radius:999px;transition:width 0.15s ease;width:' + pct + '%;"></div>' +
-        '</div>' +
-        '<div style="font-size:11px;color:#66758a;margin-top:6px;">처리 중 (' + (completedCount + 1) + '/' + totalFiles + ')</div>' +
-      '</div>';
+        "</div>" +
+        '<div style="font-size:11px;color:#66758a;margin-top:6px;">처리 중 (' + (completedCount + 1) + "/" + totalFiles + ")</div>" +
+      "</div>";
   } else {
-    progressArea.innerHTML = "";
+    uploadProgressArea.innerHTML = "";
   }
 }
 
-// 이미 렌더링된 진행률 바만 업데이트 (DOM 재생성 없이)
+function _renderBackgroundIndexingState(state, label) {
+  const pct = Number(state.progress_pct || 0);
+  const currentChunk = Number(state.current_chunk || 0);
+  const totalChunks = Number(state.total_chunks || 0);
+  const completedFiles = Number(state.completed_files || 0);
+  const totalFiles = Number(state.total_files || 0);
+  const currentFile = state.current_file || "준비 중";
+  const stageLabel = state.current_stage === "extract"
+    ? "추출 중"
+    : state.current_stage === "embed"
+      ? "임베딩 중"
+      : state.current_stage === "done"
+        ? "완료 처리 중"
+        : "준비 중";
+
+  uploadProgressArea.innerHTML =
+    '<div style="padding:14px 16px;border:1px solid #bfd3fb;border-radius:12px;background:#f0f6ff;margin-top:10px;">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">' +
+        '<span style="font-size:13px;font-weight:700;color:#182538;">' + escapeHtml(label + " · " + currentFile) + "</span>" +
+        '<span style="font-size:12px;color:#2a57df;font-weight:700;">' + pct + "%</span>" +
+      "</div>" +
+      '<div style="background:#dde4ef;border-radius:999px;height:6px;overflow:hidden;">' +
+        '<div style="height:100%;background:#2a57df;border-radius:999px;transition:width 0.15s ease;width:' + pct + '%;"></div>' +
+      "</div>" +
+      '<div style="font-size:11px;color:#66758a;margin-top:6px;">파일 ' + completedFiles + "/" + totalFiles +
+      (totalChunks > 0 ? " · " + stageLabel + " · 청크 " + currentChunk + "/" + totalChunks : " · " + stageLabel) +
+      "</div>" +
+    "</div>";
+}
+
 function _updateProgressBar(pct) {
   const bar = document.getElementById("upload-pct-bar");
   const label = document.getElementById("upload-pct-label");
@@ -92,45 +119,63 @@ function _updateProgressBar(pct) {
   if (label) label.textContent = pct + "%";
 }
 
-let _startupPollTimer = null;
+function _setLibraryBusyState(isBusy) {
+  if (reindexBtn) reindexBtn.disabled = isBusy;
+  if (fileInput) fileInput.disabled = isBusy;
+  if (refreshLibraryBtn) refreshLibraryBtn.disabled = false;
+  if (uploadDropzone) uploadDropzone.style.pointerEvents = isBusy ? "none" : "auto";
+  if (uploadDropzone) uploadDropzone.style.opacity = isBusy ? "0.65" : "1";
+}
 
 async function loadLibrary() {
-  const progressArea = document.getElementById("uploadProgressArea");
-  if (progressArea) progressArea.innerHTML = "";
   setLibraryStatus("자료실 상태를 불러오는 중입니다.", "loading", "Loading");
   try {
     const response = await fetch("/api/library");
     if (!response.ok) throw new Error(await extractErrorMessage(response));
     const data = await response.json();
 
-    // 자동 인덱싱 상태 처리
-    const si = data.startup_indexing || {};
-    _startupIndexingFile = si.current_file || "";
+    const startupState = data.startup_indexing || {};
+    const reindexState = data.reindexing || {};
+    _startupIndexingFile = startupState.current_file || reindexState.current_file || "";
 
     updateLibraryStats(data);
     renderLibrary(data.indexed_documents || []);
 
-    if (si.status === "indexing") {
-      const msg = si.current_file
-        ? "자동 인덱싱 중: " + si.current_file + " (" + si.completed + "/" + si.total + ")"
-        : "자동 인덱싱 준비 중… (" + si.completed + "/" + si.total + ")";
-      setLibraryStatus(msg, "loading", "Indexing");
-      // 2초마다 폴링
+    const startupBusy = startupState.status === "indexing";
+    const reindexBusy = reindexState.status === "indexing";
+    _setLibraryBusyState(Boolean(startupBusy || reindexBusy || _isReindexSubmitting));
+
+    if (startupBusy) {
+      _renderBackgroundIndexingState(startupState, "자동 인덱싱");
+      setLibraryStatus("자동 인덱싱 중: " + (startupState.current_file || "준비 중"), "loading", "Startup Indexing");
       if (!_startupPollTimer) {
         _startupPollTimer = setInterval(loadLibrary, 2000);
       }
-    } else {
-      // 인덱싱 완료 또는 idle — 폴링 중지
-      if (_startupPollTimer) {
-        clearInterval(_startupPollTimer);
-        _startupPollTimer = null;
-      }
-      _startupIndexingFile = "";
-      setLibraryStatus("문서 " + data.total_files + "개를 확인했습니다.", "success", "Ready");
+      return;
     }
+
+    if (reindexBusy) {
+      _renderBackgroundIndexingState(reindexState, "전체 재인덱싱");
+      setLibraryStatus("전체 재인덱싱 중: " + (reindexState.current_file || "준비 중"), "loading", "Reindexing");
+      if (!_startupPollTimer) {
+        _startupPollTimer = setInterval(loadLibrary, 2000);
+      }
+      return;
+    }
+
+    if (_startupPollTimer) {
+      clearInterval(_startupPollTimer);
+      _startupPollTimer = null;
+    }
+    if (!_isReindexSubmitting) {
+      uploadProgressArea.innerHTML = "";
+    }
+    _startupIndexingFile = "";
+    setLibraryStatus("문서 " + data.total_files + "개를 확인했습니다.", "success", "Ready");
   } catch (error) {
     updateLibraryStats({ total_files: 0, indexed_documents: [] });
     renderLibrary([]);
+    _setLibraryBusyState(false);
     setLibraryStatus("자료실을 불러오지 못했습니다. " + error.message, "error", "Error");
   }
 }
@@ -158,9 +203,8 @@ async function uploadFiles() {
   const formData = new FormData();
   for (const file of files) formData.append("files", file);
 
-  setLibraryStatus("업로드 중입니다. OCR, 청킹, 인덱싱을 처리합니다.", "loading", "Uploading");
+  setLibraryStatus("업로드 중입니다. OCR, 청킹, 임베딩, 인덱싱을 처리합니다.", "loading", "Uploading");
 
-  // 기존 파일 목록을 미리 가져와서 업로드 중에도 계속 표시
   let completedDocs = [];
   try {
     const libraryRes = await fetch("/api/library");
@@ -192,23 +236,16 @@ async function uploadFiles() {
         if (!part.startsWith("data: ")) continue;
         const data = JSON.parse(part.slice(6));
         if (data.type === "progress") {
-          // 진행률 바만 빠르게 업데이트
           _updateProgressBar(data.pct);
         } else if (data.type === "file_indexed") {
           completedCount += 1;
           totalChunks += data.indexed_chunks || 0;
-          // 완료된 파일 정보를 library 응답에서 가져옴
-          const docInfo = (data.library && data.library.indexed_documents || []).find(
-            (d) => d.file_name === data.file
-          );
+          const docInfo = ((data.library && data.library.indexed_documents) || []).find((d) => d.file_name === data.file);
           if (docInfo) completedDocs.push(docInfo);
           if (data.library) updateLibraryStats(data.library);
           const nextFile = fileNames[completedCount] || null;
           _renderUploadState(completedDocs, nextFile, 0, completedCount, totalFiles);
-          setLibraryStatus(
-            data.file + " 완료 (" + completedCount + "/" + totalFiles + ") · 누적 청크 " + totalChunks + "개",
-            "loading", "Uploading"
-          );
+          setLibraryStatus(data.file + " 완료 (" + completedCount + "/" + totalFiles + ") · 누적 청크 " + totalChunks + "개", "loading", "Uploading");
         } else if (data.type === "file_error") {
           completedCount += 1;
           const nextFile = fileNames[completedCount] || null;
@@ -235,14 +272,21 @@ function handleSelectedFiles(files) {
 }
 
 async function reindexAll() {
+  _isReindexSubmitting = true;
+  _setLibraryBusyState(true);
   setLibraryStatus("전체 라이브러리를 다시 인덱싱하는 중입니다.", "loading", "Reindexing");
+  if (!_startupPollTimer) {
+    _startupPollTimer = setInterval(loadLibrary, 2000);
+  }
   try {
     const response = await fetch("/api/reindex", { method: "POST" });
     if (!response.ok) throw new Error(await extractErrorMessage(response));
     const data = await response.json();
     setLibraryStatus("재인덱싱 완료: 파일 " + data.indexed_files + "개, 청크 " + data.indexed_chunks + "개", "success", "Completed");
-    await loadLibrary();
   } catch (error) {
     setLibraryStatus("재인덱싱에 실패했습니다. " + error.message, "error", "Reindex Failed");
+  } finally {
+    _isReindexSubmitting = false;
+    await loadLibrary();
   }
 }

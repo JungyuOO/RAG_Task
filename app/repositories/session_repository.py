@@ -14,8 +14,8 @@ class SessionRepository:
     def __init__(self, backend: SessionStore) -> None:
         self.backend = backend
 
-    def add_turn(self, session_id: str, role: str, content: str, metadata: dict | None = None) -> None:
-        self.backend.add_turn(session_id, role, content, metadata=metadata)
+    def add_turn(self, session_id: str, role: str, content: str, metadata: dict | None = None) -> int:
+        return self.backend.add_turn(session_id, role, content, metadata=metadata)
 
     def delete_session(self, session_id: str) -> bool:
         return self.backend.delete_session(session_id)
@@ -34,6 +34,38 @@ class SessionRepository:
 
     def memory_snapshot(self, session_id: str) -> dict:
         return self.backend.memory_snapshot(session_id)
+
+    def create_topic(self, session_id: str, seed_label: str, seed_turn_id: int | None = None) -> dict:
+        return self.backend.create_topic(session_id, seed_label, seed_turn_id=seed_turn_id)
+
+    def list_topics(self, session_id: str) -> list[dict]:
+        return self.backend.list_topics(session_id)
+
+    def get_topic(self, topic_id: str) -> dict | None:
+        return self.backend.get_topic(topic_id)
+
+    def get_last_active_topic(self, session_id: str) -> dict | None:
+        return self.backend.get_last_active_topic(session_id)
+
+    def link_turn_to_topic(
+        self,
+        turn_id: int,
+        session_id: str,
+        topic_id: str,
+        role: str,
+        link_type: str,
+        confidence: float,
+    ) -> None:
+        self.backend.link_turn_to_topic(turn_id, session_id, topic_id, role, link_type, confidence)
+
+    def recent_topic_turns(self, session_id: str, topic_id: str, limit: int | None = None) -> list[ChatTurn]:
+        return self.backend.recent_topic_turns(session_id, topic_id, limit=limit)
+
+    def topic_memory_snapshot(self, session_id: str, topic_id: str) -> dict:
+        return self.backend.topic_memory_snapshot(session_id, topic_id)
+
+    def refresh_topic_memory(self, session_id: str, topic_id: str) -> None:
+        self.backend.refresh_topic_memory(session_id, topic_id)
 
     def build_rewrite_context(self, session_id: str, user_message: str) -> dict | None:
         return self.backend.build_rewrite_context(session_id, user_message)

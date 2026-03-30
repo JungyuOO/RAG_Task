@@ -39,16 +39,18 @@ class Settings(BaseSettings):
     rag_extract_dir: Path
     save_extracted_markdown: bool = True
 
-    # 임베딩 모델 선택. "hash": HashingEmbedder (기본값, 외부 모델 없음),
-    # "e5": intfloat/multilingual-e5-small (384차원, sentence-transformers 필요)
-    embedding_model: str
+    # Ollama 설정 (BGE-M3 임베딩)
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_embedding_model: str = "bge-m3"
+    ollama_timeout: float = 120.0
 
-    chunk_size: int = 700
-    chunk_overlap: int = 120
-    structured_chunk_size: int = 1000
-    structured_chunk_overlap: int = 150
+
+    chunk_size: int = 512
+    chunk_overlap: int = 50
+    structured_chunk_size: int = 512
+    structured_chunk_overlap: int = 50
     chunking_strategy: str = "auto"
-    vector_dim: int = 768
+    vector_dim: int = 1024
     retrieval_top_k: int = 3
     candidate_pool_size: int = 8
     grounded_page_top_n: int = 3
@@ -63,43 +65,21 @@ class Settings(BaseSettings):
     # "못 찾았다" 대신 구체적 재질문을 유도한다. 이 점수 미만이면 완전 실패.
     retrieval_retry_min_score: float = 0.10
 
-    # 하이브리드 검색 가중치.
-    # dense(의미 유사도) 0.45 + sparse(키워드 정확도) 0.25 + title(문서 매칭) 0.15 = 0.85.
-    # 나머지 0.15는 title_match_bonus, compact_overlap_bonus로 보정.
-    # dense를 가장 높게 설정한 이유: SHA-256 해싱 임베딩은 바이그램+위치 가중으로
-    # 토큰 순서를 반영하므로, BM25보다 문맥 유사도 판별에 유리.
-    retrieval_dense_weight: float = 0.45
-    retrieval_sparse_weight: float = 0.25
-    retrieval_title_weight: float = 0.15
-
-    # E5 임베딩 사용 시 가중치 (의미 검색이 강하므로 sparse/title 비중 증가)
-    e5_retrieval_dense_weight: float = 0.30
-    e5_retrieval_sparse_weight: float = 0.35
-    e5_retrieval_title_weight: float = 0.20
+    # 하이브리드 검색 가중치 (search() 메서드용 — RRF는 랭크 기반이므로 가중치 미사용).
+    # dense를 높게 설정한 이유: BGE-M3 임베딩은 의미 유사도 판별에 유리.
+    retrieval_dense_weight: float = 0.6
+    retrieval_sparse_weight: float = 0.4
 
     # BM25 파라미터 — Okapi BM25 표준값 (Robertson et al., 1994).
-    # k1: TF 포화 계수. 높을수록 반복 출현 토큰의 영향 증가.
-    #   k1=1.2는 Elasticsearch/Lucene 기본값이며,
-    #   한국어 기술 문서의 짧은 청크(700자)에서 과적합 없이 안정적.
-    # b: 문서 길이 정규화 계수. 1.0이면 완전 정규화, 0.0이면 정규화 없음.
-    #   b=0.75는 짧은 청크에 약간의 TF 부스트를 주면서
-    #   긴 청크의 과대 매칭을 억제하는 표준 균형점.
+    # k1=1.2: Elasticsearch/Lucene 기본값, 512자 청크에서 안정적.
+    # b=0.75: 짧은 청크에 약간의 TF 부스트를 주면서 긴 청크 과대 매칭 억제.
     bm25_k1: float = 1.2
     bm25_b: float = 0.75
 
-    # 리랭킹 가중치 — 초기 점수를 기반으로 키워드 겹침, 제목 보너스 등을 반영.
-    # base(0.68): 1차 검색 점수의 비중을 유지하되,
-    # overlap(0.17): 질의-청크 간 키워드 겹침으로 정밀도 보강,
-    # title(0.08+0.07): 파일명 매칭 시 출처 관련성 보정,
-    # compact(0.12): 연속 부분문자열 매칭으로 구문 일치도 반영.
-    rerank_base_weight: float = 0.68
-    rerank_overlap_weight: float = 0.17
-    rerank_title_weight: float = 0.08
-    rerank_title_bonus_weight: float = 0.07
-    rerank_compact_bonus_weight: float = 0.12
-
-    # 제목 정확 매칭 보너스 — 질의에 파일명이 포함될 때 부여하는 가산점.
-    retrieval_title_match_bonus: float = 0.35
+    # 리랭킹 가중치 — RRF 1차 점수 + 키워드 겹침으로 최종 순위 결정.
+    # cross-encoder(BGEReranker)가 최종 재순위를 담당하므로 경량 휴리스틱만 유지.
+    rerank_base_weight: float = 0.8
+    rerank_overlap_weight: float = 0.2
 
     # PDF 페이지 이미지 렌더링 DPI
     pdf_render_dpi: int = 170

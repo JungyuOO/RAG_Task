@@ -39,8 +39,11 @@ async def index() -> FileResponse:
 async def get_library(request: Request, container: AppContainer = Depends(get_container)) -> LibraryStatusResponse:
     data = container.pipeline.list_library_documents()
     startup_state = getattr(request.app.state, "startup_indexing", None)
+    reindex_state = getattr(request.app.state, "reindexing", None)
     if startup_state:
         data["startup_indexing"] = startup_state
+    if reindex_state:
+        data["reindexing"] = reindex_state
     return LibraryStatusResponse(**data)
 
 
@@ -163,7 +166,7 @@ async def upload_to_library(
             queue: asyncio.Queue = asyncio.Queue()
 
             def make_progress_callback(q, ev_loop):
-                def callback(stage, current, total):
+                def callback(stage, current, total, meta=None):
                     # extract: 0~70%, embed: 70~95%
                     if stage == "extract":
                         pct = int(current / total * 70)
@@ -222,13 +225,53 @@ async def upload_to_library(
 
 
 @router.post("/api/reindex")
-async def reindex_all(container: AppContainer = Depends(get_container)) -> BuildIndexResponse:
+async def reindex_all(request: Request, container: AppContainer = Depends(get_container)) -> BuildIndexResponse:
+    startup_state = getattr(request.app.state, "startup_indexing", None) or {}
+    reindex_state = getattr(request.app.state, "reindexing", None) or {}
+    if startup_state.get("status") == "indexing":
+        raise HTTPException(status_code=409, detail="자동 인덱싱이 진행 중입니다. 완료 후 다시 시도해 주세요.")
+    if reindex_state.get("status") == "indexing":
+        raise HTTPException(status_code=409, detail="재인덱싱이 이미 진행 중입니다.")
+
     source_files = list_source_pdfs(container.settings)
-    result = await run_in_threadpool(
-        container.task_service.run_inline,
-        "full_reindex",
-        {"source_count": len(source_files)},
-        lambda: container.pipeline.rebuild_index(source_files),
+    file_positions = {str(path): index for index, path in enumerate(source_files)}
+    reindex_state.update(
+        status="indexing",
+        total_files=len(source_files),
+        completed_files=0,
+        current_file="",
+        current_stage="prepare",
+        current_chunk=0,
+        total_chunks=0,
+        progress_pct=0,
+    )
+
+    def progress_callback(stage, current, total, meta=None):
+        meta = meta or {}
+        source_path = str(meta.get("source_path", ""))
+        reindex_state.update(
+            current_file=meta.get("file_name", ""),
+            completed_files=file_positions.get(source_path, 0),
+            current_stage=stage,
+            current_chunk=current,
+            total_chunks=total,
+            progress_pct=min(100, int((current / max(total, 1)) * 100)),
+        )
+
+    try:
+        result = await run_in_threadpool(container.pipeline.rebuild_index, source_files, progress_callback)
+    except Exception:
+        reindex_state.update(status="idle", current_stage="error")
+        raise
+
+    reindex_state.update(
+        status="done",
+        completed_files=len(source_files),
+        current_file="",
+        current_stage="done",
+        current_chunk=result.get("indexed_chunks", 0),
+        total_chunks=result.get("indexed_chunks", 0),
+        progress_pct=100,
     )
     return BuildIndexResponse(**result)
 

@@ -12,8 +12,8 @@ logger = logging.getLogger("rag.pipeline")
 from app.config import Settings
 from app.rag.cache import JsonFileCache
 from app.rag.chunking import StructuredMarkdownChunker, TextChunker
-from app.rag.e5_embeddings import E5Embedder
-from app.rag.embeddings import HashingEmbedder
+from app.rag.bge_embeddings import BGEOllamaEmbedder
+from app.rag.reranker import BGEReranker
 from app.rag.index import VectorIndex
 from app.rag.ingestion import DocumentIngestor
 from app.rag.llm import LlmClient
@@ -27,7 +27,8 @@ from app.services.agent_service import JudgeAgent, QueryAgent
 from app.services.answer_service import AnswerService
 from app.services.indexing_service import IndexingService
 from app.services.retrieval_service import RetrievalService
-from app.services.turn_policy_service import TurnPolicyDecision, TurnPolicyService
+from app.services.turn_context_resolver import TurnContextResolver
+from app.services.turn_policy_service import TurnPolicyDecision, TurnPolicyInput, TurnPolicyService
 
 
 class RagPipeline:
@@ -39,35 +40,22 @@ class RagPipeline:
             chunk_size=settings.structured_chunk_size,
             overlap=settings.structured_chunk_overlap,
         )
-        if settings.embedding_model == "e5":
-            self.embedder = E5Embedder()
-            settings.vector_dim = self.embedder.dim
-        else:
-            self.embedder = HashingEmbedder(dim=settings.vector_dim)
+        self.embedder = BGEOllamaEmbedder(
+            base_url=settings.ollama_base_url,
+            model=settings.ollama_embedding_model,
+            timeout=settings.ollama_timeout,
+        )
+        settings.vector_dim = self.embedder.dim  # 1024
         self.index = VectorIndex(settings.db_dsn)
-        # 임베딩 모델에 따른 검색 가중치 선택
-        if settings.embedding_model == "e5":
-            dense_w = settings.e5_retrieval_dense_weight
-            sparse_w = settings.e5_retrieval_sparse_weight
-            title_w = settings.e5_retrieval_title_weight
-        else:
-            dense_w = settings.retrieval_dense_weight
-            sparse_w = settings.retrieval_sparse_weight
-            title_w = settings.retrieval_title_weight
         self.retriever = HybridRetriever(
             top_k=settings.retrieval_top_k,
             candidate_pool_size=settings.candidate_pool_size,
-            dense_weight=dense_w,
-            sparse_weight=sparse_w,
-            title_weight=title_w,
+            dense_weight=settings.retrieval_dense_weight,
+            sparse_weight=settings.retrieval_sparse_weight,
             bm25_k1=settings.bm25_k1,
             bm25_b=settings.bm25_b,
             rerank_base_weight=settings.rerank_base_weight,
             rerank_overlap_weight=settings.rerank_overlap_weight,
-            rerank_title_weight=settings.rerank_title_weight,
-            rerank_title_bonus_weight=settings.rerank_title_bonus_weight,
-            rerank_compact_bonus_weight=settings.rerank_compact_bonus_weight,
-            title_match_bonus=settings.retrieval_title_match_bonus,
         )
         self.embedding_cache = JsonFileCache(
             settings.rag_cache_dir / "embeddings",
@@ -103,13 +91,15 @@ class RagPipeline:
         self.retrieval_service = RetrievalService(settings)
         self.answer_service = AnswerService(self.retrieval_service)
         self.turn_policy_service = TurnPolicyService()
+        self.turn_context_resolver = TurnContextResolver()
+        self.reranker = BGEReranker(top_k=5)
 
     def _expand_query_with_context(self, query: str, topic_state: dict) -> str:
         """세션 토픽 상태의 엔티티와 출처를 쿼리에 주입하여 키워드 매칭을 보강한다.
 
         대명사("그거", "이거")나 생략된 주어가 있는 후속 질문에서,
         active_entities의 핵심 용어를 쿼리 앞에 추가하여
-        HashingEmbedder의 키워드 기반 검색 정확도를 높인다.
+        BGE-M3 임베딩의 검색 정확도를 높인다.
         이미 쿼리에 포함된 토큰은 중복 추가하지 않는다.
         쿼리에 이미 명확한 기술 용어(대문자 약어 등)가 있으면 확장을 최소화한다.
         """
@@ -167,6 +157,34 @@ class RagPipeline:
             return "네, 필요하시면 이어서 관련 내용을 더 설명드릴게요."
         return "현재 LLM 연결이 불안정해 일반 답변을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요."
 
+    @staticmethod
+    def _detect_non_korean_query(text: str) -> str | None:
+        """한글이 없고 비한국어 문자(중국어/일본어 등)가 포함된 질문을 감지한다.
+
+        한글(AC00-D7A3, 1100-11FF, 3130-318F)이 하나라도 있으면 정상 질문으로 허용한다.
+        영어+기술 키워드(PV, Pod 등)만 있는 경우는 허용한다.
+        중국어 간체·번체(4E00-9FFF, F900-FAFF) 또는 일본어 히라가나·카타카나가
+        전체의 20% 이상이면 비한국어 질문으로 판정하여 안내 메시지를 반환한다.
+        """
+        if not text or not text.strip():
+            return None
+
+        has_korean = any('\uAC00' <= ch <= '\uD7A3' or '\u1100' <= ch <= '\u11FF' or '\u3130' <= ch <= '\u318F' for ch in text)
+        if has_korean:
+            return None
+
+        non_latin_chars = [
+            ch for ch in text
+            if ('\u4E00' <= ch <= '\u9FFF')   # CJK 통합 한자
+            or ('\uF900' <= ch <= '\uFAFF')   # CJK 호환 한자
+            or ('\u3040' <= ch <= '\u309F')   # 히라가나
+            or ('\u30A0' <= ch <= '\u30FF')   # 카타카나
+        ]
+        total_alpha = sum(1 for ch in text if ch.isalpha())
+        if total_alpha > 0 and len(non_latin_chars) / total_alpha >= 0.2:
+            return "한국어로 질문해 주세요. 기술 키워드(예: PV, Pod, Deployment)는 영어로 입력하셔도 됩니다."
+        return None
+
     def _is_code_example_request(self, user_message: str) -> bool:
         normalized = (user_message or "").lower()
         markers = (
@@ -192,11 +210,72 @@ class RagPipeline:
         )
         return any(marker in normalized for marker in markers)
 
-    def _build_prompt_memory_snapshot(self, session_id: str) -> dict:
+    def _is_table_request(self, user_message: str) -> bool:
+        normalized = (user_message or "").lower()
+        markers = (
+            "표",
+            "table",
+            "테이블",
+            "표로 보여",
+            "정리해줘",
+            "정리해 줘",
+            "비교표",
+            "표로",
+        )
+        return any(marker in normalized for marker in markers)
+
+    def _is_comparison_request(self, user_message: str) -> bool:
+        normalized = (user_message or "").lower()
+        markers = (
+            "차이",
+            "비교",
+            "다른점",
+            "다른 점",
+            "vs",
+            "versus",
+            "구분",
+            "비교해",
+            "비교해줘",
+            "비교해 줘",
+        )
+        return any(marker in normalized for marker in markers)
+
+    def _prefer_block_type_items(
+        self,
+        items: list[dict],
+        *,
+        block_type: str,
+        limit: int | None = None,
+    ) -> list[dict]:
+        if not items:
+            return []
+
+        preferred = [
+            item
+            for item in items
+            if block_type in str(item["chunk"].get("metadata", {}).get("block_types", "")).split(",")
+        ]
+        if not preferred:
+            return []
+        return preferred[:limit] if limit is not None else preferred
+
+    def _build_prompt_memory_snapshot(self, session_id: str, topic_id: str | None = None) -> dict:
         snapshot = self.session_repository.memory_snapshot(session_id)
         summary = snapshot.get("session_summary", {})
         topic_state = snapshot.get("topic_state", {})
         recent_turns = snapshot.get("recent_turns", [])
+        if topic_id:
+            topic = self.session_repository.get_topic(topic_id)
+            if topic is not None:
+                topic_summary = self.session_repository.topic_memory_snapshot(session_id, topic_id)
+                topic_state = self._topic_to_topic_state(topic)
+                summary = {
+                    "topic": topic_summary.get("topic_label", ""),
+                    "user_goal": topic_summary.get("last_user_focus", ""),
+                    "recent_documents": topic_summary.get("sources", [])[:3],
+                    "recent_pages": topic_summary.get("important_pages", [])[:4],
+                }
+                recent_turns = [turn.to_dict() for turn in self.session_repository.recent_topic_turns(session_id, topic_id)]
         prompt_recent_turns = max(int(self.settings.llm_prompt_recent_turns), 1)
         compact_recent_turns = [
             {
@@ -217,9 +296,12 @@ class RagPipeline:
             "recent_turns": compact_recent_turns,
         }
 
-    def _build_prompt_recent_turns(self, session_id: str) -> list[dict]:
+    def _build_prompt_recent_turns(self, session_id: str, topic_id: str | None = None) -> list[dict]:
         prompt_recent_turns = max(int(self.settings.llm_prompt_recent_turns), 1)
-        recent_turns = self.session_repository.recent_turns(session_id)[-prompt_recent_turns:]
+        if topic_id:
+            recent_turns = self.session_repository.recent_topic_turns(session_id, topic_id)[-prompt_recent_turns:]
+        else:
+            recent_turns = self.session_repository.recent_turns(session_id)[-prompt_recent_turns:]
         return [
             {
                 "role": turn.role,
@@ -227,6 +309,63 @@ class RagPipeline:
             }
             for turn in recent_turns
         ]
+
+    @staticmethod
+    def _topic_to_topic_state(topic: dict | None) -> dict:
+        if not topic:
+            return {}
+        summary = topic.get("summary", {})
+        return {
+            "active_topic": topic.get("topic_label") or summary.get("topic_label") or "",
+            "active_entities": topic.get("entities", [])[:6],
+            "selected_sources": topic.get("sources", [])[:3],
+            "selected_pages": summary.get("important_pages", [])[:5],
+            "last_retrieval_mode": topic.get("last_retrieval_mode", ""),
+            "last_answer_citations": [],
+            "last_user_focus": topic.get("last_user_focus", ""),
+            "recent_user_topics": [topic.get("topic_label") or summary.get("topic_label") or ""],
+        }
+
+    def _build_rewrite_context_from_topic(self, topic: dict | None, topic_turns: list) -> dict | None:
+        if not topic:
+            return None
+        topic_state = self._topic_to_topic_state(topic)
+        conversation_history: list[dict] = []
+        for turn in topic_turns[-4:]:
+            entry = {"role": turn.role, "content": str(turn.content)[:200]}
+            if turn.role == "assistant" and turn.metadata:
+                sources = [
+                    str(item.get("file_name", ""))
+                    for item in turn.metadata.get("source_grounding", [])[:2]
+                    if item.get("file_name")
+                ]
+                if sources:
+                    entry["sources"] = sources
+            conversation_history.append(entry)
+        return {
+            "conversation_history": conversation_history,
+            "active_topic": str(topic_state.get("active_topic") or ""),
+            "active_entities": topic_state.get("active_entities", [])[:6],
+            "selected_sources": topic_state.get("selected_sources", [])[:3],
+            "selected_pages": topic_state.get("selected_pages", [])[:5],
+            "last_retrieval_mode": str(topic_state.get("last_retrieval_mode") or ""),
+        }
+
+    def _build_prompt_recent_turns_clean(self, session_id: str, topic_id: str | None = None) -> list[dict]:
+        """새로운 토픽 전환 시, assistant 답변에서 소스 인용 라인을 제거한 최근 대화를 반환한다.
+
+        이전 RAG 답변의 '[파일.pdf] p.X' 형태 인용이 무관한 새 질문에 bleeding되는 것을 방지한다.
+        """
+        citation_pattern = re.compile(r'\[[^\]]+\.(?:pdf|PDF)[^\]]*\][^\n]*')
+        turns = self._build_prompt_recent_turns(session_id, topic_id=topic_id)
+        cleaned = []
+        for turn in turns:
+            if turn["role"] == "assistant":
+                content = citation_pattern.sub('', turn["content"]).strip()
+                cleaned.append({**turn, "content": content})
+            else:
+                cleaned.append(turn)
+        return cleaned
 
     def _build_prompt_context_text(self, context_blocks: list[str]) -> str:
         max_items = max(int(self.settings.llm_prompt_context_items), 1)
@@ -243,8 +382,58 @@ class RagPipeline:
             used += len(trimmed)
         return "\n\n".join(parts) if parts else "No reliable retrieved context."
 
-    def rebuild_index(self, source_paths: list[Path]) -> dict:
-        return self.indexing_service.rebuild_index(source_paths)
+    def _ensure_topic_for_resolution(
+        self,
+        session_id: str,
+        user_message: str,
+        state: dict,
+        user_turn_id: int | None,
+    ) -> str | None:
+        resolution = state.get("turn_resolution") or {}
+        resolution_type = resolution.get("resolution_type", "")
+        if resolution_type == "ambiguous" or user_turn_id is None:
+            return None
+        topic_id = state.get("resolved_topic_id")
+        if not topic_id and resolution_type == "new_topic":
+            created_topic = self.session_repository.create_topic(
+                session_id,
+                seed_label=user_message,
+                seed_turn_id=user_turn_id,
+            )
+            topic_id = created_topic["topic_id"]
+            state["resolved_topic_id"] = topic_id
+        if topic_id:
+            self.session_repository.link_turn_to_topic(
+                user_turn_id,
+                session_id,
+                topic_id,
+                "user",
+                resolution_type or "continue",
+                float(resolution.get("confidence", 0.0) or 0.0),
+            )
+        return topic_id
+
+    def _store_assistant_turn(
+        self,
+        session_id: str,
+        content: str,
+        metadata: dict,
+        topic_id: str | None,
+    ) -> int:
+        turn_id = self.session_repository.add_turn(session_id, "assistant", content, metadata=metadata)
+        if topic_id:
+            self.session_repository.link_turn_to_topic(
+                turn_id,
+                session_id,
+                topic_id,
+                "assistant",
+                "continue",
+                1.0,
+            )
+        return turn_id
+
+    def rebuild_index(self, source_paths: list[Path], progress_callback=None) -> dict:
+        return self.indexing_service.rebuild_index(source_paths, progress_callback=progress_callback)
 
     def index_single_file(self, source_path: Path, progress_callback=None) -> dict:
         return self.indexing_service.index_single_file(source_path, progress_callback=progress_callback)
@@ -276,14 +465,19 @@ class RagPipeline:
             return False
         return True
 
-    async def _rewrite_query_with_llm(self, session_id: str, user_message: str) -> str:
+    async def _rewrite_query_with_llm(
+        self,
+        session_id: str,
+        user_message: str,
+        rewrite_context: dict | None = None,
+    ) -> str:
         """LLM을 사용하여 대화 맥락을 반영한 독립적 검색 질의로 재작성한다.
 
         하드코딩된 마커나 규칙 대신 LLM이 대화 흐름을 판단하여
         대명사 해소, 토픽 연결, 또는 그대로 반환을 결정한다.
         LLM 호출 실패 시 원본 메시지를 그대로 반환한다.
         """
-        rewrite_context = self.session_repository.build_rewrite_context(
+        rewrite_context = rewrite_context or self.session_repository.build_rewrite_context(
             session_id, user_message,
         )
         if rewrite_context is None:
@@ -327,7 +521,7 @@ class RagPipeline:
                     await asyncio.sleep(0.5 * (2 ** (attempt - 1)))
                 rewritten = await self.llm.generate(messages, max_tokens=200)
                 rewritten = rewritten.strip().strip('"').strip("'")
-                if not rewritten or len(rewritten) > len(user_message) * 3:
+                if not self._is_valid_rewritten_query(user_message, rewritten):
                     if attempt < max_retries:
                         continue
                     return user_message.strip()
@@ -338,6 +532,28 @@ class RagPipeline:
                 return user_message.strip()
         return user_message.strip()
 
+    def _is_valid_rewritten_query(self, user_message: str, rewritten: str) -> bool:
+        if not rewritten:
+            return False
+        if len(rewritten) > max(len(user_message) * 3, 120):
+            return False
+        lowered = rewritten.casefold()
+        invalid_markers = (
+            "analyze the input data",
+            "current topic:",
+            "active entities:",
+            "rules:",
+            "recent conversation",
+            "현재 토픽:",
+            "활성 엔티티:",
+            "최근 대화",
+        )
+        if any(marker in lowered for marker in invalid_markers):
+            return False
+        if "\n" in rewritten and len(rewritten.splitlines()) > 2:
+            return False
+        return True
+
     async def _prepare_retrieval_state(
         self,
         session_id: str,
@@ -346,13 +562,48 @@ class RagPipeline:
     ) -> dict:
         recent_turns = self.session_repository.recent_turns(session_id)
         structured_summary = self.session_repository.structured_summary(session_id)
-        topic_state = self.session_repository.topic_state(session_id)
-        policy = self.turn_policy_service.classify_turn(
-            user_message,
-            recent_turns,
-            structured_summary,
-            topic_state,
+        session_topic_state = self.session_repository.topic_state(session_id)
+        session_topics = self.session_repository.list_topics(session_id)
+        current_topic_id = str(session_topic_state.get("last_active_topic_id") or "")
+        resolver = getattr(self, "turn_context_resolver", TurnContextResolver())
+        resolution = resolver.resolve(
+            user_message=user_message,
+            session_topics=session_topics,
+            recent_turns=recent_turns,
+            current_topic_id=current_topic_id or None,
         )
+        resolved_topic = (
+            self.session_repository.get_topic(resolution.topic_id)
+            if resolution.topic_id
+            else None
+        )
+        resolved_topic_state = self._topic_to_topic_state(resolved_topic)
+        topic_state = resolved_topic_state or session_topic_state
+        scoped_recent_turns = (
+            self.session_repository.recent_topic_turns(session_id, resolution.topic_id)
+            if resolution.topic_id
+            else recent_turns
+        )
+        policy = self.turn_policy_service.classify(
+            TurnPolicyInput(
+                user_message=user_message,
+                recent_turns=scoped_recent_turns,
+                summary=structured_summary,
+                topic_state=topic_state,
+            )
+        )
+        if resolution.needs_clarification and resolution.clarification_prompt:
+            policy = TurnPolicyDecision(
+                turn_type="clarification",
+                response_mode="clarification",
+                use_retrieval=False,
+                use_memory_rewrite=False,
+                allow_preview=False,
+                allow_citations=False,
+                needs_clarification=True,
+                clarification_reason="resolver_ambiguous_topic",
+                clarification_prompt=resolution.clarification_prompt,
+            )
         if not policy.use_retrieval:
             return {
                 "rewritten_query": user_message.strip(),
@@ -364,9 +615,16 @@ class RagPipeline:
                 "preview_pages": [],
                 "response_mode": policy.response_mode,
                 "turn_policy": policy.to_dict(),
+                "turn_resolution": resolution.to_dict(),
+                "resolved_topic_id": resolution.topic_id,
             }
+        rewrite_context = (
+            self._build_rewrite_context_from_topic(resolved_topic, scoped_recent_turns)
+            if resolved_topic is not None
+            else None
+        )
         rewritten_query = (
-            await self._rewrite_query_with_llm(session_id, user_message)
+            await self._rewrite_query_with_llm(session_id, user_message, rewrite_context=rewrite_context)
             if policy.use_memory_rewrite
             else user_message.strip()
         )
@@ -396,7 +654,9 @@ class RagPipeline:
         expanded_query = self._expand_query_with_context(refined_query, topic_state)
         query_vector = self.embedder.encode(expanded_query)
         index_items = self.retrieval_service.filter_index_items(index_items_all, allowed_source_paths)
-        retrieved = self.retriever.search(expanded_query, query_vector, index_items)
+        retrieved = self.retriever.search_rrf(
+            expanded_query, query_vector, index_items, rrf_k=60,
+        )
 
         # 대안 쿼리 결과를 원본과 병합하여 recall을 높인다.
         # chunk_id 기준 중복 제거 후 rerank_score 내림차순으로 top_k개를 선택한다.
@@ -405,7 +665,9 @@ class RagPipeline:
         for alt_query in alternative_queries[:2]:
             alt_expanded = self._expand_query_with_context(alt_query, topic_state)
             alt_vector = self.embedder.encode(alt_expanded)
-            alt_retrieved = self.retriever.search(alt_expanded, alt_vector, index_items)
+            alt_retrieved = self.retriever.search_rrf(
+                alt_expanded, alt_vector, index_items, rrf_k=60,
+            )
             for item in alt_retrieved:
                 cid = item["chunk"]["chunk_id"]
                 if cid not in seen_chunk_ids:
@@ -419,17 +681,23 @@ class RagPipeline:
         for i, item in enumerate(retrieved[:5]):
             chunk = item["chunk"]
             logger.info(
-                "[Retrieval] #%d %s p.%s | rerank=%.4f dense=%.4f sparse=%.4f title=%.4f title_bonus=%.4f compact=%.4f",
+                "[Retrieval] #%d %s p.%s | rerank=%.4f dense=%.4f sparse=%.4f",
                 i + 1,
                 Path(chunk["source_path"]).name,
                 chunk.get("page_number", "?"),
                 item.get("rerank_score", 0),
                 item.get("dense_score", 0),
                 item.get("sparse_score", 0),
-                item.get("title_score", 0),
-                item.get("title_match_bonus", 0),
-                item.get("compact_match_bonus", 0),
             )
+
+        # --- Reranker: RRF 후보 top-N을 cross-encoder로 재순위 ---
+        if retrieved:
+            extended = self.retriever.search_rrf(
+                expanded_query, query_vector, index_items,
+                rrf_k=60,
+            )
+            extended = extended[:20]
+            retrieved = self.reranker.rerank(expanded_query, extended)
 
         retrieval_metrics = self.retriever.compute_retrieval_metrics(
             retrieved, min_score=self.settings.retrieval_min_score,
@@ -451,12 +719,15 @@ class RagPipeline:
             "top_score": top_score,
             "use_retrieved_context": use_retrieved_context,
             "grounded_pages": grounded_pages,
+            "ordered_context_items": ordered_context_items,
             "selected_context_items": selected_context_items,
             "preferred_preview_source": preferred_preview_source,
             "preview_pages": preview_pages,
             "response_mode": "rag" if use_retrieved_context else "general",
             "turn_policy": policy.to_dict(),
             "retrieval_metrics": retrieval_metrics,
+            "turn_resolution": resolution.to_dict(),
+            "resolved_topic_id": resolution.topic_id,
         }
 
     async def inspect_retrieval(
@@ -573,6 +844,8 @@ class RagPipeline:
         turn_policy: dict,
         top_score: float,
         context_blocks: list[str],
+        is_new_topic: bool = False,
+        topic_id: str | None = None,
     ) -> list[dict]:
         """LLM에 전달할 시스템 프롬프트, 세션 메모리, 최근 대화, 문맥을 조합한 메시지 목록을 구성한다."""
         system_prompt = (
@@ -585,7 +858,8 @@ class RagPipeline:
             "If the user is simply reacting, acknowledging, or thanking you after a document-grounded answer, respond conversationally without reusing document citations. "
             "Do not mention unrelated prior questions or prior document topics unless the current user message explicitly asks for them. "
             "When retrieved context is used, end the answer with a short source line such as '[file.pdf] p.5' or '[file.pdf] p.5-6'. "
-            "Keep answers concise but grounded."
+            "Keep answers concise but grounded. "
+            "반드시 한국어로 답변하라. 사용자가 어떤 언어로 질문하더라도 항상 한국어로만 답변하라."
         )
         if code_example_request:
             system_prompt += (
@@ -597,8 +871,12 @@ class RagPipeline:
                 "Briefly explain what each code block does before showing it."
             )
         summary = self.session_repository.summary(session_id)
-        prompt_memory = self._build_prompt_memory_snapshot(session_id)
-        recent_turns = self._build_prompt_recent_turns(session_id)
+        prompt_memory = self._build_prompt_memory_snapshot(session_id, topic_id=topic_id)
+        recent_turns = (
+            self._build_prompt_recent_turns_clean(session_id, topic_id=topic_id)
+            if is_new_topic
+            else self._build_prompt_recent_turns(session_id, topic_id=topic_id)
+        )
         context_text = self._build_prompt_context_text(context_blocks)
         return [
             {"role": "system", "content": system_prompt},
@@ -626,18 +904,27 @@ class RagPipeline:
     ) -> AsyncIterator[dict]:
         """사용자 메시지를 받아 검색·LLM 생성·인용 구성을 거쳐 SSE 토큰을 스트리밍한다.
 
-        흐름: 검색 상태 준비 → 문맥 이벤트 → 응답 생성(명확화/추출/캐시/LLM) → 최종 이벤트.
+        흐름: 언어 감지 → 검색 상태 준비 → 문맥 이벤트 → 응답 생성(명확화/추출/캐시/LLM) → 최종 이벤트.
         """
+        # --- 언어 감지: 한글 없이 중국어/일본어가 주된 질문은 조기 차단 ---
+        lang_notice = self._detect_non_korean_query(user_message)
+        if lang_notice:
+            yield {"type": "token", "content": lang_notice, "cached": False}
+            yield {"type": "done", "cached": False}
+            return
+
         state = await self._prepare_retrieval_state(session_id, user_message, allowed_source_paths)
         rewritten_query = state["rewritten_query"]
         top_score = state["top_score"]
         use_retrieved_context = state["use_retrieved_context"]
         grounded_pages = state["grounded_pages"]
+        ordered_context_items = state.get("ordered_context_items", [])
         selected_context_items = state["selected_context_items"]
         preferred_preview_source = state["preferred_preview_source"]
         preview_pages = state["preview_pages"]
         response_mode = state.get("response_mode", "rag" if use_retrieved_context else "general")
         turn_policy = state.get("turn_policy", {})
+        resolved_topic_id = state.get("resolved_topic_id")
         policy_decision = TurnPolicyDecision(**turn_policy) if turn_policy else TurnPolicyDecision(
             turn_type=response_mode,
             response_mode=response_mode,
@@ -651,6 +938,7 @@ class RagPipeline:
             policy_decision.turn_type, policy_decision.response_mode, policy_decision.use_retrieval,
         )
         code_example_request = self._is_code_example_request(user_message)
+        table_request = self._is_table_request(user_message) or self._is_comparison_request(user_message)
         interleaved_context_items = self._interleave_context_items_by_source(selected_context_items)
         context_blocks, context_ids = self._build_context_blocks(interleaved_context_items)
 
@@ -661,8 +949,10 @@ class RagPipeline:
         )
         cached_answer = self.answer_cache_repository.get(cache_key)
 
+        user_turn_id: int | None = None
         if append_user_turn:
-            self.session_repository.add_turn(session_id, "user", user_message)
+            user_turn_id = self.session_repository.add_turn(session_id, "user", user_message)
+            resolved_topic_id = self._ensure_topic_for_resolution(session_id, user_message, state, user_turn_id)
         if not policy_decision.allow_preview:
             preview_pages = []
             preferred_preview_source = None
@@ -684,7 +974,7 @@ class RagPipeline:
                 preview_finalized=True,
             )
             yield {"type": "context", **final_payload}
-            self.session_repository.add_turn(session_id, "assistant", ack_answer, metadata=final_payload)
+            self._store_assistant_turn(session_id, ack_answer, final_payload, resolved_topic_id)
             yield {"type": "done", "cached": False}
             return
 
@@ -700,7 +990,7 @@ class RagPipeline:
                 preview_finalized=True,
             )
             yield {"type": "context", **final_payload}
-            self.session_repository.add_turn(session_id, "assistant", greeting_answer, metadata=final_payload)
+            self._store_assistant_turn(session_id, greeting_answer, final_payload, resolved_topic_id)
             yield {"type": "done", "cached": False}
             return
 
@@ -716,7 +1006,7 @@ class RagPipeline:
                 preview_finalized=True,
             )
             yield {"type": "context", **final_payload}
-            self.session_repository.add_turn(session_id, "assistant", reject_answer, metadata=final_payload)
+            self._store_assistant_turn(session_id, reject_answer, final_payload, resolved_topic_id)
             yield {"type": "done", "cached": False}
             return
 
@@ -740,7 +1030,7 @@ class RagPipeline:
                 preview_finalized=True,
             )
             yield {"type": "context", **final_payload}
-            self.session_repository.add_turn(session_id, "assistant", no_result_answer, metadata=final_payload)
+            self._store_assistant_turn(session_id, no_result_answer, final_payload, resolved_topic_id)
             yield {"type": "done", "cached": False}
             return
 
@@ -765,7 +1055,7 @@ class RagPipeline:
                     preview_finalized=True,
                 )
                 yield {"type": "context", **final_payload}
-                self.session_repository.add_turn(session_id, "assistant", clarification, metadata=final_payload)
+                self._store_assistant_turn(session_id, clarification, final_payload, resolved_topic_id)
                 yield {"type": "done", "cached": False}
                 return
 
@@ -781,7 +1071,7 @@ class RagPipeline:
                 preview_finalized=True,
             )
             yield {"type": "context", **final_payload}
-            self.session_repository.add_turn(session_id, "assistant", clarification_answer, metadata=final_payload)
+            self._store_assistant_turn(session_id, clarification_answer, final_payload, resolved_topic_id)
             self.answer_cache_repository.set(cache_key, {"answer": clarification_answer})
             yield {"type": "done", "cached": False}
             return
@@ -804,21 +1094,96 @@ class RagPipeline:
                 if suffix:
                     yield {"type": "token", "content": suffix, "cached": True}
             yield {"type": "context", **final_payload}
-            self.session_repository.add_turn(session_id, "assistant", final_answer, metadata=final_payload)
+            self._store_assistant_turn(session_id, final_answer, final_payload, resolved_topic_id)
             yield {"type": "done", "cached": True}
             return
 
         # --- LLM 스트리밍 생성: 문맥과 대화 이력을 LLM에 전달하여 토큰 단위로 응답 ---
+        # 검색 결과가 없고 RAG 모드가 아닌 경우, 이전 답변의 소스 인용이 bleeding되지 않도록 처리
+        if code_example_request and use_retrieved_context:
+            code_context_items = self._prefer_block_type_items(
+                ordered_context_items or selected_context_items,
+                block_type="code",
+                limit=max(len(selected_context_items), 3),
+            ) or selected_context_items
+            extractive_code_answer = self.answer_service.build_extractive_code_answer(code_context_items)
+            if extractive_code_answer:
+                final_answer, answer_citations, final_payload = self._finalize_answer(
+                    extractive_code_answer,
+                    rewritten_query,
+                    use_retrieved_context,
+                    top_score,
+                    code_context_items,
+                    grounded_pages,
+                    preferred_preview_source,
+                    response_mode,
+                    policy_decision,
+                )
+                yield {"type": "token", "content": final_answer, "cached": False}
+                yield {"type": "context", **final_payload}
+                self._store_assistant_turn(session_id, final_answer, final_payload, resolved_topic_id)
+                self.answer_cache_repository.set(cache_key, {"answer": final_answer})
+                yield {"type": "done", "cached": False}
+                return
+            no_code_answer = (
+                "업로드된 문서에서 요청하신 YAML/코드 예시를 직접 찾지 못했습니다. "
+                "문서에 실제 예시 블록이 있는지 다시 확인할 수 있도록 더 구체적인 범위나 페이지를 지정해 주세요."
+            )
+            yield {"type": "token", "content": no_code_answer, "cached": False}
+            final_payload = self.answer_service.build_context_payload(
+                rewritten_query,
+                "clarification",
+                top_score,
+                None,
+                [],
+                [],
+                [],
+                [],
+                preview_finalized=True,
+            )
+            yield {"type": "context", **final_payload}
+            self._store_assistant_turn(session_id, no_code_answer, final_payload, resolved_topic_id)
+            yield {"type": "done", "cached": False}
+            return
+
+        if table_request and use_retrieved_context:
+            table_context_items = self._prefer_block_type_items(
+                ordered_context_items or selected_context_items,
+                block_type="table",
+                limit=max(len(selected_context_items), 3),
+            ) or selected_context_items
+            extractive_table_answer = self.answer_service.build_extractive_table_answer(table_context_items)
+            if extractive_table_answer:
+                final_answer, answer_citations, final_payload = self._finalize_answer(
+                    extractive_table_answer,
+                    rewritten_query,
+                    use_retrieved_context,
+                    top_score,
+                    table_context_items,
+                    grounded_pages,
+                    preferred_preview_source,
+                    response_mode,
+                    policy_decision,
+                )
+                yield {"type": "token", "content": final_answer, "cached": False}
+                yield {"type": "context", **final_payload}
+                self._store_assistant_turn(session_id, final_answer, final_payload, resolved_topic_id)
+                self.answer_cache_repository.set(cache_key, {"answer": final_answer})
+                yield {"type": "done", "cached": False}
+                return
+
+        is_new_topic = not use_retrieved_context and response_mode != "rag"
         messages = self._build_llm_messages(
             session_id, user_message, code_example_request,
             response_mode, turn_policy, top_score, context_blocks,
+            is_new_topic=is_new_topic, topic_id=resolved_topic_id,
         )
         parts: list[str] = []
         try:
             async for token in self.llm.stream_chat(messages):
                 parts.append(token)
                 yield {"type": "token", "content": token, "cached": False}
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:
             fallback = self._build_llm_failure_fallback(
                 user_message, use_retrieved_context, context_blocks,
                 self._build_prompt_context_text(context_blocks), policy_decision,
@@ -836,7 +1201,7 @@ class RagPipeline:
             if suffix:
                 yield {"type": "token", "content": suffix, "cached": False}
         yield {"type": "context", **final_payload}
-        self.session_repository.add_turn(session_id, "assistant", final_answer, metadata=final_payload)
+        self._store_assistant_turn(session_id, final_answer, final_payload, resolved_topic_id)
         self.answer_cache_repository.set(cache_key, {"answer": final_answer})
         logger.info(
             "[Cache] embedding %s | answer %s",
