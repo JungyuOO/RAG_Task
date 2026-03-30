@@ -338,27 +338,11 @@ class StructuredMarkdownChunker:
                 continue
 
             if self._is_code_block(lines):
-                normalized = "\n".join(line.rstrip() for line in lines).strip()
-                blocks.append(
-                    MarkdownBlock(
-                        text=normalized,
-                        page_start=page_number,
-                        page_end=page_number,
-                        kind="code",
-                    )
-                )
+                blocks.extend(self._split_code_block(lines, page_number))
                 continue
 
             if self._is_table_block(lines):
-                normalized = "\n".join(line.rstrip() for line in lines).strip()
-                blocks.append(
-                    MarkdownBlock(
-                        text=normalized,
-                        page_start=page_number,
-                        page_end=page_number,
-                        kind="table",
-                    )
-                )
+                blocks.extend(self._split_table_block(lines, page_number))
                 continue
 
             all_list = all(self._is_list_line(line) for line in lines)
@@ -410,6 +394,76 @@ class StructuredMarkdownChunker:
         if current_lines:
             sections.append("\n".join(current_lines).strip())
         return [section for section in sections if section]
+
+    def _split_code_block(self, lines: list[str], page_number: int) -> list[MarkdownBlock]:
+        """코드 블록을 줄 단위로 분할한다. 각 청크에 펜스 마커(```)를 보존한다.
+
+        MAX_LINES를 초과하면 fence + 코드줄 + closing fence 형태로 그룹 분할.
+        """
+        MAX_LINES = 40
+        fence = lines[0]   # e.g. ```python
+        closing = lines[-1]  # ```
+        code_lines = lines[1:-1]
+
+        if len(code_lines) <= MAX_LINES:
+            text = "\n".join(line.rstrip() for line in lines).strip()
+            return [MarkdownBlock(text=text, page_start=page_number, page_end=page_number, kind="code")]
+
+        result = []
+        for i in range(0, len(code_lines), MAX_LINES):
+            group = code_lines[i: i + MAX_LINES]
+            text = "\n".join([fence] + [ln.rstrip() for ln in group] + [closing]).strip()
+            result.append(MarkdownBlock(text=text, page_start=page_number, page_end=page_number, kind="code"))
+        return result
+
+    def _split_table_block(self, lines: list[str], page_number: int) -> list[MarkdownBlock]:
+        """테이블을 헤더+구분자+N행 그룹으로 분할한다. 각 청크에 헤더 행을 반복한다."""
+        if len(lines) < 3:
+            text = "\n".join(line.rstrip() for line in lines).strip()
+            return [MarkdownBlock(text=text, page_start=page_number, page_end=page_number, kind="table")]
+
+        header = lines[0].rstrip()
+        # 구분자 행 탐색 (---|---| 패턴)
+        sep_idx = next(
+            (i for i, ln in enumerate(lines[1:], 1) if re.match(r"^\|?[\s:|\-]+\|?$", ln)),
+            None,
+        )
+        if sep_idx is None:
+            text = "\n".join(line.rstrip() for line in lines).strip()
+            return [MarkdownBlock(text=text, page_start=page_number, page_end=page_number, kind="table")]
+
+        separator = lines[sep_idx].rstrip()
+        data_rows = [ln.rstrip() for ln in lines[sep_idx + 1:]]
+        header_block = f"{header}\n{separator}"
+
+        # 헤더를 포함한 청크 크기 계산 (char 기준)
+        header_chars = len(header_block) + 1
+        budget = max(self.chunk_size - header_chars, len(header) * 3)
+
+        # 행을 그룹으로 묶기
+        groups: list[list[str]] = []
+        current: list[str] = []
+        current_chars = 0
+        for row in data_rows:
+            if current and current_chars + len(row) + 1 > budget:
+                groups.append(current)
+                current = [row]
+                current_chars = len(row)
+            else:
+                current.append(row)
+                current_chars += len(row) + 1
+        if current:
+            groups.append(current)
+
+        if len(groups) <= 1:
+            text = "\n".join(line.rstrip() for line in lines).strip()
+            return [MarkdownBlock(text=text, page_start=page_number, page_end=page_number, kind="table")]
+
+        result = []
+        for group in groups:
+            text = header_block + "\n" + "\n".join(group)
+            result.append(MarkdownBlock(text=text, page_start=page_number, page_end=page_number, kind="table"))
+        return result
 
     def _is_list_line(self, line: str) -> bool:
         return bool(re.match(r"^(?:[-*]\s+|\d+\.\s+)", line))
