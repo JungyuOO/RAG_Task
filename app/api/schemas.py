@@ -48,9 +48,13 @@ class LibraryDocument(BaseModel):
 
 class StartupIndexingStatus(BaseModel):
     status: str = "idle"  # "idle", "indexing", "done"
-    total: int = 0
-    completed: int = 0
+    total_files: int = 0
+    completed_files: int = 0
     current_file: str = ""
+    current_stage: str = ""
+    current_chunk: int = 0
+    total_chunks: int = 0
+    progress_pct: int = 0
 
 
 class LibraryStatusResponse(BaseModel):
@@ -58,6 +62,7 @@ class LibraryStatusResponse(BaseModel):
     total_files: int
     indexed_documents: list[LibraryDocument]
     startup_indexing: StartupIndexingStatus = StartupIndexingStatus()
+    reindexing: StartupIndexingStatus = StartupIndexingStatus()
 
 
 class SessionHistoryItem(BaseModel):
