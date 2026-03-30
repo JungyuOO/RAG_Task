@@ -6,4 +6,5 @@ pymupdf==1.27.2
 python-dotenv==1.1.1
 python-multipart==0.0.22
 psycopg2-binary==2.9.10
+sentence-transformers==3.4.1
 uvicorn==0.42.0
