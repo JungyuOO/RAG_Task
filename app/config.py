@@ -39,10 +39,6 @@ class Settings(BaseSettings):
     rag_extract_dir: Path
     save_extracted_markdown: bool = True
 
-    # 임베딩 모델 선택. "hash": HashingEmbedder (기본값, 외부 모델 없음),
-    # "e5": intfloat/multilingual-e5-small (384차원, sentence-transformers 필요)
-    embedding_model: str
-
     # Ollama 설정 (BGE-M3 임베딩, bge-reranker-v2-m3 리랭킹)
     ollama_base_url: str = "http://localhost:11434"
     ollama_embedding_model: str = "bge-m3"
@@ -81,16 +77,11 @@ class Settings(BaseSettings):
     # 하이브리드 검색 가중치.
     # dense(의미 유사도) 0.45 + sparse(키워드 정확도) 0.25 + title(문서 매칭) 0.15 = 0.85.
     # 나머지 0.15는 title_match_bonus, compact_overlap_bonus로 보정.
-    # dense를 가장 높게 설정한 이유: SHA-256 해싱 임베딩은 바이그램+위치 가중으로
-    # 토큰 순서를 반영하므로, BM25보다 문맥 유사도 판별에 유리.
+    # dense를 가장 높게 설정한 이유: BGE-M3 임베딩은 의미 유사도 판별에 유리하므로
+    # BM25보다 문맥 검색 정확도가 높다.
     retrieval_dense_weight: float = 0.45
     retrieval_sparse_weight: float = 0.25
     retrieval_title_weight: float = 0.15
-
-    # E5 임베딩 사용 시 가중치 (의미 검색이 강하므로 sparse/title 비중 증가)
-    e5_retrieval_dense_weight: float = 0.30
-    e5_retrieval_sparse_weight: float = 0.35
-    e5_retrieval_title_weight: float = 0.20
 
     # BM25 파라미터 — Okapi BM25 표준값 (Robertson et al., 1994).
     # k1: TF 포화 계수. 높을수록 반복 출현 토큰의 영향 증가.

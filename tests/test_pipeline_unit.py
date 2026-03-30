@@ -7,11 +7,12 @@ so no real connections are attempted.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import math
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-from app.rag.embeddings import HashingEmbedder
 from app.rag.pipeline import RagPipeline
 from app.rag.retrieval import HybridRetriever
 from app.rag.types import ChatTurn
@@ -23,6 +24,14 @@ from app.services.turn_policy_service import TurnPolicyService
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _make_test_vector(text: str, dim: int = 1024) -> list[float]:
+    """Deterministic fake vector for testing purposes."""
+    digest = hashlib.md5(text.encode()).digest()
+    vals = [((digest[i % 16] ^ (i * 7)) - 128) / 128.0 for i in range(dim)]
+    norm = math.sqrt(sum(v * v for v in vals)) or 1.0
+    return [v / norm for v in vals]
+
 
 def _make_retriever() -> HybridRetriever:
     return HybridRetriever(
@@ -53,8 +62,7 @@ def _make_settings() -> MagicMock:
     s.candidate_pool_size = 8
     s.grounded_page_top_n = 3
     s.grounded_chunk_top_n = 3
-    s.embedding_model = "hash"
-    s.vector_dim = 768
+    s.vector_dim = 1024
     return s
 
 
@@ -75,11 +83,10 @@ def _make_session_repository(recent_turns=None) -> MagicMock:
 
 
 def _make_fake_index_items(source_path: str = "manual.pdf") -> list[dict]:
-    embedder = HashingEmbedder(dim=768)
     text = "PV PVC persistent volume claim 설명 kubernetes storage"
     return [
         {
-            "vector": embedder.encode(text),
+            "vector": _make_test_vector(text, dim=1024),
             "chunk": {
                 "chunk_id": "chunk-pv-1",
                 "source_path": source_path,
@@ -98,7 +105,9 @@ def _build_pipeline() -> RagPipeline:
     pipeline.settings = _make_settings()
 
     # Real retrieval components — deterministic, no I/O
-    pipeline.embedder = HashingEmbedder(dim=768)
+    pipeline.embedder = MagicMock()
+    pipeline.embedder.encode.return_value = [0.01] * 1024
+    pipeline.embedder.encode_passage.return_value = [0.01] * 1024
     pipeline.retriever = _make_retriever()
 
     # Retrieval service and answer service use no external I/O

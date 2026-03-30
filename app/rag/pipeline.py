@@ -13,8 +13,6 @@ from app.config import Settings
 from app.rag.cache import JsonFileCache
 from app.rag.chunking import StructuredMarkdownChunker, TextChunker
 from app.rag.bge_embeddings import BGEOllamaEmbedder
-from app.rag.e5_embeddings import E5Embedder
-from app.rag.embeddings import HashingEmbedder
 from app.rag.reranker import OllamaReranker
 from app.rag.index import VectorIndex
 from app.rag.ingestion import DocumentIngestor
@@ -41,28 +39,16 @@ class RagPipeline:
             chunk_size=settings.structured_chunk_size,
             overlap=settings.structured_chunk_overlap,
         )
-        if settings.embedding_model == "e5":
-            self.embedder = E5Embedder()
-            settings.vector_dim = self.embedder.dim
-        elif settings.embedding_model == "bge":
-            self.embedder = BGEOllamaEmbedder(
-                base_url=settings.ollama_base_url,
-                model=settings.ollama_embedding_model,
-                timeout=settings.ollama_timeout,
-            )
-            settings.vector_dim = self.embedder.dim  # 1024
-        else:
-            self.embedder = HashingEmbedder(dim=settings.vector_dim)
+        self.embedder = BGEOllamaEmbedder(
+            base_url=settings.ollama_base_url,
+            model=settings.ollama_embedding_model,
+            timeout=settings.ollama_timeout,
+        )
+        settings.vector_dim = self.embedder.dim  # 1024
         self.index = VectorIndex(settings.db_dsn)
-        # 임베딩 모델에 따른 검색 가중치 선택
-        if settings.embedding_model == "e5":
-            dense_w = settings.e5_retrieval_dense_weight
-            sparse_w = settings.e5_retrieval_sparse_weight
-            title_w = settings.e5_retrieval_title_weight
-        else:
-            dense_w = settings.retrieval_dense_weight
-            sparse_w = settings.retrieval_sparse_weight
-            title_w = settings.retrieval_title_weight
+        dense_w = settings.retrieval_dense_weight
+        sparse_w = settings.retrieval_sparse_weight
+        title_w = settings.retrieval_title_weight
         self.retriever = HybridRetriever(
             top_k=settings.retrieval_top_k,
             candidate_pool_size=settings.candidate_pool_size,
@@ -126,7 +112,7 @@ class RagPipeline:
 
         대명사("그거", "이거")나 생략된 주어가 있는 후속 질문에서,
         active_entities의 핵심 용어를 쿼리 앞에 추가하여
-        HashingEmbedder의 키워드 기반 검색 정확도를 높인다.
+        BGE-M3 임베딩의 검색 정확도를 높인다.
         이미 쿼리에 포함된 토큰은 중복 추가하지 않는다.
         쿼리에 이미 명확한 기술 용어(대문자 약어 등)가 있으면 확장을 최소화한다.
         """
