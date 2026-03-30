@@ -17,6 +17,47 @@ class AnswerService:
     def __init__(self, retrieval_service: RetrievalService) -> None:
         self.retrieval_service = retrieval_service
 
+    def build_extractive_table_answer(self, context_items: list[dict]) -> str | None:
+        tables: list[dict[str, str]] = []
+        seen_tables: set[str] = set()
+
+        for item in context_items:
+            chunk = item["chunk"]
+            text = str(chunk.get("text", "") or "")
+            if not text.strip():
+                continue
+            for table in self._extract_markdown_tables(text):
+                normalized = re.sub(r"\s+", " ", table).strip().casefold()
+                if len(normalized) < 20 or normalized in seen_tables:
+                    continue
+                seen_tables.add(normalized)
+                tables.append(
+                    {
+                        "file_name": Path(chunk["source_path"]).name,
+                        "page_start": str(chunk["metadata"].get("page_start") or chunk.get("page_number") or 1),
+                        "page_end": str(chunk["metadata"].get("page_end") or chunk["metadata"].get("page_start") or chunk.get("page_number") or 1),
+                        "table": table.strip(),
+                    }
+                )
+                if len(tables) >= 2:
+                    break
+            if len(tables) >= 2:
+                break
+
+        if not tables:
+            return None
+
+        parts = ["문서에서 확인된 표를 그대로 정리하면 아래와 같습니다."]
+        for table in tables:
+            page_label = (
+                f"p.{table['page_start']}"
+                if table["page_start"] == table["page_end"]
+                else f"p.{table['page_start']}-{table['page_end']}"
+            )
+            parts.append(f"[{table['file_name']}] {page_label}")
+            parts.append(table["table"])
+        return "\n\n".join(parts).strip()
+
     def build_extractive_code_answer(self, context_items: list[dict]) -> str | None:
         snippets: list[dict[str, str]] = []
         seen_blocks: set[str] = set()
@@ -191,6 +232,35 @@ class AnswerService:
 
         return candidates
 
+    def _extract_markdown_tables(self, text: str) -> list[str]:
+        lines = [line.rstrip() for line in text.replace("\r\n", "\n").split("\n")]
+        tables: list[str] = []
+        current: list[str] = []
+
+        def flush() -> None:
+            nonlocal current
+            if len(current) >= 2:
+                tables.append("\n".join(current).strip())
+            current = []
+
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("|") and stripped.endswith("|"):
+                current.append(stripped)
+                continue
+            if current:
+                flush()
+        if current:
+            flush()
+        return [table for table in tables if self._looks_like_markdown_table(table)]
+
+    def _looks_like_markdown_table(self, table: str) -> bool:
+        lines = [line.strip() for line in table.splitlines() if line.strip()]
+        if len(lines) < 2:
+            return False
+        separator_re = re.compile(r"^\|?(?:\s*:?-{3,}:?\s*\|)+\s*$")
+        return any(separator_re.match(line) for line in lines[1:3])
+
     def _is_code_line(self, line: str) -> bool:
         stripped = line.strip()
         lowered = stripped.casefold()
@@ -232,6 +302,9 @@ class AnswerService:
         grounded_pages: list[dict],
         preferred_preview_source: str | None,
     ) -> list[dict]:
+        if self.should_suppress_citations(answer):
+            return []
+
         payload: list[dict] = []
         seen: set[tuple[str, int]] = set()
         items_by_name: dict[str, list[dict]] = defaultdict(list)
@@ -279,6 +352,20 @@ class AnswerService:
                 origin="grounded_page",
             )
         return payload
+
+    def should_suppress_citations(self, answer: str) -> bool:
+        normalized = (answer or "").strip().casefold()
+        if not normalized:
+            return True
+        negative_markers = (
+            "업로드된 문서에서 관련 내용을 찾을 수 없습니다",
+            "관련 내용을 찾기 어렵습니다",
+            "다른 질문을 해주시거나",
+            "관련 문서를 업로드해 주세요",
+            "찾을 수 없습니다",
+            "unable to find relevant content",
+        )
+        return any(marker.casefold() in normalized for marker in negative_markers)
 
     def append_citation_entry(
         self,
@@ -392,6 +479,8 @@ class AnswerService:
         use_retrieved_context: bool,
     ) -> str:
         if not answer or not use_retrieved_context or not answer_citations:
+            return answer
+        if self.should_suppress_citations(answer):
             return answer
         if self.extract_answer_citations(answer):
             return answer
