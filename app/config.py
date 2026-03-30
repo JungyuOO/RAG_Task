@@ -46,11 +46,9 @@ class Settings(BaseSettings):
     ollama_timeout: float = 120.0
 
     # RRF 설정
-    use_rrf: bool = False
     rrf_k: int = 60
 
     # 리랭킹 설정
-    use_reranker: bool = False
     reranker_top_k: int = 5
     reranker_candidate_k: int = 20
 
