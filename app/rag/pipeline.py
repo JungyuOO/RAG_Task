@@ -167,6 +167,34 @@ class RagPipeline:
             return "네, 필요하시면 이어서 관련 내용을 더 설명드릴게요."
         return "현재 LLM 연결이 불안정해 일반 답변을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요."
 
+    @staticmethod
+    def _detect_non_korean_query(text: str) -> str | None:
+        """한글이 없고 비한국어 문자(중국어/일본어 등)가 포함된 질문을 감지한다.
+
+        한글(AC00-D7A3, 1100-11FF, 3130-318F)이 하나라도 있으면 정상 질문으로 허용한다.
+        영어+기술 키워드(PV, Pod 등)만 있는 경우는 허용한다.
+        중국어 간체·번체(4E00-9FFF, F900-FAFF) 또는 일본어 히라가나·카타카나가
+        전체의 20% 이상이면 비한국어 질문으로 판정하여 안내 메시지를 반환한다.
+        """
+        if not text or not text.strip():
+            return None
+
+        has_korean = any('\uAC00' <= ch <= '\uD7A3' or '\u1100' <= ch <= '\u11FF' or '\u3130' <= ch <= '\u318F' for ch in text)
+        if has_korean:
+            return None
+
+        non_latin_chars = [
+            ch for ch in text
+            if ('\u4E00' <= ch <= '\u9FFF')   # CJK 통합 한자
+            or ('\uF900' <= ch <= '\uFAFF')   # CJK 호환 한자
+            or ('\u3040' <= ch <= '\u309F')   # 히라가나
+            or ('\u30A0' <= ch <= '\u30FF')   # 카타카나
+        ]
+        total_alpha = sum(1 for ch in text if ch.isalpha())
+        if total_alpha > 0 and len(non_latin_chars) / total_alpha >= 0.2:
+            return "한국어로 질문해 주세요. 기술 키워드(예: PV, Pod, Deployment)는 영어로 입력하셔도 됩니다."
+        return None
+
     def _is_code_example_request(self, user_message: str) -> bool:
         normalized = (user_message or "").lower()
         markers = (
@@ -227,6 +255,22 @@ class RagPipeline:
             }
             for turn in recent_turns
         ]
+
+    def _build_prompt_recent_turns_clean(self, session_id: str) -> list[dict]:
+        """새로운 토픽 전환 시, assistant 답변에서 소스 인용 라인을 제거한 최근 대화를 반환한다.
+
+        이전 RAG 답변의 '[파일.pdf] p.X' 형태 인용이 무관한 새 질문에 bleeding되는 것을 방지한다.
+        """
+        citation_pattern = re.compile(r'\[[^\]]+\.(?:pdf|PDF)[^\]]*\][^\n]*')
+        turns = self._build_prompt_recent_turns(session_id)
+        cleaned = []
+        for turn in turns:
+            if turn["role"] == "assistant":
+                content = citation_pattern.sub('', turn["content"]).strip()
+                cleaned.append({**turn, "content": content})
+            else:
+                cleaned.append(turn)
+        return cleaned
 
     def _build_prompt_context_text(self, context_blocks: list[str]) -> str:
         max_items = max(int(self.settings.llm_prompt_context_items), 1)
@@ -573,6 +617,7 @@ class RagPipeline:
         turn_policy: dict,
         top_score: float,
         context_blocks: list[str],
+        is_new_topic: bool = False,
     ) -> list[dict]:
         """LLM에 전달할 시스템 프롬프트, 세션 메모리, 최근 대화, 문맥을 조합한 메시지 목록을 구성한다."""
         system_prompt = (
@@ -585,7 +630,8 @@ class RagPipeline:
             "If the user is simply reacting, acknowledging, or thanking you after a document-grounded answer, respond conversationally without reusing document citations. "
             "Do not mention unrelated prior questions or prior document topics unless the current user message explicitly asks for them. "
             "When retrieved context is used, end the answer with a short source line such as '[file.pdf] p.5' or '[file.pdf] p.5-6'. "
-            "Keep answers concise but grounded."
+            "Keep answers concise but grounded. "
+            "반드시 한국어로 답변하라. 사용자가 어떤 언어로 질문하더라도 항상 한국어로만 답변하라."
         )
         if code_example_request:
             system_prompt += (
@@ -598,7 +644,11 @@ class RagPipeline:
             )
         summary = self.session_repository.summary(session_id)
         prompt_memory = self._build_prompt_memory_snapshot(session_id)
-        recent_turns = self._build_prompt_recent_turns(session_id)
+        recent_turns = (
+            self._build_prompt_recent_turns_clean(session_id)
+            if is_new_topic
+            else self._build_prompt_recent_turns(session_id)
+        )
         context_text = self._build_prompt_context_text(context_blocks)
         return [
             {"role": "system", "content": system_prompt},
@@ -626,8 +676,15 @@ class RagPipeline:
     ) -> AsyncIterator[dict]:
         """사용자 메시지를 받아 검색·LLM 생성·인용 구성을 거쳐 SSE 토큰을 스트리밍한다.
 
-        흐름: 검색 상태 준비 → 문맥 이벤트 → 응답 생성(명확화/추출/캐시/LLM) → 최종 이벤트.
+        흐름: 언어 감지 → 검색 상태 준비 → 문맥 이벤트 → 응답 생성(명확화/추출/캐시/LLM) → 최종 이벤트.
         """
+        # --- 언어 감지: 한글 없이 중국어/일본어가 주된 질문은 조기 차단 ---
+        lang_notice = self._detect_non_korean_query(user_message)
+        if lang_notice:
+            yield {"type": "token", "content": lang_notice, "cached": False}
+            yield {"type": "done", "cached": False}
+            return
+
         state = await self._prepare_retrieval_state(session_id, user_message, allowed_source_paths)
         rewritten_query = state["rewritten_query"]
         top_score = state["top_score"]
@@ -809,9 +866,12 @@ class RagPipeline:
             return
 
         # --- LLM 스트리밍 생성: 문맥과 대화 이력을 LLM에 전달하여 토큰 단위로 응답 ---
+        # 검색 결과가 없고 RAG 모드가 아닌 경우, 이전 답변의 소스 인용이 bleeding되지 않도록 처리
+        is_new_topic = not use_retrieved_context and response_mode != "rag"
         messages = self._build_llm_messages(
             session_id, user_message, code_example_request,
             response_mode, turn_policy, top_score, context_blocks,
+            is_new_topic=is_new_topic,
         )
         parts: list[str] = []
         try:
