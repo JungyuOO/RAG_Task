@@ -122,6 +122,97 @@ class HybridRetriever:
         reranked = self._rerank(query_tokens, candidate_pool)
         return reranked[: self.top_k]
 
+    def search_rrf(
+        self,
+        query: str,
+        query_vector: list[float],
+        index_items: list[dict],
+        rrf_k: int = 60,
+    ) -> list[dict]:
+        """Reciprocal Rank Fusion으로 dense + sparse 랭크를 결합한다.
+
+        dense 랭크(코사인 유사도)와 sparse 랭크(BM25)를 각각 계산하여
+        RRF 공식 score = 1/(k + rank_dense) + 1/(k + rank_sparse) 로 결합한다.
+        상위 candidate_pool_size개를 추린 뒤 기존 _rerank()로 재순위하여 top_k를 반환한다.
+        """
+        if not index_items:
+            return []
+
+        query_tokens = tokenize(query)
+        query_compact = "".join(query_tokens)
+
+        # BM25 stats
+        doc_frequency = Counter()
+        doc_lengths: list[int] = []
+        for item in index_items:
+            tokens = item["chunk"]["tokens"]
+            doc_frequency.update(set(tokens))
+            doc_lengths.append(len(tokens))
+        avg_doc_length = sum(doc_lengths) / max(len(doc_lengths), 1)
+        total_docs = max(len(index_items), 1)
+
+        # Compute per-item dense and sparse scores
+        item_scores: list[tuple[int, float, float]] = []  # (original_index, dense, sparse)
+        for idx, item in enumerate(index_items):
+            dense_score = cosine_similarity(query_vector, item["vector"])
+            sparse_score = self._bm25(
+                query_tokens, item["chunk"]["tokens"], doc_frequency, total_docs, avg_doc_length,
+            )
+            item_scores.append((idx, dense_score, sparse_score))
+
+        # Build dense ranking (rank 1 = highest cosine similarity)
+        dense_sorted = sorted(item_scores, key=lambda x: x[1], reverse=True)
+        dense_rank: dict[int, int] = {entry[0]: rank + 1 for rank, entry in enumerate(dense_sorted)}
+
+        # Build sparse ranking (rank 1 = highest BM25)
+        sparse_sorted = sorted(item_scores, key=lambda x: x[2], reverse=True)
+        sparse_rank: dict[int, int] = {entry[0]: rank + 1 for rank, entry in enumerate(sparse_sorted)}
+
+        # Compute RRF score for each item
+        rrf_scored: list[dict] = []
+        for idx, item in enumerate(index_items):
+            chunk = item["chunk"]
+            candidate_tokens = chunk["tokens"]
+            candidate_compact = "".join(candidate_tokens)
+            source_name = Path(chunk["source_path"]).stem
+            source_tokens = tokenize(source_name)
+            source_compact = "".join(source_tokens)
+
+            dense_score = item_scores[idx][1]
+            sparse_score = item_scores[idx][2]
+            title_score = keyword_overlap_score(query_tokens, source_tokens)
+
+            title_match_bonus = 0.0
+            compact_match_bonus = 0.0
+            if query_compact and source_compact:
+                if source_compact in query_compact or query_compact in source_compact:
+                    title_match_bonus = self.title_match_bonus_value
+            if query_compact and candidate_compact and len(query_compact) >= 4:
+                compact_match_bonus = self._compact_overlap_bonus(query_compact, candidate_compact)
+
+            rrf_score = (
+                1.0 / (rrf_k + dense_rank[idx])
+                + 1.0 / (rrf_k + sparse_rank[idx])
+            )
+
+            rrf_scored.append(
+                {
+                    "score": rrf_score,
+                    "dense_score": dense_score,
+                    "sparse_score": sparse_score,
+                    "title_score": title_score,
+                    "title_match_bonus": title_match_bonus,
+                    "compact_match_bonus": compact_match_bonus,
+                    "chunk": chunk,
+                }
+            )
+
+        rrf_scored.sort(key=lambda entry: entry["score"], reverse=True)
+        candidates = rrf_scored[: self.candidate_pool_size]
+
+        reranked = self._rerank(query_tokens, candidates)
+        return reranked[: self.top_k]
+
     def _bm25(
         self,
         query_tokens: list[str],
