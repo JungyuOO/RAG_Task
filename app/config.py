@@ -43,12 +43,27 @@ class Settings(BaseSettings):
     # "e5": intfloat/multilingual-e5-small (384차원, sentence-transformers 필요)
     embedding_model: str
 
+    # Ollama 설정 (BGE-M3 임베딩, bge-reranker-v2-m3 리랭킹)
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_embedding_model: str = "bge-m3"
+    ollama_reranker_model: str = "bge-reranker-v2-m3"
+    ollama_timeout: float = 120.0
+
+    # RRF 설정
+    use_rrf: bool = False
+    rrf_k: int = 60
+
+    # 리랭킹 설정
+    use_reranker: bool = False
+    reranker_top_k: int = 5
+    reranker_candidate_k: int = 20
+
     chunk_size: int = 700
     chunk_overlap: int = 120
     structured_chunk_size: int = 1000
     structured_chunk_overlap: int = 150
     chunking_strategy: str = "auto"
-    vector_dim: int = 768
+    vector_dim: int = 1024
     retrieval_top_k: int = 3
     candidate_pool_size: int = 8
     grounded_page_top_n: int = 3
