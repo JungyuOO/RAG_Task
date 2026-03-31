@@ -12,20 +12,21 @@ logger = logging.getLogger("rag.pipeline")
 from app.config import Settings
 from app.rag.cache import JsonFileCache
 from app.rag.chunking import StructuredMarkdownChunker, TextChunker
-from app.rag.bge_embeddings import BGEOllamaEmbedder
+from app.rag.bge_embeddings import BGEOllamaEmbedder, EmbeddingModelUnavailableError
 from app.rag.reranker import BGEReranker
 from app.rag.index import VectorIndex
 from app.rag.ingestion import DocumentIngestor
 from app.rag.llm import LlmClient
 from app.rag.memory import SessionStore
 from app.rag.retrieval import HybridRetriever
-from app.rag.utils import stable_hash
+from app.rag.utils import normalize_text, stable_hash, tokenize
 from app.repositories.cache_repository import CacheRepository
 from app.repositories.index_repository import IndexRepository
 from app.repositories.session_repository import SessionRepository
 from app.services.agent_service import JudgeAgent, QueryAgent
 from app.services.answer_service import AnswerService
 from app.services.indexing_service import IndexingService
+from app.services.query_interpreter import QueryInterpreter
 from app.services.retrieval_service import RetrievalService
 from app.services.turn_context_resolver import TurnContextResolver
 from app.services.turn_policy_service import TurnPolicyDecision, TurnPolicyInput, TurnPolicyService
@@ -90,6 +91,7 @@ class RagPipeline:
         self.judge_agent = JudgeAgent(self.llm)
         self.retrieval_service = RetrievalService(settings)
         self.answer_service = AnswerService(self.retrieval_service)
+        self.query_interpreter = QueryInterpreter()
         self.turn_policy_service = TurnPolicyService()
         self.turn_context_resolver = TurnContextResolver()
         self.reranker = BGEReranker(top_k=5)
@@ -148,97 +150,295 @@ class RagPipeline:
         policy: TurnPolicyDecision,
     ) -> str:
         if use_retrieved_context and context_blocks:
-            return "LLM 호출에 실패했습니다. 현재는 검색된 문맥만 보여드릴게요.\n\n" + context_text[:1200]
+            return "LLM 응답 생성에 실패했습니다. 현재는 검색된 문맥만 보여드릴게요.\n\n" + context_text[:1200]
         if policy.turn_type == "greeting":
             return "안녕하세요! 무엇을 도와드릴까요?"
         if policy.needs_clarification and policy.clarification_prompt:
             return policy.clarification_prompt
         if policy.response_mode == "conversational":
-            return "네, 필요하시면 이어서 관련 내용을 더 설명드릴게요."
+            return "문서와 관련된 내용이 더 필요하시면 이어서 질문해 주세요."
         return "현재 LLM 연결이 불안정해 일반 답변을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요."
 
     @staticmethod
     def _detect_non_korean_query(text: str) -> str | None:
-        """한글이 없고 비한국어 문자(중국어/일본어 등)가 포함된 질문을 감지한다.
-
-        한글(AC00-D7A3, 1100-11FF, 3130-318F)이 하나라도 있으면 정상 질문으로 허용한다.
-        영어+기술 키워드(PV, Pod 등)만 있는 경우는 허용한다.
-        중국어 간체·번체(4E00-9FFF, F900-FAFF) 또는 일본어 히라가나·카타카나가
-        전체의 20% 이상이면 비한국어 질문으로 판정하여 안내 메시지를 반환한다.
-        """
         if not text or not text.strip():
             return None
 
-        has_korean = any('\uAC00' <= ch <= '\uD7A3' or '\u1100' <= ch <= '\u11FF' or '\u3130' <= ch <= '\u318F' for ch in text)
+        has_korean = any(
+            '\uAC00' <= ch <= '\uD7A3' or '\u1100' <= ch <= '\u11FF' or '\u3130' <= ch <= '\u318F'
+            for ch in text
+        )
         if has_korean:
             return None
 
-        non_latin_chars = [
+        japanese_chars = [
             ch for ch in text
-            if ('\u4E00' <= ch <= '\u9FFF')   # CJK 통합 한자
-            or ('\uF900' <= ch <= '\uFAFF')   # CJK 호환 한자
-            or ('\u3040' <= ch <= '\u309F')   # 히라가나
-            or ('\u30A0' <= ch <= '\u30FF')   # 카타카나
+            if ('\u3040' <= ch <= '\u309F') or ('\u30A0' <= ch <= '\u30FF')
         ]
-        total_alpha = sum(1 for ch in text if ch.isalpha())
-        if total_alpha > 0 and len(non_latin_chars) / total_alpha >= 0.2:
-            return "한국어로 질문해 주세요. 기술 키워드(예: PV, Pod, Deployment)는 영어로 입력하셔도 됩니다."
+        if japanese_chars:
+            return "한국어로 질문해 주세요. 기술 키워드는 그대로 영어로 입력해도 됩니다."
+
+        cjk_chars = [
+            ch for ch in text
+            if ('\u4E00' <= ch <= '\u9FFF') or ('\uF900' <= ch <= '\uFAFF')
+        ]
+        if not cjk_chars:
+            return None
+
+        alpha_chars = [ch for ch in text if ch.isalpha()]
+        latin_alpha_chars = [ch for ch in alpha_chars if 'a' <= ch.lower() <= 'z']
+        normalized = normalize_text(text).lower()
+        tokens = re.findall(r"[a-z0-9][a-z0-9_./-]*", normalized)
+        technical_token_markers = (
+            "configmap",
+            "secret",
+            "pod",
+            "deployment",
+            "service",
+            "daemonset",
+            "statefulset",
+            "namespace",
+            "openshift",
+            "kubernetes",
+            "yaml",
+            "kubectl",
+            "role",
+            "rolebinding",
+            "clusterrole",
+            "clusterrolebinding",
+            "ingress",
+            "route",
+            "pvc",
+            "storageclass",
+        )
+        technical_tokens = [
+            token for token in tokens
+            if token.isupper()
+            or any(char.isdigit() for char in token)
+            or any(marker in token for marker in technical_token_markers)
+        ]
+        total_alpha = len(alpha_chars)
+        cjk_ratio = len(cjk_chars) / max(total_alpha, 1)
+        latin_ratio = len(latin_alpha_chars) / max(total_alpha, 1)
+        if len(cjk_chars) >= 2 and (cjk_ratio >= 0.1 or (latin_ratio < 0.7 and len(technical_tokens) <= 2)):
+            return "한국어로 질문해 주세요. 기술 키워드는 그대로 영어로 입력해도 됩니다."
         return None
 
-    def _is_code_example_request(self, user_message: str) -> bool:
-        normalized = (user_message or "").lower()
-        markers = (
-            "yaml",
-            "manifest",
-            "code",
-            "example",
-            "sample",
-            "demo",
-            "cli",
-            "kubectl",
-            "oc ",
-            "oc\n",
-            "pv",
-            "pvc",
-            "\ucf54\ub4dc",
-            "\uc608\uc2dc",
-            "\ub370\ubaa8",
-            "\ub9e4\ub2c8\ud398\uc2a4\ud2b8",
-            "\uc124\uc815",
-            "\uc801\uc5b4\uc918",
-            "\ubcf4\uc5ec\uc918",
+    def _resolve_turn_context(self, session_id: str, user_message: str) -> dict:
+        recent_turns = self.session_repository.recent_turns(session_id)
+        structured_summary = self.session_repository.structured_summary(session_id)
+        session_topic_state = self.session_repository.topic_state(session_id)
+        session_topics = self.session_repository.list_topics(session_id)
+        current_topic_id = str(session_topic_state.get("last_active_topic_id") or "")
+        resolver = getattr(self, "turn_context_resolver", TurnContextResolver())
+        resolution = resolver.resolve(
+            user_message=user_message,
+            session_topics=session_topics,
+            recent_turns=recent_turns,
+            current_topic_id=current_topic_id or None,
         )
-        return any(marker in normalized for marker in markers)
+        resolved_topic = (
+            self.session_repository.get_topic(resolution.topic_id)
+            if resolution.topic_id
+            else None
+        )
+        resolved_topic_state = self._topic_to_topic_state(resolved_topic)
+        topic_state = resolved_topic_state or session_topic_state
+        scoped_recent_turns = (
+            self.session_repository.recent_topic_turns(session_id, resolution.topic_id)
+            if resolution.topic_id
+            else recent_turns
+        )
+        policy = self.turn_policy_service.classify(
+            TurnPolicyInput(
+                user_message=user_message,
+                recent_turns=scoped_recent_turns,
+                summary=structured_summary,
+                topic_state=topic_state,
+            )
+        )
+        if resolution.needs_clarification and resolution.clarification_prompt:
+            policy = TurnPolicyDecision(
+                turn_type="clarification",
+                response_mode="clarification",
+                use_retrieval=False,
+                use_memory_rewrite=False,
+                allow_preview=False,
+                allow_citations=False,
+                needs_clarification=True,
+                clarification_reason="resolver_ambiguous_topic",
+                clarification_prompt=resolution.clarification_prompt,
+            )
+        return {
+            "recent_turns": recent_turns,
+            "structured_summary": structured_summary,
+            "session_topic_state": session_topic_state,
+            "session_topics": session_topics,
+            "resolution": resolution,
+            "resolved_topic": resolved_topic,
+            "topic_state": topic_state,
+            "scoped_recent_turns": scoped_recent_turns,
+            "policy": policy,
+        }
 
-    def _is_table_request(self, user_message: str) -> bool:
-        normalized = (user_message or "").lower()
-        markers = (
-            "표",
-            "table",
-            "테이블",
-            "표로 보여",
-            "정리해줘",
-            "정리해 줘",
-            "비교표",
-            "표로",
-        )
-        return any(marker in normalized for marker in markers)
+    def _build_non_retrieval_state(self, user_message: str, turn_context: dict) -> dict:
+        policy: TurnPolicyDecision = turn_context["policy"]
+        resolution = turn_context["resolution"]
+        return {
+            "rewritten_query": user_message.strip(),
+            "top_score": 0.0,
+            "use_retrieved_context": False,
+            "grounded_pages": [],
+            "ordered_context_items": [],
+            "selected_context_items": [],
+            "preferred_preview_source": None,
+            "preview_pages": [],
+            "response_mode": policy.response_mode,
+            "turn_policy": policy.to_dict(),
+            "turn_resolution": resolution.to_dict(),
+            "resolved_topic_id": resolution.topic_id,
+        }
 
-    def _is_comparison_request(self, user_message: str) -> bool:
-        normalized = (user_message or "").lower()
-        markers = (
-            "차이",
-            "비교",
-            "다른점",
-            "다른 점",
-            "vs",
-            "versus",
-            "구분",
-            "비교해",
-            "비교해줘",
-            "비교해 줘",
+    def _domain_guard_state(self, user_message: str, turn_context: dict) -> dict | None:
+        policy: TurnPolicyDecision = turn_context["policy"]
+        if policy.use_retrieval:
+            return None
+        logger.info(
+            "[InputGuard] type=%s mode=%s use_retrieval=%s",
+            policy.turn_type,
+            policy.response_mode,
+            policy.use_retrieval,
         )
-        return any(marker in normalized for marker in markers)
+        return self._build_non_retrieval_state(user_message, turn_context)
+
+    def _extract_procedure_state(self, answer: str) -> dict:
+        if not answer:
+            return {}
+
+        steps: list[dict] = []
+        current_step: dict | None = None
+        for raw_line in answer.replace("\r\n", "\n").split("\n"):
+            line = raw_line.strip()
+            if not line:
+                continue
+            match = re.match(r"^(\d+)\.\s+(.+)$", line)
+            if match:
+                current_step = {
+                    "step_number": int(match.group(1)),
+                    "title": match.group(2).strip(),
+                    "body_lines": [],
+                }
+                steps.append(current_step)
+                continue
+            if current_step is not None:
+                current_step["body_lines"].append(line)
+
+        if len(steps) < 2:
+            return {}
+
+        normalized_steps = []
+        for step in steps:
+            body = "\n".join(step["body_lines"]).strip()
+            normalized_steps.append(
+                {
+                    "step_number": step["step_number"],
+                    "title": step["title"],
+                    "body": body,
+                }
+            )
+        return {
+            "mode": "procedure",
+            "steps": normalized_steps,
+            "current_step": 1,
+            "total_steps": len(normalized_steps),
+        }
+
+    def _should_skip_procedure_shortcut(
+        self,
+        user_message: str,
+        session_topics: list[dict],
+        current_topic_id: str | None,
+    ) -> bool:
+        normalized = normalize_text(user_message).lower()
+        if not normalized:
+            return False
+
+        explicit_switch_markers = ("back to", "switch to", "다시", "아까", "이전", "말고")
+        if not any(marker in normalized for marker in explicit_switch_markers):
+            return False
+
+        for topic in session_topics:
+            topic_id = str(topic.get("topic_id") or "")
+            if current_topic_id and topic_id == current_topic_id:
+                continue
+            label = normalize_text(str(topic.get("topic_label") or "")).lower()
+            sources = [normalize_text(str(value)).lower() for value in topic.get("sources", []) if value]
+            entities = [normalize_text(str(value)).lower() for value in topic.get("entities", []) if value]
+            if label and label in normalized:
+                return True
+            if any(source and source in normalized for source in sources[:3]):
+                return True
+            if any(entity and entity in normalized for entity in entities[:6]):
+                return True
+        return False
+
+    def _detect_procedure_followup(self, user_message: str, procedure_state: dict) -> dict | None:
+        steps = procedure_state.get("steps", [])
+        if not steps:
+            return None
+
+        normalized = normalize_text(user_message).lower()
+        if not normalized:
+            return None
+
+        step_match = re.search(r"(\d+)\s*단계", normalized)
+        if step_match:
+            return {"type": "jump", "step_number": int(step_match.group(1))}
+        step_match = re.search(r"\bstep\s*(\d+)\b", normalized)
+        if step_match:
+            return {"type": "jump", "step_number": int(step_match.group(1))}
+        if any(marker in normalized for marker in ("단계별", "step by step", "순서대로", "절차")):
+            return {"type": "outline"}
+        if any(marker in normalized for marker in ("다음", "계속", "next", "continue")):
+            return {"type": "next"}
+        if any(marker in normalized for marker in ("처음부터", "1단계부터", "first step")):
+            return {"type": "jump", "step_number": 1}
+        return None
+
+    def _build_procedure_followup_answer(self, followup: dict, procedure_state: dict) -> tuple[str, dict] | None:
+        steps = procedure_state.get("steps", [])
+        if not steps:
+            return None
+
+        current_step = int(procedure_state.get("current_step") or 1)
+        total_steps = int(procedure_state.get("total_steps") or len(steps))
+        updated_state = {
+            **procedure_state,
+            "steps": steps,
+            "total_steps": total_steps,
+        }
+
+        if followup["type"] == "outline":
+            lines = ["이전 답변 기준 단계별 정리입니다."]
+            for step in steps:
+                lines.append(f"{step['step_number']}. {step['title']}")
+            updated_state["current_step"] = current_step
+            return "\n".join(lines).strip(), updated_state
+
+        if followup["type"] == "next":
+            requested_step = min(current_step + 1, total_steps)
+        else:
+            requested_step = int(followup.get("step_number") or 1)
+
+        matched = next((step for step in steps if int(step["step_number"]) == requested_step), None)
+        if matched is None:
+            return f"이전 답변 기준으로는 {requested_step}단계가 없습니다. 현재 정리된 단계는 1단계부터 {total_steps}단계까지입니다.", updated_state
+
+        updated_state["current_step"] = requested_step
+        parts = [f"{requested_step}단계: {matched['title']}"]
+        if matched.get("body"):
+            parts.append(matched["body"])
+        return "\n\n".join(parts).strip(), updated_state
 
     def _prefer_block_type_items(
         self,
@@ -258,6 +458,388 @@ class RagPipeline:
         if not preferred:
             return []
         return preferred[:limit] if limit is not None else preferred
+
+    def _heading_overlap_score(self, user_message: str, metadata: dict) -> float:
+        query_tokens = {
+            token
+            for token in tokenize(user_message)
+            if len(token) >= 2 and token not in {"yaml", "manifest", "code", "example", "sample", "demo"}
+        }
+        if not query_tokens:
+            return 0.0
+
+        section_title_tokens = set(tokenize(str(metadata.get("section_title", ""))))
+        section_path_tokens = set(tokenize(str(metadata.get("section_path", ""))))
+        parent_heading_tokens: set[str] = set()
+        for heading in metadata.get("parent_headings", []) or []:
+            parent_heading_tokens.update(tokenize(str(heading)))
+
+        score = 0.0
+        score += 0.2 * len(query_tokens & parent_heading_tokens)
+        score += 0.5 * len(query_tokens & section_path_tokens)
+        score += 0.8 * len(query_tokens & section_title_tokens)
+        return score
+
+    def _code_intent_score(self, user_message: str, item: dict) -> float:
+        normalized = (user_message or "").casefold()
+        metadata = item["chunk"].get("metadata", {})
+        lowered_text = str(item["chunk"].get("text", "")).casefold()
+        code_language = str(metadata.get("code_language", "")).casefold()
+        code_subtype = str(metadata.get("code_subtype", "")).casefold()
+        code_signals = {str(signal).casefold() for signal in metadata.get("code_signals", []) or []}
+        explicit_kind_match = re.search(r"(?im)^\s*kind:\s*([a-z0-9_-]+)\s*$", lowered_text)
+        explicit_resource_kind = explicit_kind_match.group(1).casefold() if explicit_kind_match else ""
+        known_resource_kinds = {
+            "configmap",
+            "secret",
+            "pod",
+            "deployment",
+            "service",
+            "persistentvolume",
+            "persistentvolumeclaim",
+        }
+        requested_resource_kinds = {kind for kind in known_resource_kinds if kind in normalized}
+        candidate_resource_kinds = code_signals & known_resource_kinds
+
+        score = 0.0
+        yaml_requested = any(marker in normalized for marker in ("yaml", "manifest", "매니페스트"))
+        cli_requested = any(marker in normalized for marker in ("oc ", "kubectl", "cli", "command", "명령어", "커맨드"))
+        create_requested = any(marker in normalized for marker in ("create", "생성", "만들", "작성"))
+
+        if yaml_requested:
+            if code_language in {"yaml", "yml"}:
+                score += 1.2
+            if code_subtype == "k8s_manifest":
+                score += 1.0
+        if cli_requested:
+            if code_subtype == "cli_command":
+                score += 1.1
+            if code_language in {"bash", "sh", "shell"}:
+                score += 0.8
+        if create_requested and any(marker in normalized for marker in ("configmap", "secret", "deployment", "pod", "service")):
+            if "create" in lowered_text or "생성" in lowered_text:
+                score += 0.3
+        if requested_resource_kinds:
+            if explicit_resource_kind:
+                if explicit_resource_kind in requested_resource_kinds:
+                    score += 0.9
+                else:
+                    score -= 0.35
+            elif requested_resource_kinds & candidate_resource_kinds:
+                score += 0.9
+            elif candidate_resource_kinds:
+                score -= 0.35
+
+        for token in tokenize(user_message):
+            if len(token) < 2:
+                continue
+            token_casefold = token.casefold()
+            if token_casefold in {"yaml", "manifest", "code", "example", "sample", "demo"}:
+                continue
+            if token_casefold in code_signals:
+                score += 0.45
+            elif token_casefold in lowered_text:
+                score += 0.18
+
+        return score
+
+    def _metadata_aware_score(
+        self,
+        user_message: str,
+        query_interpretation: dict | None,
+        item: dict,
+    ) -> dict:
+        query_interpretation = query_interpretation or {}
+        metadata = item["chunk"].get("metadata", {})
+        lowered_text = str(item["chunk"].get("text", "")).casefold()
+        block_types = {
+            value.strip().casefold()
+            for value in str(metadata.get("block_types", "")).split(",")
+            if value.strip()
+        }
+        code_language = str(metadata.get("code_language", "")).casefold()
+        code_subtype = str(metadata.get("code_subtype", "")).casefold()
+        code_signals = {str(signal).casefold() for signal in metadata.get("code_signals", []) or []}
+        explicit_kind_match = re.search(r"(?im)^\s*kind:\s*([a-z0-9_-]+)\s*$", lowered_text)
+        explicit_resource_kind = explicit_kind_match.group(1).casefold() if explicit_kind_match else ""
+        query_tokens = {
+            token
+            for token in query_interpretation.get("normalized_keywords", tokenize(user_message))
+            if len(token) >= 2 and token not in {"yaml", "manifest", "code", "example", "sample", "demo"}
+        }
+        resources = {str(value).casefold() for value in query_interpretation.get("resources", []) if value}
+        actions = {str(value).casefold() for value in query_interpretation.get("actions", []) if value}
+        format_constraints = {str(value).casefold() for value in query_interpretation.get("format_constraints", []) if value}
+        response_shape = str(query_interpretation.get("response_shape", "") or "").casefold()
+        intent = str(query_interpretation.get("intent", "") or "").casefold()
+
+        heading_score = self._heading_overlap_score(user_message, metadata)
+        resource_score = 0.0
+        action_score = 0.0
+        format_score = 0.0
+        shape_score = 0.0
+        lexical_score = 0.0
+
+        if resources:
+            matched_resources = 0
+            for resource in resources:
+                if resource == explicit_resource_kind:
+                    matched_resources += 1
+                    resource_score += 1.0
+                elif resource in code_signals:
+                    matched_resources += 1
+                    resource_score += 0.9
+                elif resource in lowered_text:
+                    matched_resources += 1
+                    resource_score += 0.55
+            if matched_resources == 0 and explicit_resource_kind:
+                resource_score -= 0.25
+
+        if "create" in actions:
+            if any(marker in lowered_text for marker in ("create", "생성", "만들", "작성")):
+                action_score += 0.4
+            if any(marker in str(metadata.get("section_title", "")).casefold() for marker in ("create", "생성")):
+                action_score += 0.5
+        if "compare" in actions and "table" in block_types:
+            action_score += 0.5
+        if "explain" in actions and "code" not in block_types:
+            action_score += 0.25
+
+        if "yaml" in format_constraints:
+            if code_language in {"yaml", "yml"}:
+                format_score += 1.2
+            if code_subtype == "k8s_manifest":
+                format_score += 0.9
+        if "cli" in format_constraints:
+            if code_subtype == "cli_command":
+                format_score += 1.1
+            if code_language in {"bash", "sh", "shell"}:
+                format_score += 0.8
+        if "table" in format_constraints and "table" in block_types:
+            format_score += 1.0
+
+        if response_shape == "code":
+            if "code" in block_types:
+                shape_score += 0.75
+            elif "table" in block_types:
+                shape_score -= 0.15
+        elif response_shape == "table":
+            if "table" in block_types:
+                shape_score += 0.75
+            elif "code" in block_types:
+                shape_score -= 0.2
+        elif response_shape in {"text", "comparison"} and "code" in block_types:
+            shape_score -= 0.15
+
+        for token in query_tokens:
+            token_casefold = token.casefold()
+            if token_casefold in code_signals:
+                lexical_score += 0.35
+            elif token_casefold in lowered_text:
+                lexical_score += 0.12
+
+        if intent in {"yaml_example", "cli_example", "code_example"} and "code" in block_types:
+            shape_score += 0.25
+
+        metadata_score = heading_score + resource_score + action_score + format_score + shape_score + lexical_score
+        return {
+            "heading_overlap_score": heading_score,
+            "resource_match_score": resource_score,
+            "action_match_score": action_score,
+            "format_match_score": format_score,
+            "shape_match_score": shape_score,
+            "lexical_match_score": lexical_score,
+            "metadata_score": metadata_score,
+            "metadata_final_score": float(item.get("rerank_score", 0.0)) + metadata_score,
+        }
+
+    def _metadata_aware_rerank(
+        self,
+        user_message: str,
+        query_interpretation: dict | None,
+        items: list[dict],
+    ) -> list[dict]:
+        if not items:
+            return []
+
+        rescored: list[dict] = []
+        for item in items:
+            rescored.append({**item, **self._metadata_aware_score(user_message, query_interpretation, item)})
+
+        rescored.sort(
+            key=lambda item: (
+                -float(item.get("metadata_final_score", 0.0)),
+                -float(item.get("metadata_score", 0.0)),
+                -float(item.get("rerank_score", 0.0)),
+            )
+        )
+        return rescored
+
+    def _select_code_example_context_items(
+        self,
+        user_message: str,
+        query_interpretation: dict | None,
+        ordered_context_items: list[dict],
+        selected_context_items: list[dict],
+    ) -> list[dict]:
+        candidates = ordered_context_items or selected_context_items
+        code_candidates = self._prefer_block_type_items(
+            candidates,
+            block_type="code",
+            limit=None,
+        )
+        if not code_candidates:
+            return selected_context_items
+
+        rescored = self._metadata_aware_rerank(user_message, query_interpretation, code_candidates)
+        for item in rescored:
+            item["code_selection_score"] = float(item.get("metadata_final_score", 0.0))
+            item["code_intent_score"] = (
+                float(item.get("resource_match_score", 0.0))
+                + float(item.get("action_match_score", 0.0))
+                + float(item.get("format_match_score", 0.0))
+                + float(item.get("shape_match_score", 0.0))
+                + float(item.get("lexical_match_score", 0.0))
+            )
+        return rescored
+
+    def _should_expand_local_context(self, query_interpretation: dict | None) -> bool:
+        query_interpretation = query_interpretation or {}
+        intent = str(query_interpretation.get("intent", "") or "").casefold()
+        response_shape = str(query_interpretation.get("response_shape", "") or "").casefold()
+        return intent in {"yaml_example", "cli_example", "code_example", "table"} or response_shape in {"code", "table"}
+
+    def _expand_local_context_items(
+        self,
+        user_message: str,
+        query_interpretation: dict | None,
+        index_items: list[dict],
+        ranked_items: list[dict],
+    ) -> list[dict]:
+        if not ranked_items or not self._should_expand_local_context(query_interpretation):
+            return ranked_items
+
+        anchor_items = ranked_items[:2]
+        anchors: list[dict] = []
+        for item in anchor_items:
+            chunk = item["chunk"]
+            metadata = chunk.get("metadata", {})
+            section_path = str(metadata.get("section_path", "") or "")
+            section_prefix = section_path.split(">", 1)[0].strip().casefold() if section_path else ""
+            anchors.append(
+                {
+                    "source_path": chunk["source_path"],
+                    "page_number": int(chunk.get("page_number") or metadata.get("page_start") or 0),
+                    "section_prefix": section_prefix,
+                }
+            )
+
+        seen_chunk_ids = {item["chunk"]["chunk_id"] for item in ranked_items}
+        expanded: list[dict] = list(ranked_items)
+        for candidate in index_items:
+            chunk = candidate["chunk"]
+            chunk_id = chunk.get("chunk_id")
+            if chunk_id in seen_chunk_ids:
+                continue
+            metadata = chunk.get("metadata", {})
+            candidate_page = int(chunk.get("page_number") or metadata.get("page_start") or 0)
+            section_path = str(metadata.get("section_path", "") or "")
+            candidate_prefix = section_path.split(">", 1)[0].strip().casefold() if section_path else ""
+
+            matched_anchor = False
+            for anchor in anchors:
+                if chunk["source_path"] != anchor["source_path"]:
+                    continue
+                same_page = candidate_page and anchor["page_number"] and candidate_page == anchor["page_number"]
+                adjacent_page = candidate_page and anchor["page_number"] and abs(candidate_page - anchor["page_number"]) == 1
+                same_section_prefix = candidate_prefix and anchor["section_prefix"] and candidate_prefix == anchor["section_prefix"]
+                if same_page or adjacent_page or same_section_prefix:
+                    matched_anchor = True
+                    break
+            if not matched_anchor:
+                continue
+
+            expanded.append(
+                {
+                    "chunk": chunk,
+                    "dense_score": 0.0,
+                    "sparse_score": 0.0,
+                    "rerank_score": 0.0,
+                }
+            )
+            seen_chunk_ids.add(chunk_id)
+
+        return self._metadata_aware_rerank(user_message, query_interpretation, expanded)
+
+    def _resolve_answer_route(self, query_interpretation: dict | None) -> str:
+        query_interpretation = query_interpretation or {}
+        intent = str(query_interpretation.get("intent", "") or "").casefold()
+        response_shape = str(query_interpretation.get("response_shape", "") or "").casefold()
+
+        if intent in {"yaml_example", "cli_example", "code_example"} or response_shape == "code":
+            return "extractive_code"
+        if intent == "table" or response_shape == "table":
+            return "extractive_table"
+        if intent == "procedure_followup" or response_shape == "procedure":
+            return "procedure_state_followup"
+        return "grounded_generation"
+
+    def _build_missing_extractive_answer(self, answer_route: str) -> str:
+        if answer_route == "extractive_code":
+            return (
+                "업로드된 문서에서 요청하신 YAML/코드 예시를 직접 찾지 못했습니다. "
+                "문서에 실제 예시 블록이 있는지 다시 확인할 수 있도록 더 구체적인 범위나 페이지를 지정해 주세요."
+            )
+        if answer_route == "extractive_table":
+            return "업로드된 문서에서 요청하신 표/비교 정보를 직접 찾지 못했습니다. 키워드를 조금 더 구체적으로 적어 다시 질문해 주세요."
+        return "업로드된 문서에서 관련 내용을 찾을 수 없습니다."
+
+    def _build_policy_answer(self, turn_type: str, top_score: float) -> str:
+        if turn_type == "conversational_ack":
+            return "네. 문서와 관련된 질문이 있으면 이어서 질문해 주세요."
+        if turn_type == "greeting":
+            return "안녕하세요. 업로드된 문서에 대해 질문해 주세요."
+        if turn_type == "general_chat":
+            return "죄송합니다. 업로드된 문서와 관련된 질문만 답변할 수 있습니다. 문서 내용에 대한 질문을 남겨 주세요."
+        if turn_type == "document_query":
+            if top_score >= self.settings.retrieval_retry_min_score:
+                return (
+                    "관련 내용을 찾기 어렵습니다. 질문을 조금 더 구체적으로 적어 주세요.\n"
+                    "예: `스토리지에서 PV 설명해줘`, `Service 종류를 표로 정리해줘`"
+                )
+            return "업로드된 문서에서 관련 내용을 찾을 수 없습니다. 다른 질문을 하시거나 관련 문서를 업로드해 주세요."
+        return "업로드된 문서에서 관련 내용을 찾을 수 없습니다."
+
+    def _build_answer_cache_key(
+        self,
+        session_id: str,
+        rewritten_query: str,
+        context_ids: list[str],
+        memory_snapshot: dict,
+        answer_route: str,
+        query_interpretation: dict | None,
+        topic_id: str | None,
+    ) -> str:
+        interpretation = query_interpretation or {}
+        cache_scope = {
+            "session_id": session_id,
+            "topic_id": topic_id or "",
+            "rewritten_query": rewritten_query,
+            "context_ids": context_ids,
+            "answer_route": answer_route,
+            "intent": str(interpretation.get("intent", "") or ""),
+            "response_shape": str(interpretation.get("response_shape", "") or ""),
+            "resources": sorted(str(value) for value in interpretation.get("resources", []) if value),
+            "actions": sorted(str(value) for value in interpretation.get("actions", []) if value),
+            "format_constraints": sorted(
+                str(value) for value in interpretation.get("format_constraints", []) if value
+            ),
+            "normalized_keywords": sorted(
+                str(value) for value in interpretation.get("normalized_keywords", []) if value
+            ),
+            "memory_snapshot": memory_snapshot,
+        }
+        return stable_hash(json.dumps(cache_scope, ensure_ascii=False, sort_keys=True))
 
     def _build_prompt_memory_snapshot(self, session_id: str, topic_id: str | None = None) -> dict:
         snapshot = self.session_repository.memory_snapshot(session_id)
@@ -420,7 +1002,9 @@ class RagPipeline:
         metadata: dict,
         topic_id: str | None,
     ) -> int:
-        turn_id = self.session_repository.add_turn(session_id, "assistant", content, metadata=metadata)
+        enriched_metadata = dict(metadata or {})
+        enriched_metadata.setdefault("procedure_state", {})
+        turn_id = self.session_repository.add_turn(session_id, "assistant", content, metadata=enriched_metadata)
         if topic_id:
             self.session_repository.link_turn_to_topic(
                 turn_id,
@@ -560,64 +1144,14 @@ class RagPipeline:
         user_message: str,
         allowed_source_paths: set[str] | None = None,
     ) -> dict:
-        recent_turns = self.session_repository.recent_turns(session_id)
-        structured_summary = self.session_repository.structured_summary(session_id)
-        session_topic_state = self.session_repository.topic_state(session_id)
-        session_topics = self.session_repository.list_topics(session_id)
-        current_topic_id = str(session_topic_state.get("last_active_topic_id") or "")
-        resolver = getattr(self, "turn_context_resolver", TurnContextResolver())
-        resolution = resolver.resolve(
-            user_message=user_message,
-            session_topics=session_topics,
-            recent_turns=recent_turns,
-            current_topic_id=current_topic_id or None,
-        )
-        resolved_topic = (
-            self.session_repository.get_topic(resolution.topic_id)
-            if resolution.topic_id
-            else None
-        )
-        resolved_topic_state = self._topic_to_topic_state(resolved_topic)
-        topic_state = resolved_topic_state or session_topic_state
-        scoped_recent_turns = (
-            self.session_repository.recent_topic_turns(session_id, resolution.topic_id)
-            if resolution.topic_id
-            else recent_turns
-        )
-        policy = self.turn_policy_service.classify(
-            TurnPolicyInput(
-                user_message=user_message,
-                recent_turns=scoped_recent_turns,
-                summary=structured_summary,
-                topic_state=topic_state,
-            )
-        )
-        if resolution.needs_clarification and resolution.clarification_prompt:
-            policy = TurnPolicyDecision(
-                turn_type="clarification",
-                response_mode="clarification",
-                use_retrieval=False,
-                use_memory_rewrite=False,
-                allow_preview=False,
-                allow_citations=False,
-                needs_clarification=True,
-                clarification_reason="resolver_ambiguous_topic",
-                clarification_prompt=resolution.clarification_prompt,
-            )
+        turn_context = self._resolve_turn_context(session_id, user_message)
+        resolution = turn_context["resolution"]
+        resolved_topic = turn_context["resolved_topic"]
+        topic_state = turn_context["topic_state"]
+        scoped_recent_turns = turn_context["scoped_recent_turns"]
+        policy: TurnPolicyDecision = turn_context["policy"]
         if not policy.use_retrieval:
-            return {
-                "rewritten_query": user_message.strip(),
-                "top_score": 0.0,
-                "use_retrieved_context": False,
-                "grounded_pages": [],
-                "selected_context_items": [],
-                "preferred_preview_source": None,
-                "preview_pages": [],
-                "response_mode": policy.response_mode,
-                "turn_policy": policy.to_dict(),
-                "turn_resolution": resolution.to_dict(),
-                "resolved_topic_id": resolution.topic_id,
-            }
+            return self._build_non_retrieval_state(user_message, turn_context)
         rewrite_context = (
             self._build_rewrite_context_from_topic(resolved_topic, scoped_recent_turns)
             if resolved_topic is not None
@@ -651,6 +1185,20 @@ class RagPipeline:
             rewritten_query, refined_query, alternative_queries, query_result.get("search_keywords", []),
         )
 
+        query_interpretation = self.query_interpreter.interpret(
+            user_message,
+            query_result=query_result,
+            topic_state=topic_state,
+        )
+        logger.info(
+            "[QueryInterpretation] intent=%s resources=%s actions=%s formats=%s shape=%s keywords=%s",
+            query_interpretation.intent,
+            query_interpretation.resources,
+            query_interpretation.actions,
+            query_interpretation.format_constraints,
+            query_interpretation.response_shape,
+            query_interpretation.normalized_keywords,
+        )
         expanded_query = self._expand_query_with_context(refined_query, topic_state)
         query_vector = self.embedder.encode(expanded_query)
         index_items = self.retrieval_service.filter_index_items(index_items_all, allowed_source_paths)
@@ -698,6 +1246,17 @@ class RagPipeline:
             )
             extended = extended[:20]
             retrieved = self.reranker.rerank(expanded_query, extended)
+            retrieved = self._metadata_aware_rerank(
+                user_message,
+                query_interpretation.to_dict(),
+                retrieved,
+            )
+            retrieved = self._expand_local_context_items(
+                user_message,
+                query_interpretation.to_dict(),
+                index_items,
+                retrieved,
+            )
 
         retrieval_metrics = self.retriever.compute_retrieval_metrics(
             retrieved, min_score=self.settings.retrieval_min_score,
@@ -728,6 +1287,7 @@ class RagPipeline:
             "retrieval_metrics": retrieval_metrics,
             "turn_resolution": resolution.to_dict(),
             "resolved_topic_id": resolution.topic_id,
+            "query_interpretation": query_interpretation.to_dict(),
         }
 
     async def inspect_retrieval(
@@ -833,6 +1393,9 @@ class RagPipeline:
             selected_context_items, grounded_pages, answer_citations,
             preview_finalized=True,
         )
+        procedure_state = self._extract_procedure_state(final_answer)
+        if procedure_state:
+            final_payload["procedure_state"] = procedure_state
         return final_answer, answer_citations, final_payload
 
     def _build_llm_messages(
@@ -913,7 +1476,54 @@ class RagPipeline:
             yield {"type": "done", "cached": False}
             return
 
-        state = await self._prepare_retrieval_state(session_id, user_message, allowed_source_paths)
+        topic_state_before = self.session_repository.topic_state(session_id)
+        current_topic_id_before = str(topic_state_before.get("last_active_topic_id") or "") if isinstance(topic_state_before, dict) else ""
+        session_topics_before = self.session_repository.list_topics(session_id)
+        procedure_followup = None
+        if not self._should_skip_procedure_shortcut(user_message, session_topics_before, current_topic_id_before or None):
+            procedure_followup = self._detect_procedure_followup(
+                user_message,
+                topic_state_before.get("procedure_state", {}) if isinstance(topic_state_before, dict) else {},
+            )
+        if procedure_followup:
+            built = self._build_procedure_followup_answer(
+                procedure_followup,
+                topic_state_before.get("procedure_state", {}),
+            )
+            if built is not None:
+                procedure_answer, updated_procedure_state = built
+                if append_user_turn:
+                    self.session_repository.add_turn(session_id, "user", user_message)
+                final_payload = self.answer_service.build_context_payload(
+                    user_message.strip(),
+                    "conversational",
+                    0.0,
+                    None,
+                    [],
+                    [],
+                    [],
+                    [],
+                    preview_finalized=True,
+                )
+                final_payload["procedure_state"] = updated_procedure_state
+                yield {"type": "context", **final_payload}
+                yield {"type": "token", "content": procedure_answer, "cached": False}
+                resolved_topic_id = topic_state_before.get("last_active_topic_id") if isinstance(topic_state_before, dict) else None
+                self._store_assistant_turn(session_id, procedure_answer, final_payload, resolved_topic_id)
+                yield {"type": "done", "cached": False}
+                return
+
+        turn_context = self._resolve_turn_context(session_id, user_message)
+        state = self._domain_guard_state(user_message, turn_context)
+        try:
+            if state is None:
+                state = await self._prepare_retrieval_state(session_id, user_message, allowed_source_paths)
+        except EmbeddingModelUnavailableError:
+            logger.exception("[Embedding] model unavailable")
+            error_message = "임베딩 모델이 아직 준비되지 않았습니다. 잠시 후 다시 시도해 주세요."
+            yield {"type": "token", "content": error_message, "cached": False, "error": "embedding_model_unavailable"}
+            yield {"type": "done", "cached": False}
+            return
         rewritten_query = state["rewritten_query"]
         top_score = state["top_score"]
         use_retrieved_context = state["use_retrieved_context"]
@@ -924,6 +1534,7 @@ class RagPipeline:
         preview_pages = state["preview_pages"]
         response_mode = state.get("response_mode", "rag" if use_retrieved_context else "general")
         turn_policy = state.get("turn_policy", {})
+        query_interpretation = state.get("query_interpretation", {})
         resolved_topic_id = state.get("resolved_topic_id")
         policy_decision = TurnPolicyDecision(**turn_policy) if turn_policy else TurnPolicyDecision(
             turn_type=response_mode,
@@ -937,22 +1548,26 @@ class RagPipeline:
             "[TurnPolicy] type=%s mode=%s use_retrieval=%s",
             policy_decision.turn_type, policy_decision.response_mode, policy_decision.use_retrieval,
         )
-        code_example_request = self._is_code_example_request(user_message)
-        table_request = self._is_table_request(user_message) or self._is_comparison_request(user_message)
+        answer_route = self._resolve_answer_route(query_interpretation)
+        code_example_request = answer_route == "extractive_code"
         interleaved_context_items = self._interleave_context_items_by_source(selected_context_items)
         context_blocks, context_ids = self._build_context_blocks(interleaved_context_items)
-
-        memory_snapshot = self.session_repository.memory_snapshot(session_id)
-        cache_key = stable_hash(
-            f"{session_id}:{rewritten_query}:{'|'.join(context_ids)}:"
-            f"{json.dumps(memory_snapshot, ensure_ascii=False, sort_keys=True)}"
-        )
-        cached_answer = self.answer_cache_repository.get(cache_key)
 
         user_turn_id: int | None = None
         if append_user_turn:
             user_turn_id = self.session_repository.add_turn(session_id, "user", user_message)
             resolved_topic_id = self._ensure_topic_for_resolution(session_id, user_message, state, user_turn_id)
+        memory_snapshot = self.session_repository.memory_snapshot(session_id)
+        cache_key = self._build_answer_cache_key(
+            session_id=session_id,
+            rewritten_query=rewritten_query,
+            context_ids=context_ids,
+            memory_snapshot=memory_snapshot,
+            answer_route=answer_route,
+            query_interpretation=query_interpretation,
+            topic_id=resolved_topic_id,
+        )
+        cached_answer = self.answer_cache_repository.get(cache_key)
         if not policy_decision.allow_preview:
             preview_pages = []
             preferred_preview_source = None
@@ -963,10 +1578,8 @@ class RagPipeline:
             preview_finalized=False,
         )
         yield {"type": "context", **context_payload}
-
-        # --- 단순 반응(ㅇㅇ, 넵, 응 등): 검색 없이 간단한 안내 ---
         if policy_decision.turn_type == "conversational_ack":
-            ack_answer = "네! 문서에 대해 궁금한 점이 있으시면 질문해 주세요."
+            ack_answer = self._build_policy_answer("conversational_ack", top_score)
             yield {"type": "token", "content": ack_answer, "cached": False}
             final_payload = self.answer_service.build_context_payload(
                 rewritten_query, "conversational", top_score,
@@ -978,9 +1591,8 @@ class RagPipeline:
             yield {"type": "done", "cached": False}
             return
 
-        # --- 인사 응답: 간단한 안내 메시지로 응답 ---
         if policy_decision.turn_type == "greeting":
-            greeting_answer = "안녕하세요! 업로드된 문서에 대해 질문해 주세요."
+            greeting_answer = self._build_policy_answer("greeting", top_score)
             for char in greeting_answer:
                 yield {"type": "token", "content": char, "cached": False}
                 await asyncio.sleep(0.03)
@@ -994,9 +1606,8 @@ class RagPipeline:
             yield {"type": "done", "cached": False}
             return
 
-        # --- 문서 무관 질문 거부: 일반 잡담은 답변하지 않음 ---
         if policy_decision.turn_type == "general_chat":
-            reject_answer = "죄송합니다, 업로드된 문서와 관련된 질문에만 답변드릴 수 있습니다. 문서에 대해 궁금한 점을 질문해 주세요."
+            reject_answer = self._build_policy_answer("general_chat", top_score)
             for char in reject_answer:
                 yield {"type": "token", "content": char, "cached": False}
                 await asyncio.sleep(0.03)
@@ -1010,17 +1621,8 @@ class RagPipeline:
             yield {"type": "done", "cached": False}
             return
 
-        # --- 검색 실패/재질문: 문서 질의인데 관련 내용을 찾지 못한 경우 ---
         if policy_decision.turn_type == "document_query" and not use_retrieved_context:
-            if top_score >= self.settings.retrieval_retry_min_score:
-                # 0.10~0.25: 약간의 관련성은 있으나 부족 → 재질문 유도
-                no_result_answer = (
-                    "관련 내용을 찾기 어렵습니다. 좀 더 구체적으로 질문해 주시겠어요?\n"
-                    "예: '스토리지에서 PV 설명해줘', '네트워킹 Service 종류 알려줘'"
-                )
-            else:
-                # 0.10 미만: 완전 실패
-                no_result_answer = "업로드된 문서에서 관련 내용을 찾을 수 없습니다. 다른 질문을 해주시거나, 관련 문서를 업로드해 주세요."
+            no_result_answer = self._build_policy_answer("document_query", top_score)
             for char in no_result_answer:
                 yield {"type": "token", "content": char, "cached": False}
                 await asyncio.sleep(0.03)
@@ -1097,15 +1699,13 @@ class RagPipeline:
             self._store_assistant_turn(session_id, final_answer, final_payload, resolved_topic_id)
             yield {"type": "done", "cached": True}
             return
-
-        # --- LLM 스트리밍 생성: 문맥과 대화 이력을 LLM에 전달하여 토큰 단위로 응답 ---
-        # 검색 결과가 없고 RAG 모드가 아닌 경우, 이전 답변의 소스 인용이 bleeding되지 않도록 처리
-        if code_example_request and use_retrieved_context:
-            code_context_items = self._prefer_block_type_items(
-                ordered_context_items or selected_context_items,
-                block_type="code",
-                limit=max(len(selected_context_items), 3),
-            ) or selected_context_items
+        if answer_route == "extractive_code" and use_retrieved_context:
+            code_context_items = self._select_code_example_context_items(
+                user_message,
+                query_interpretation,
+                ordered_context_items,
+                selected_context_items,
+            )
             extractive_code_answer = self.answer_service.build_extractive_code_answer(code_context_items)
             if extractive_code_answer:
                 final_answer, answer_citations, final_payload = self._finalize_answer(
@@ -1125,10 +1725,8 @@ class RagPipeline:
                 self.answer_cache_repository.set(cache_key, {"answer": final_answer})
                 yield {"type": "done", "cached": False}
                 return
-            no_code_answer = (
-                "업로드된 문서에서 요청하신 YAML/코드 예시를 직접 찾지 못했습니다. "
-                "문서에 실제 예시 블록이 있는지 다시 확인할 수 있도록 더 구체적인 범위나 페이지를 지정해 주세요."
-            )
+
+            no_code_answer = self._build_missing_extractive_answer(answer_route)
             yield {"type": "token", "content": no_code_answer, "cached": False}
             final_payload = self.answer_service.build_context_payload(
                 rewritten_query,
@@ -1146,7 +1744,7 @@ class RagPipeline:
             yield {"type": "done", "cached": False}
             return
 
-        if table_request and use_retrieved_context:
+        if answer_route == "extractive_table" and use_retrieved_context:
             table_context_items = self._prefer_block_type_items(
                 ordered_context_items or selected_context_items,
                 block_type="table",
@@ -1172,6 +1770,23 @@ class RagPipeline:
                 yield {"type": "done", "cached": False}
                 return
 
+            no_table_answer = self._build_missing_extractive_answer(answer_route)
+            yield {"type": "token", "content": no_table_answer, "cached": False}
+            final_payload = self.answer_service.build_context_payload(
+                rewritten_query,
+                "clarification",
+                top_score,
+                None,
+                [],
+                [],
+                [],
+                [],
+                preview_finalized=True,
+            )
+            yield {"type": "context", **final_payload}
+            self._store_assistant_turn(session_id, no_table_answer, final_payload, resolved_topic_id)
+            yield {"type": "done", "cached": False}
+            return
         is_new_topic = not use_retrieved_context and response_mode != "rag"
         messages = self._build_llm_messages(
             session_id, user_message, code_example_request,

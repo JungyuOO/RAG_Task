@@ -17,8 +17,8 @@ class SessionRepository:
     def add_turn(self, session_id: str, role: str, content: str, metadata: dict | None = None) -> int:
         return self.backend.add_turn(session_id, role, content, metadata=metadata)
 
-    def delete_session(self, session_id: str) -> bool:
-        return self.backend.delete_session(session_id)
+    def delete_session(self, session_id: str, owner_id: str | None = None) -> bool:
+        return self.backend.delete_session(session_id, owner_id=owner_id)
 
     def recent_turns(self, session_id: str) -> list[ChatTurn]:
         return self.backend.recent_turns(session_id)
@@ -70,11 +70,16 @@ class SessionRepository:
     def build_rewrite_context(self, session_id: str, user_message: str) -> dict | None:
         return self.backend.build_rewrite_context(session_id, user_message)
 
-    def export_session(self, session_id: str) -> dict:
-        return self.backend.export_session(session_id)
+    def export_session(self, session_id: str, owner_id: str | None = None) -> dict:
+        return self.backend.export_session(session_id, owner_id=owner_id)
 
-    def pending_user_message(self, session_id: str) -> str | None:
-        return self.backend.pending_user_message(session_id)
+    def pending_user_message(self, session_id: str, owner_id: str | None = None) -> str | None:
+        return self.backend.pending_user_message(session_id, owner_id=owner_id)
 
-    def list_sessions(self, limit: int = 50) -> list[dict]:
-        return self.backend.list_sessions(limit=limit)
+    def list_sessions(
+        self,
+        limit: int = 50,
+        session_prefix: str | None = None,
+        owner_id: str | None = None,
+    ) -> list[dict]:
+        return self.backend.list_sessions(limit=limit, session_prefix=session_prefix, owner_id=owner_id)

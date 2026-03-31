@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from app.rag.types import Chunk, Document
 from app.rag.utils import normalize_text, stable_hash, tokenize
@@ -38,6 +38,8 @@ class MarkdownBlock:
     page_start: int
     page_end: int
     kind: str
+    heading_level: int | None = None
+    heading_path: tuple[str, ...] = ()
 
 
 class TextChunker:
@@ -122,12 +124,21 @@ class StructuredMarkdownChunker:
         order = 0
         current_blocks: list[MarkdownBlock] = []
         current_length = 0
+        heading_stack: list[tuple[int, str]] = []
 
         # 블록 병합 알고리즘:
         # 1) 초대형 블록(>max_block_chars)은 슬라이딩 윈도우로 개별 분할
         # 2) 페이지 경계 또는 블록 유형 전환(heading→paragraph 등)에서 강제 분리
         # 3) chunk_size 초과 시 마지막 블록 1개를 overlap으로 유지하며 분리
         for block in blocks:
+            if block.kind == "heading":
+                level = block.heading_level or 1
+                heading_stack = [item for item in heading_stack if item[0] < level]
+                heading_stack.append((level, block.text))
+                block = replace(block, heading_path=tuple(text for _, text in heading_stack))
+            elif heading_stack:
+                block = replace(block, heading_path=tuple(text for _, text in heading_stack))
+
             if len(block.text) > self.max_block_chars:
                 if current_blocks:
                     chunks.append(self._build_chunk(doc_id, documents[0].source_path, current_blocks, order))
@@ -140,6 +151,8 @@ class StructuredMarkdownChunker:
                         page_start=block.page_start,
                         page_end=block.page_end,
                         kind=block.kind,
+                        heading_level=block.heading_level,
+                        heading_path=block.heading_path,
                     )
                     chunks.append(self._build_chunk(doc_id, documents[0].source_path, [piece_block], order))
                     order += 1
@@ -327,14 +340,16 @@ class StructuredMarkdownChunker:
             if len(lines) == 1 and (lines[0].startswith("#") or (len(lines[0]) <= 40 and lines[0].endswith(":"))):
                 normalized = normalize_text(lines[0].lstrip("#").strip())
                 if normalized:
+                    heading_level = len(lines[0]) - len(lines[0].lstrip("#")) if lines[0].startswith("#") else 1
                     blocks.append(
                         MarkdownBlock(
                             text=normalized,
                             page_start=page_number,
                             page_end=page_number,
                             kind="heading",
+                            heading_level=max(heading_level, 1),
                         )
-                )
+                    )
                 continue
 
             if self._is_code_block(lines):
@@ -510,6 +525,24 @@ class StructuredMarkdownChunker:
         page_start = blocks[0].page_start
         page_end = blocks[-1].page_end
         chunk_id = stable_hash(f"{doc_id}:{order}:{page_start}:{page_end}:{chunk_text[:40]}")
+        section_path_parts = next(
+            (list(block.heading_path) for block in reversed(blocks) if block.heading_path),
+            [],
+        )
+        nearest_heading = section_path_parts[-1] if section_path_parts else ""
+        metadata = {
+            "page_start": page_start,
+            "page_end": page_end,
+            "block_types": ",".join(sorted({block.kind for block in blocks})),
+            "block_count": len(blocks),
+            "chunking_strategy": "structured_markdown",
+            "section_title": nearest_heading,
+            "section_path": " > ".join(section_path_parts),
+            "nearest_heading": nearest_heading,
+            "parent_headings": section_path_parts[:-1],
+        }
+        if any(block.kind == "code" for block in blocks):
+            metadata.update(self._infer_code_metadata(chunk_text))
         return Chunk(
             chunk_id=chunk_id,
             doc_id=doc_id,
@@ -517,11 +550,46 @@ class StructuredMarkdownChunker:
             text=chunk_text,
             tokens=tokenize(chunk_text),
             page_number=page_start if page_start == page_end else None,
-            metadata={
-                "page_start": page_start,
-                "page_end": page_end,
-                "block_types": ",".join(sorted({block.kind for block in blocks})),
-                "block_count": len(blocks),
-                "chunking_strategy": "structured_markdown",
-            },
+            metadata=metadata,
         )
+
+    def _infer_code_metadata(self, text: str) -> dict[str, str | list[str]]:
+        normalized = text.replace("\r\n", "\n")
+        lowered = normalized.casefold()
+
+        fence_match = re.search(r"```([\w+-]+)", normalized)
+        fence_language = (fence_match.group(1).strip().lower() if fence_match else "")
+
+        kind_match = re.search(r"(?im)^\s*kind:\s*([A-Za-z0-9_-]+)\s*$", normalized)
+        resource_kind = kind_match.group(1) if kind_match else ""
+
+        signals: list[str] = []
+        if resource_kind:
+            signals.append(resource_kind)
+        for marker in ("ConfigMap", "Secret", "Pod", "Deployment", "Service", "PersistentVolume", "PersistentVolumeClaim"):
+            if marker.casefold() in lowered and marker not in signals:
+                signals.append(marker)
+        for marker in ("apiVersion", "kind", "metadata", "oc", "kubectl"):
+            if marker.casefold() in lowered and marker not in signals:
+                signals.append(marker)
+
+        code_language = fence_language
+        if not code_language:
+            if "oc " in lowered or "kubectl " in lowered or "helm " in lowered:
+                code_language = "bash"
+            elif "apiversion:" in lowered or "kind:" in lowered:
+                code_language = "yaml"
+
+        code_subtype = ""
+        if "apiversion:" in lowered and "kind:" in lowered:
+            code_subtype = "k8s_manifest"
+        elif "oc " in lowered or "kubectl " in lowered or "helm " in lowered:
+            code_subtype = "cli_command"
+        elif code_language in {"yaml", "yml"}:
+            code_subtype = "yaml_snippet"
+
+        return {
+            "code_language": code_language,
+            "code_subtype": code_subtype,
+            "code_signals": signals[:8],
+        }

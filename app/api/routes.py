@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
@@ -28,6 +29,27 @@ except ImportError:  # pragma: no cover
 
 
 router = APIRouter()
+logger = logging.getLogger("rag.api")
+
+OWNER_HEADER_NAME = "X-Client-Id"
+
+
+def resolve_owner_id(request: Request) -> str:
+    owner_id = (request.headers.get(OWNER_HEADER_NAME) or "").strip()
+    if not owner_id:
+        raise HTTPException(status_code=400, detail=f"Missing {OWNER_HEADER_NAME} header.")
+    if len(owner_id) > 120:
+        raise HTTPException(status_code=400, detail="Invalid client identifier.")
+    return owner_id
+
+
+def scoped_session_id(owner_id: str, session_id: str) -> str:
+    return f"{owner_id}::{session_id}"
+
+
+def unscoped_session_id(owner_id: str, session_id: str) -> str:
+    prefix = f"{owner_id}::"
+    return session_id[len(prefix):] if session_id.startswith(prefix) else session_id
 
 
 @router.get("/")
@@ -288,18 +310,44 @@ async def get_task_status(
 
 
 @router.get("/api/sessions")
-async def list_sessions(container: AppContainer = Depends(get_container)) -> SessionHistoryResponse:
-    return SessionHistoryResponse(sessions=container.pipeline.session_repository.list_sessions())
+async def list_sessions(request: Request, container: AppContainer = Depends(get_container)) -> SessionHistoryResponse:
+    owner_id = resolve_owner_id(request)
+    logger.info("[SessionList] owner_id=%s", owner_id)
+    sessions = container.pipeline.session_repository.list_sessions(owner_id=owner_id)
+    sanitized = [
+        {
+            **item,
+            "session_id": unscoped_session_id(owner_id, str(item.get("session_id", ""))),
+        }
+        for item in sessions
+    ]
+    return SessionHistoryResponse(sessions=sanitized)
 
 
 @router.get("/api/sessions/{session_id}")
-async def get_session(session_id: str, container: AppContainer = Depends(get_container)) -> dict:
-    return container.pipeline.session_repository.export_session(session_id)
+async def get_session(session_id: str, request: Request, container: AppContainer = Depends(get_container)) -> dict:
+    owner_id = resolve_owner_id(request)
+    logger.info("[SessionLoad] owner_id=%s session_id=%s", owner_id, session_id)
+    exported = container.pipeline.session_repository.export_session(
+        scoped_session_id(owner_id, session_id),
+        owner_id=owner_id,
+    )
+    if not exported:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    return {
+        **exported,
+        "session_id": session_id,
+    }
 
 
 @router.delete("/api/sessions/{session_id}")
-async def delete_session(session_id: str, container: AppContainer = Depends(get_container)) -> dict:
-    deleted = container.pipeline.session_repository.delete_session(session_id)
+async def delete_session(session_id: str, request: Request, container: AppContainer = Depends(get_container)) -> dict:
+    owner_id = resolve_owner_id(request)
+    logger.info("[SessionDelete] owner_id=%s session_id=%s", owner_id, session_id)
+    deleted = container.pipeline.session_repository.delete_session(
+        scoped_session_id(owner_id, session_id),
+        owner_id=owner_id,
+    )
     if not deleted:
         raise HTTPException(status_code=404, detail="Session not found.")
     return {"deleted": True, "session_id": session_id}
@@ -308,11 +356,16 @@ async def delete_session(session_id: str, container: AppContainer = Depends(get_
 @router.post("/api/chat")
 async def chat(
     request: ChatRequest,
+    http_request: Request,
     container: AppContainer = Depends(get_container),
 ) -> StreamingResponse:
+    owner_id = resolve_owner_id(http_request)
+    effective_session_id = scoped_session_id(owner_id, request.session_id)
+    logger.info("[Chat] owner_id=%s session_id=%s", owner_id, request.session_id)
+
     async def event_stream():
         async for event in container.pipeline.stream_chat(
-            session_id=request.session_id,
+            session_id=effective_session_id,
             user_message=request.message,
         ):
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
@@ -323,8 +376,10 @@ async def chat(
 @router.post("/api/debug/retrieval")
 async def debug_retrieval(
     request: RetrievalDebugRequest,
+    http_request: Request,
     container: AppContainer = Depends(get_container),
 ) -> dict:
+    owner_id = resolve_owner_id(http_request)
     allowed_source_paths: set[str] | None = None
     if request.file_names:
         allowed_source_paths = {
@@ -332,7 +387,7 @@ async def debug_retrieval(
             for file_name in request.file_names
         }
     return await container.pipeline.inspect_retrieval(
-        session_id=request.session_id,
+        session_id=scoped_session_id(owner_id, request.session_id),
         user_message=request.message,
         allowed_source_paths=allowed_source_paths,
     )
@@ -341,10 +396,17 @@ async def debug_retrieval(
 @router.post("/api/chat/retry")
 async def retry_chat(
     request: RetryChatRequest,
+    http_request: Request,
     container: AppContainer = Depends(get_container),
 ) -> StreamingResponse:
+    owner_id = resolve_owner_id(http_request)
+    effective_session_id = scoped_session_id(owner_id, request.session_id)
+    logger.info("[ChatRetry] owner_id=%s session_id=%s", owner_id, request.session_id)
     requested_message = (request.message or "").strip()
-    pending_message = container.pipeline.session_repository.pending_user_message(request.session_id)
+    pending_message = container.pipeline.session_repository.pending_user_message(
+        effective_session_id,
+        owner_id=owner_id,
+    )
     user_message = pending_message or requested_message
     if not user_message:
         raise HTTPException(status_code=404, detail="No pending user message found for retry.")
@@ -362,7 +424,7 @@ async def retry_chat(
 
     async def event_stream():
         async for event in container.pipeline.stream_chat(
-            session_id=request.session_id,
+            session_id=effective_session_id,
             user_message=user_message,
             allowed_source_paths=allowed_source_paths,
             append_user_turn=append_user_turn,
@@ -374,11 +436,16 @@ async def retry_chat(
 
 @router.post("/api/chat/upload")
 async def chat_with_upload(
+    request: Request,
     session_id: str = Form(...),
     message: str = Form(...),
     files: list[UploadFile] = File(...),
     container: AppContainer = Depends(get_container),
 ) -> StreamingResponse:
+    owner_id = resolve_owner_id(request)
+    effective_session_id = scoped_session_id(owner_id, session_id)
+    logger.info("[ChatUpload] owner_id=%s session_id=%s file_count=%d", owner_id, session_id, len(files))
+
     async def event_stream():
         uploaded_files = await save_library_uploads(container.settings, files)
         total_chunks = 0
@@ -403,7 +470,7 @@ async def chat_with_upload(
             + "\n\n"
         )
         async for event in container.pipeline.stream_chat(
-            session_id=session_id,
+            session_id=effective_session_id,
             user_message=message,
             allowed_source_paths=uploaded_source_paths,
         ):

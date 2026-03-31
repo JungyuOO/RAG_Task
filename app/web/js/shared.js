@@ -50,6 +50,7 @@ const STORAGE_KEYS = {
   activeSessionId: "cw-rag.active-session-id",
   pendingChat: "cw-rag.pending-chat",
   draftMessage: "cw-rag.draft-message",
+  clientOwnerId: "cw-rag.client-owner-id",
 };
 
 let activeSessionId = "";
@@ -60,6 +61,28 @@ let previewAvailable = false;
 let previewOpen = false;
 let chatPinnedToBottom = true;
 let currentContextPayload = null;
+
+function generateClientOwnerId() {
+  if (window.crypto && typeof window.crypto.randomUUID === "function") {
+    return window.crypto.randomUUID();
+  }
+  return "client-" + Date.now() + "-" + Math.random().toString(16).slice(2, 10);
+}
+
+function getClientOwnerId() {
+  let ownerId = localStorage.getItem(STORAGE_KEYS.clientOwnerId) || "";
+  if (!ownerId) {
+    ownerId = generateClientOwnerId();
+    localStorage.setItem(STORAGE_KEYS.clientOwnerId, ownerId);
+  }
+  return ownerId;
+}
+
+function buildOwnerHeaders(headersInit) {
+  const headers = new Headers(headersInit || {});
+  headers.set("X-Client-Id", getClientOwnerId());
+  return headers;
+}
 
 function setLibraryStatus(message, tone = "idle", label = "Library Status") {
   statusBox.textContent = message;

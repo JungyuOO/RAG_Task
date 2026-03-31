@@ -86,7 +86,10 @@ function formatSessionTime(value) {
 
 async function deleteSession(sessionId) {
   if (!window.confirm("이 세션을 삭제할까요?")) return;
-  const response = await fetch("/api/sessions/" + encodeURIComponent(sessionId), { method: "DELETE" });
+  const response = await fetch("/api/sessions/" + encodeURIComponent(sessionId), {
+    method: "DELETE",
+    headers: buildOwnerHeaders(),
+  });
   if (!response.ok) {
     historyStatus.textContent = "세션 삭제에 실패했습니다.";
     return;
@@ -122,7 +125,7 @@ function renderSessionHistory(items) {
 async function loadSessions() {
   historyStatus.textContent = "대화 이력을 불러오는 중입니다.";
   try {
-    const response = await fetch("/api/sessions");
+    const response = await fetch("/api/sessions", { headers: buildOwnerHeaders() });
     if (!response.ok) throw new Error(await extractErrorMessage(response));
     const data = await response.json();
     const sessions = data.sessions || [];
@@ -139,7 +142,9 @@ async function loadSession(sessionId) {
   saveActiveSessionId();
   resetChatSurface();
   currentContextPayload = null;
-  const response = await fetch("/api/sessions/" + encodeURIComponent(sessionId));
+  const response = await fetch("/api/sessions/" + encodeURIComponent(sessionId), {
+    headers: buildOwnerHeaders(),
+  });
   if (!response.ok) throw new Error(await extractErrorMessage(response));
   const data = await response.json();
   const turns = data.turns || [];
