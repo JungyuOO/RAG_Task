@@ -78,6 +78,7 @@ class AnswerService:
                         "page_start": str(chunk["metadata"].get("page_start") or chunk.get("page_number") or 1),
                         "page_end": str(chunk["metadata"].get("page_end") or chunk["metadata"].get("page_start") or chunk.get("page_number") or 1),
                         "code": block.strip(),
+                        "code_language": str(chunk["metadata"].get("code_language", "") or ""),
                     }
                 )
                 if len(snippets) >= 3:
@@ -95,8 +96,9 @@ class AnswerService:
                 if snippet["page_start"] == snippet["page_end"]
                 else f"p.{snippet['page_start']}-{snippet['page_end']}"
             )
+            fence_language = snippet["code_language"] if snippet["code_language"] in {"yaml", "yml", "bash", "sh", "shell", "json"} else "yaml"
             parts.append(f"[{snippet['file_name']}] {page_label}")
-            parts.append("```yaml")
+            parts.append(f"```{fence_language}")
             parts.append(snippet["code"])
             parts.append("```")
         return "\n\n".join(parts).strip()
