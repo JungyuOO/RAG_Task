@@ -179,7 +179,7 @@ async function retryPendingChat(pendingState) {
     try {
       const response = await fetch("/api/chat/retry", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: buildOwnerHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
           session_id: pendingState.session_id,
           message: pendingState.message,
@@ -228,11 +228,15 @@ async function sendMessage() {
       formData.append("session_id", sessionId);
       formData.append("message", message);
       pendingChatFiles.forEach((file) => formData.append("files", file));
-      response = await fetch("/api/chat/upload", { method: "POST", body: formData });
+      response = await fetch("/api/chat/upload", {
+        method: "POST",
+        headers: buildOwnerHeaders(),
+        body: formData,
+      });
     } else {
       response = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: buildOwnerHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ session_id: sessionId, message }),
       });
     }
