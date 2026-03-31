@@ -4,12 +4,13 @@ import logging
 from pathlib import Path
 
 from app.rag.llm import LlmClient
+from app.rag.utils import normalize_query_keywords
 
 logger = logging.getLogger("rag.agent")
 
 
 class QueryAgent:
-    """사용자 질문을 검색 친화적인 짧은 질의로 정리한다."""
+    """Search-query refiner for Korean technical RAG queries."""
 
     INTENT_MARKERS = {
         "yaml": ("yaml",),
@@ -60,41 +61,41 @@ class QueryAgent:
             "너는 RAG 검색 질의 정리기다.\n"
             "목표는 질문을 짧게 만드는 것이 아니라 검색 성공률을 높이면서 사용자 의도를 유지하는 것이다.\n\n"
             "규칙:\n"
-            "- 질문에 있는 핵심 주제와 요청 타입을 유지하라.\n"
-            "- 요청 타입 예: 설명, 비교, 차이, 예시, 코드, yaml, manifest, 생성, 설정.\n"
+            "- 질문에 들어 있는 핵심 주제와 요청 타입을 유지해라.\n"
+            "- 요청 타입 예시: 설명, 비교, 차이, 예시, 코드, yaml, manifest, 생성, 설정.\n"
             "- 질문에 없는 요청 타입을 새로 추가하지 마라.\n"
-            "- 질문에 있는 요청 타입은 제거하지 마라.\n"
-            "- 외부 지식이나 새로운 개념을 추가하지 마라.\n"
-            "- 후속 질문의 대명사는 맥락으로만 복원하라.\n"
-            "- 문서명은 질문과 직접 관련 있을 때만 보강하라.\n"
-            "- 답변하지 말고 검색용 질의만 출력하라.\n"
+            "- 질문에 있는 요청 타입을 제거하지 마라.\n"
+            "- 없는 기술 개념을 임의로 추가하지 마라.\n"
+            "- 후속 질문의 대명사는 문맥이 있을 때만 복원해라.\n"
+            "- 문서명은 질문과 직접 관련 있을 때만 보강해라.\n"
+            "- 답변하지 말고 검색용 질의만 출력해라.\n"
             "- 분석 문장, 사고과정, 설명 문장은 출력하지 마라.\n\n"
             f"문서목록: {source_hint}\n"
-            f"맥락: {context_text}\n"
+            f"문맥: {context_text}\n"
             f"질문: {user_message}\n\n"
             "예시 1)\n"
             "질문: ConfigMap 생성 예시 yaml로 보여줘\n"
-            "검색쿼리: ConfigMap 생성 예시 yaml\n"
-            "대안1: ConfigMap yaml manifest example\n"
-            "대안2: ConfigMap 생성 방법\n"
+            "검색질의: ConfigMap 생성 예시 yaml\n"
+            "대안: ConfigMap yaml manifest example\n"
+            "대안: ConfigMap 생성 방법\n"
             "키워드: ConfigMap, 생성, 예시, yaml\n\n"
             "예시 2)\n"
             "질문: ConfigMap과 Secret 차이\n"
-            "검색쿼리: ConfigMap Secret 차이 비교\n"
-            "대안1: ConfigMap Secret difference\n"
-            "대안2: ConfigMap Secret compare\n"
+            "검색질의: ConfigMap Secret 차이 비교\n"
+            "대안: ConfigMap Secret difference\n"
+            "대안: ConfigMap Secret compare\n"
             "키워드: ConfigMap, Secret, 차이, 비교\n\n"
             "예시 3)\n"
             "질문: 아까 그거 다시 설명해줘\n"
-            "맥락: 현재 토픽 SCC, 참조 문서: SCC.pdf\n"
-            "검색쿼리: SCC 다시 설명\n"
-            "대안1: SCC 개념 설명\n"
-            "대안2: SCC 요약 설명\n"
+            "문맥: 현재 토픽 SCC, 참조 문서: SCC.pdf\n"
+            "검색질의: SCC 다시 설명\n"
+            "대안: SCC 개념 설명\n"
+            "대안: SCC 요약 설명\n"
             "키워드: SCC, 설명\n\n"
             "출력 형식:\n"
-            "검색쿼리: ...\n"
-            "대안1: ...\n"
-            "대안2: ...\n"
+            "검색질의: ...\n"
+            "대안: ...\n"
+            "대안: ...\n"
             "키워드: ..."
         )
 
@@ -121,16 +122,12 @@ class QueryAgent:
 
         for raw_line in response.strip().splitlines():
             line = raw_line.strip()
-            if line.startswith("검색쿼리:"):
-                value = line[len("검색쿼리:"):].strip()
+            if line.startswith("검색질의:"):
+                value = line[len("검색질의:"):].strip()
                 if value:
                     refined = value
-            elif line.startswith("대안1:"):
-                value = line[len("대안1:"):].strip()
-                if value:
-                    alternatives.append(value)
-            elif line.startswith("대안2:"):
-                value = line[len("대안2:"):].strip()
+            elif line.startswith("대안:"):
+                value = line[len("대안:"):].strip()
                 if value:
                     alternatives.append(value)
             elif line.startswith("키워드:"):
@@ -147,7 +144,7 @@ class QueryAgent:
     def _validate_and_normalize(self, user_message: str, parsed: dict) -> dict:
         refined = str(parsed.get("refined_query") or user_message).strip()
         alternatives = [str(item).strip() for item in parsed.get("alternative_queries", []) if str(item).strip()]
-        keywords = [str(item).strip() for item in parsed.get("search_keywords", []) if str(item).strip()]
+        raw_keywords = [str(item).strip() for item in parsed.get("search_keywords", []) if str(item).strip()]
 
         if not refined:
             refined = user_message.strip()
@@ -157,7 +154,6 @@ class QueryAgent:
 
         user_intents = self._detect_intents(user_message)
         refined_intents = self._detect_intents(refined)
-
         missing_intents = user_intents - refined_intents
         invented_intents = refined_intents - user_intents
 
@@ -167,18 +163,19 @@ class QueryAgent:
         if invented_intents:
             refined = user_message.strip()
             alternatives = []
-            keywords = []
+            raw_keywords = []
 
         compact = self._compact_query_from_user_message(refined)
         if compact:
             refined = compact
 
+        keywords = normalize_query_keywords(refined, raw_keywords)
         if not keywords:
             keywords = self._keywords_from_user_message(user_message)
 
         return {
             "refined_query": refined,
-            "alternative_queries": alternatives[:2],
+            "alternative_queries": self._normalize_alternative_queries(alternatives)[:2],
             "search_keywords": keywords[:8],
         }
 
@@ -203,15 +200,14 @@ class QueryAgent:
 
     def _keywords_from_user_message(self, user_message: str) -> list[str]:
         raw_tokens = [token.strip(" ,.?/\\()[]{}:;'\"") for token in user_message.split()]
-        keywords: list[str] = []
+        filtered_tokens: list[str] = []
         for token in raw_tokens:
             if len(token) < 2:
                 continue
             if token in self.FILLER_TOKENS:
                 continue
-            if token not in keywords:
-                keywords.append(token)
-        return keywords[:8]
+            filtered_tokens.append(token)
+        return normalize_query_keywords(user_message, filtered_tokens)[:8]
 
     def _compact_query_from_user_message(self, user_message: str) -> str:
         raw_tokens = [token.strip(" ,.?/\\()[]{}:;'\"") for token in user_message.split()]
@@ -228,9 +224,24 @@ class QueryAgent:
                 compact_tokens.append(token)
         return " ".join(compact_tokens[:8]).strip()
 
+    def _normalize_alternative_queries(self, alternatives: list[str]) -> list[str]:
+        normalized_alternatives: list[str] = []
+        seen: set[str] = set()
+        for alternative in alternatives:
+            compact = self._compact_query_from_user_message(alternative)
+            value = compact or alternative.strip()
+            if not value:
+                continue
+            dedupe_key = value.casefold()
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            normalized_alternatives.append(value)
+        return normalized_alternatives
+
 
 class JudgeAgent:
-    """검색 결과가 질문에 답할 수 있는지 판단한다."""
+    """Judge whether retrieved context is relevant enough to answer."""
 
     def __init__(self, llm: LlmClient) -> None:
         self.llm = llm
@@ -245,73 +256,62 @@ class JudgeAgent:
             return {
                 "relevant": False,
                 "confidence": "high",
-                "clarification_message": "업로드된 문서에서 관련 내용을 찾을 수 없습니다. 다른 질문을 해주시거나, 관련 문서를 업로드해 주세요.",
+                "clarification_message": "업로드한 문서에서 관련 내용을 찾을 수 없습니다. 다른 질문을 하거나 관련 문서를 업로드해 주세요.",
             }
 
-        context_preview = "\n---\n".join(text[:300] for text in context_texts[:3])
         prompt = (
-            "너는 검색 품질 판단기다. 아래 형식만 출력하라.\n\n"
+            "너는 검색 품질 판단기다.\n"
+            "사용자 질문과 검색된 문맥이 실제로 맞는지 판단해라.\n"
+            "문맥이 질문과 맞으면 relevant=yes, 아니면 relevant=no로 답해라.\n"
+            "문맥이 애매하면 사용자가 더 구체적으로 물어볼 수 있는 짧은 안내 문장을 작성해라.\n\n"
             f"질문: {user_message}\n"
-            f"검색점수: {top_score:.4f}\n"
-            f"검색내용:\n{context_preview}\n\n"
-            "규칙:\n"
-            "- 검색 내용이 질문에 답할 수 있으면 적합\n"
-            "- 아니면 부적합과 함께 짧은 추가 질문을 제안\n\n"
-            "출력 형식:\n"
-            "판정: 적합 또는 부적합\n"
-            "확신도: high 또는 medium 또는 low\n"
+            f"검색 점수: {top_score:.4f}\n\n"
+            "문맥:\n"
+            + "\n\n".join(context_texts[:3])
+            + "\n\n출력 형식:\n"
+            "판정: yes|no\n"
+            "확신도: low|medium|high\n"
             "추가질문: ..."
         )
 
         try:
             response = await self.llm.generate(
                 [{"role": "user", "content": prompt}],
-                max_tokens=220,
+                max_tokens=200,
             )
             logger.info("[JudgeAgent] LLM 응답: %r", response[:200])
-            return self._parse_judge_response(response, top_score=top_score)
+            return self._parse_judge_response(response)
         except Exception as exc:
             logger.warning("[JudgeAgent] LLM 호출 실패: %s", exc)
-            if top_score >= 0.2:
-                return {"relevant": True, "confidence": "low", "clarification_message": ""}
             return {
-                "relevant": False,
-                "confidence": "low",
-                "clarification_message": "질문을 조금 더 구체적으로 적어주시면 어떤 내용을 찾아야 하는지 더 정확히 판단할 수 있습니다.",
+                "relevant": top_score >= 0.25,
+                "confidence": "medium",
+                "clarification_message": "질문을 조금 더 구체적으로 적어 주시면 관련 문서를 다시 확인하겠습니다.",
             }
 
-    def _parse_judge_response(self, response: str, top_score: float = 0.0) -> dict:
-        relevant = top_score >= 0.2
+    def _parse_judge_response(self, response: str) -> dict:
+        relevant = False
         confidence = "medium"
-        clarification = ""
-        found_verdict = False
+        clarification_message = ""
 
         for raw_line in response.strip().splitlines():
             line = raw_line.strip()
-            if line.startswith("판정:"):
-                value = line[len("판정:"):].strip().casefold()
-                found_verdict = True
-                if "부적합" in value or "irrelevant" in value or value == "no":
-                    relevant = False
-                elif "적합" in value or "relevant" in value or value == "yes":
-                    relevant = True
-            elif line.startswith("확신도:"):
-                value = line[len("확신도:"):].strip().lower()
-                if value in {"high", "medium", "low"}:
+            lowered = line.casefold()
+            if lowered.startswith("판정:"):
+                value = line.split(":", 1)[1].strip().casefold()
+                relevant = value in {"yes", "true", "relevant"}
+            elif lowered.startswith("확신도:"):
+                value = line.split(":", 1)[1].strip().casefold()
+                if value in {"low", "medium", "high"}:
                     confidence = value
-            elif line.startswith("추가질문:"):
-                value = line[len("추가질문:"):].strip()
-                if value and value not in {"없음", "none"}:
-                    clarification = value
+            elif lowered.startswith("추가질문:"):
+                clarification_message = line.split(":", 1)[1].strip()
 
-        if not found_verdict:
-            relevant = top_score >= 0.2
-
-        if not relevant and not clarification:
-            clarification = "질문을 조금 더 구체적으로 적어주시면 어떤 내용을 찾아야 하는지 더 정확히 판단할 수 있습니다."
+        if not relevant and not clarification_message:
+            clarification_message = "질문 범위를 조금 더 좁혀 주시면 문서 안에서 다시 찾아보겠습니다."
 
         return {
             "relevant": relevant,
             "confidence": confidence,
-            "clarification_message": clarification,
+            "clarification_message": clarification_message,
         }
