@@ -59,14 +59,14 @@ class TurnPolicyService:
         "좋네",
         "좋아요",
         "좋습니다",
-        "오케이",
+        "됐어",
         "알겠어",
         "알겠습니다",
         "그렇구나",
         "이해했어",
         "이해했습니다",
-        "ㅇㅋ",
-        "ㅇㅇ",
+        "오케이",
+        "오케",
         "ok",
         "okay",
         "nice",
@@ -76,13 +76,7 @@ class TurnPolicyService:
         "thank you",
         "got it",
     )
-    GREETING_MARKERS = (
-        "안녕",
-        "안녕하세요",
-        "hi",
-        "hello",
-        "hey",
-    )
+    GREETING_MARKERS = ("안녕", "안녕하세요", "hi", "hello", "hey")
     DOCUMENT_INTENT_MARKERS = (
         "무엇",
         "뭐",
@@ -137,28 +131,18 @@ class TurnPolicyService:
         "then",
         "also",
     )
-    GENERAL_CHAT_MARKERS = (
-        "추천",
-        "잡담",
-        "기분",
-        "오늘",
-        "취미",
-        "일정",
-        "recommend",
-    )
+    GENERAL_CHAT_MARKERS = ("추천", "잡담", "기분", "오늘", "취미", "일정", "recommend")
     CASUAL_CHAT_MARKERS = (
         "너는",
-        "넌",
         "이름",
         "누구",
         "뭐해",
         "뭐야",
-        "무슨 일 해",
+        "무슨 일",
         "정체",
         "자기소개",
-        "심심해",
+        "수다",
         "모르겠어",
-        "됐어",
         "who are you",
         "what are you",
         "what do you do",
@@ -198,17 +182,7 @@ class TurnPolicyService:
         "샘플",
         "보여줘",
     )
-    GENERIC_FOCUS_MARKERS = (
-        "문서",
-        "페이지",
-        "예시",
-        "코드",
-        "설명",
-        "example",
-        "code",
-        "document",
-        "page",
-    )
+    GENERIC_FOCUS_MARKERS = ("문서", "페이지", "예시", "코드", "설명", "example", "code", "document", "page")
 
     def classify_turn(
         self,
@@ -302,9 +276,7 @@ class TurnPolicyService:
         return _TurnPolicyContext(
             summary_topic=str(summary.get("topic") or "").strip(),
             active_topic=str(topic_state.get("active_topic") or "").strip(),
-            last_retrieval_mode=str(
-                topic_state.get("last_retrieval_mode") or last_assistant_metadata.get("mode") or ""
-            ),
+            last_retrieval_mode=str(topic_state.get("last_retrieval_mode") or last_assistant_metadata.get("mode") or ""),
             has_document_context=self._has_document_context(topic_state, last_assistant_metadata),
             has_prior_context=self._has_prior_context(topic_state),
         )
@@ -361,11 +333,7 @@ class TurnPolicyService:
     def _follow_up_has_enough_detail(self, normalized: str) -> bool:
         return self._has_document_intent(normalized) or len(normalized) >= 15
 
-    def _has_multiple_scope_candidates(
-        self,
-        recent_turns: list[ChatTurn],
-        topic_state: dict,
-    ) -> bool:
+    def _has_multiple_scope_candidates(self, recent_turns: list[ChatTurn], topic_state: dict) -> bool:
         return len(self._extract_scope_candidates(recent_turns, topic_state)) >= 2
 
     def _should_clarify_from_topic_competition(
@@ -458,9 +426,9 @@ class TurnPolicyService:
 
         scope_hint = self._build_clarification_scope_hint(topic_state, context)
         prompt = (
-            "어떤 부분을 말씀하시는지 조금만 더 구체적으로 알려주세요. "
+            "어느 부분을 말씀하시는지 조금만 더 구체적으로 알려 주세요. "
             f"지금은 {scope_hint}처럼 후보가 여러 개라서 바로 하나로 특정하기 어렵습니다. "
-            "예를 들어 `PV/PVC 예시`, `StorageClass 예시`, `정적 프로비저닝 설명`처럼 말씀해주시면 바로 이어서 답하겠습니다."
+            "예를 들어 `PV/PVC 예시`, `StorageClass 예시`, `정적 프로비저닝 설명`처럼 말씀해 주시면 바로 이어서 답하겠습니다."
         )
         return TurnPolicyDecision(
             "clarification",
