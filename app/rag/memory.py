@@ -30,6 +30,7 @@ DEFAULT_TOPIC_STATE = {
     "last_answer_citations": [],
     "last_user_focus": "",
     "recent_user_topics": [],
+    "procedure_state": {},
 }
 
 DEFAULT_TOPIC_THREAD_SUMMARY = {
@@ -93,6 +94,12 @@ class SessionStore:
         """커넥션 풀을 닫는다."""
         self._pool.closeall()
 
+    @staticmethod
+    def _owner_from_session_id(session_id: str) -> str:
+        if "::" in session_id:
+            return session_id.split("::", 1)[0]
+        return "legacy"
+
     def _initialize(self) -> None:
         with self._connection() as connection:
             with connection.cursor() as cursor:
@@ -100,6 +107,7 @@ class SessionStore:
                     """
                     CREATE TABLE IF NOT EXISTS sessions (
                         session_id TEXT PRIMARY KEY,
+                        owner_id TEXT NOT NULL DEFAULT 'legacy',
                         summary TEXT NOT NULL DEFAULT '',
                         summary_json TEXT NOT NULL DEFAULT '{}',
                         topic_state_json TEXT NOT NULL DEFAULT '{}',
@@ -111,6 +119,7 @@ class SessionStore:
                     """
                     CREATE TABLE IF NOT EXISTS session_turns (
                         turn_id SERIAL PRIMARY KEY,
+                        owner_id TEXT NOT NULL DEFAULT 'legacy',
                         session_id TEXT NOT NULL,
                         role TEXT NOT NULL,
                         content TEXT NOT NULL,
@@ -130,6 +139,7 @@ class SessionStore:
                     """
                     CREATE TABLE IF NOT EXISTS session_topics (
                         topic_id TEXT PRIMARY KEY,
+                        owner_id TEXT NOT NULL DEFAULT 'legacy',
                         session_id TEXT NOT NULL,
                         topic_label TEXT NOT NULL DEFAULT '',
                         status TEXT NOT NULL DEFAULT 'active',
@@ -158,6 +168,7 @@ class SessionStore:
                     """
                     CREATE TABLE IF NOT EXISTS turn_topic_links (
                         turn_id INTEGER NOT NULL,
+                        owner_id TEXT NOT NULL DEFAULT 'legacy',
                         session_id TEXT NOT NULL,
                         topic_id TEXT NOT NULL,
                         role TEXT NOT NULL,
@@ -193,6 +204,20 @@ class SessionStore:
                     cursor.execute(
                         "ALTER TABLE sessions ADD COLUMN topic_state_json TEXT NOT NULL DEFAULT '{}'"
                     )
+                if "owner_id" not in session_columns:
+                    cursor.execute(
+                        "ALTER TABLE sessions ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'legacy'"
+                    )
+                cursor.execute(
+                    """
+                    UPDATE sessions
+                    SET owner_id = CASE
+                        WHEN position('::' in session_id) > 0 THEN split_part(session_id, '::', 1)
+                        ELSE 'legacy'
+                    END
+                    WHERE owner_id = 'legacy'
+                    """
+                )
 
                 cursor.execute(
                     """
@@ -205,6 +230,20 @@ class SessionStore:
                     cursor.execute(
                         "ALTER TABLE session_turns ADD COLUMN metadata TEXT NOT NULL DEFAULT ''"
                     )
+                if "owner_id" not in turn_columns:
+                    cursor.execute(
+                        "ALTER TABLE session_turns ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'legacy'"
+                    )
+                cursor.execute(
+                    """
+                    UPDATE session_turns
+                    SET owner_id = CASE
+                        WHEN position('::' in session_id) > 0 THEN split_part(session_id, '::', 1)
+                        ELSE 'legacy'
+                    END
+                    WHERE owner_id = 'legacy'
+                    """
+                )
                 cursor.execute(
                     """
                     SELECT column_name FROM information_schema.columns
@@ -228,52 +267,90 @@ class SessionStore:
                         cursor.execute(
                             f"ALTER TABLE session_topics ADD COLUMN {column_name} {column_def}"
                         )
+                if "owner_id" not in topic_columns:
+                    cursor.execute(
+                        "ALTER TABLE session_topics ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'legacy'"
+                    )
+                cursor.execute(
+                    """
+                    UPDATE session_topics
+                    SET owner_id = CASE
+                        WHEN position('::' in session_id) > 0 THEN split_part(session_id, '::', 1)
+                        ELSE 'legacy'
+                    END
+                    WHERE owner_id = 'legacy'
+                    """
+                )
+                cursor.execute(
+                    """
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = 'turn_topic_links'
+                    """
+                )
+                turn_topic_columns = {row[0] for row in cursor.fetchall()}
+                if "owner_id" not in turn_topic_columns:
+                    cursor.execute(
+                        "ALTER TABLE turn_topic_links ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'legacy'"
+                    )
+                cursor.execute(
+                    """
+                    UPDATE turn_topic_links
+                    SET owner_id = CASE
+                        WHEN position('::' in session_id) > 0 THEN split_part(session_id, '::', 1)
+                        ELSE 'legacy'
+                    END
+                    WHERE owner_id = 'legacy'
+                    """
+                )
 
     def _ensure_session_row(self, cursor, session_id: str) -> None:
+        owner_id = self._owner_from_session_id(session_id)
         cursor.execute(
             """
-            INSERT INTO sessions (session_id, summary, summary_json, topic_state_json, updated_at)
-            VALUES (%s, '', '{}', '{}', CURRENT_TIMESTAMP)
-            ON CONFLICT(session_id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+            INSERT INTO sessions (session_id, owner_id, summary, summary_json, topic_state_json, updated_at)
+            VALUES (%s, %s, '', '{}', '{}', CURRENT_TIMESTAMP)
+            ON CONFLICT(session_id) DO UPDATE SET owner_id = EXCLUDED.owner_id, updated_at = CURRENT_TIMESTAMP
             """,
-            (session_id,),
+            (session_id, owner_id),
         )
 
     def add_turn(self, session_id: str, role: str, content: str, metadata: dict | None = None) -> int:
+        owner_id = self._owner_from_session_id(session_id)
         with self._connection() as connection:
             with connection.cursor() as cursor:
                 self._ensure_session_row(cursor, session_id)
                 cursor.execute(
                     """
-                    INSERT INTO session_turns (session_id, role, content, metadata)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO session_turns (owner_id, session_id, role, content, metadata)
+                    VALUES (%s, %s, %s, %s, %s)
                     RETURNING turn_id
                     """,
-                    (session_id, role, content, json.dumps(metadata or {}, ensure_ascii=False)),
+                    (owner_id, session_id, role, content, json.dumps(metadata or {}, ensure_ascii=False)),
                 )
                 turn_id = int(cursor.fetchone()[0])
         self._refresh_summary(session_id)
         return turn_id
 
-    def delete_session(self, session_id: str) -> bool:
+    def delete_session(self, session_id: str, owner_id: str | None = None) -> bool:
+        resolved_owner_id = owner_id or self._owner_from_session_id(session_id)
         with self._connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    "DELETE FROM turn_topic_links WHERE session_id = %s",
-                    (session_id,),
+                    "DELETE FROM turn_topic_links WHERE session_id = %s AND owner_id = %s",
+                    (session_id, resolved_owner_id),
                 )
                 cursor.execute(
-                    "DELETE FROM session_topics WHERE session_id = %s",
-                    (session_id,),
+                    "DELETE FROM session_topics WHERE session_id = %s AND owner_id = %s",
+                    (session_id, resolved_owner_id),
                 )
                 cursor.execute(
-                    "DELETE FROM session_turns WHERE session_id = %s",
-                    (session_id,),
+                    "DELETE FROM session_turns WHERE session_id = %s AND owner_id = %s",
+                    (session_id, resolved_owner_id),
                 )
                 turn_count = cursor.rowcount
                 cursor.execute(
-                    "DELETE FROM sessions WHERE session_id = %s",
-                    (session_id,),
+                    "DELETE FROM sessions WHERE session_id = %s AND owner_id = %s",
+                    (session_id, resolved_owner_id),
                 )
                 session_count = cursor.rowcount
         return bool(turn_count or session_count)
@@ -344,6 +421,7 @@ class SessionStore:
 
     def create_topic(self, session_id: str, seed_label: str, seed_turn_id: int | None = None) -> dict:
         topic_id = f"topic_{uuid4().hex}"
+        owner_id = self._owner_from_session_id(session_id)
         topic_label = normalize_text(seed_label)[:120] or "Untitled topic"
         topic_summary = DEFAULT_TOPIC_THREAD_SUMMARY.copy()
         topic_summary["topic_label"] = topic_label
@@ -353,15 +431,16 @@ class SessionStore:
                 cursor.execute(
                     """
                     INSERT INTO session_topics (
-                        topic_id, session_id, topic_label, status, summary_json,
+                        topic_id, owner_id, session_id, topic_label, status, summary_json,
                         source_state_json, entity_state_json, open_questions_json,
                         resolved_facts_json, last_user_focus, last_retrieval_mode,
                         turn_count, last_active_turn_id, updated_at
                     )
-                    VALUES (%s, %s, %s, 'active', %s, '{}', '{}', '[]', '[]', '', '', 0, %s, CURRENT_TIMESTAMP)
+                    VALUES (%s, %s, %s, %s, 'active', %s, '{}', '{}', '[]', '[]', '', '', 0, %s, CURRENT_TIMESTAMP)
                     """,
                     (
                         topic_id,
+                        owner_id,
                         session_id,
                         topic_label,
                         json.dumps(topic_summary, ensure_ascii=False),
@@ -443,15 +522,16 @@ class SessionStore:
                 cursor.execute(
                     """
                     INSERT INTO turn_topic_links (
-                        turn_id, session_id, topic_id, role, link_type, confidence
+                        turn_id, owner_id, session_id, topic_id, role, link_type, confidence
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (turn_id, topic_id) DO UPDATE
-                    SET role = EXCLUDED.role,
+                    SET owner_id = EXCLUDED.owner_id,
+                        role = EXCLUDED.role,
                         link_type = EXCLUDED.link_type,
                         confidence = EXCLUDED.confidence
                     """,
-                    (turn_id, session_id, topic_id, role, link_type, confidence),
+                    (turn_id, self._owner_from_session_id(session_id), session_id, topic_id, role, link_type, confidence),
                 )
                 cursor.execute(
                     """
@@ -594,7 +674,17 @@ class SessionStore:
             "last_retrieval_mode": str(topic_state.get("last_retrieval_mode") or ""),
         }
 
-    def export_session(self, session_id: str) -> dict:
+    def export_session(self, session_id: str, owner_id: str | None = None) -> dict:
+        resolved_owner_id = owner_id or self._owner_from_session_id(session_id)
+        with self._connection() as connection:
+            with connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                cursor.execute(
+                    "SELECT session_id FROM sessions WHERE session_id = %s AND owner_id = %s",
+                    (session_id, resolved_owner_id),
+                )
+                exists = cursor.fetchone()
+        if not exists:
+            return {}
         turns = self.all_turns(session_id)
         return {
             "session_id": session_id,
@@ -626,7 +716,7 @@ class SessionStore:
             metadata=json.loads(row["metadata"] or "{}"),
         )
 
-    def pending_user_message(self, session_id: str) -> str | None:
+    def pending_user_message(self, session_id: str, owner_id: str | None = None) -> str | None:
         last_turn = self.last_turn(session_id)
         if last_turn and last_turn.role == "user":
             return last_turn.content
@@ -654,44 +744,124 @@ class SessionStore:
             for row in rows
         ]
 
-    def list_sessions(self, limit: int = 50) -> list[dict]:
+    def list_sessions(
+        self,
+        limit: int = 50,
+        session_prefix: str | None = None,
+        owner_id: str | None = None,
+    ) -> list[dict]:
         with self._connection() as connection:
             with connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
-                cursor.execute(
-                    """
-                    SELECT s.session_id, s.summary, s.summary_json, s.updated_at,
-                           (
-                               SELECT content
-                               FROM session_turns
-                               WHERE session_id = s.session_id AND role = 'user'
-                               ORDER BY turn_id ASC
-                               LIMIT 1
-                           ) AS first_user_message,
-                           (
-                               SELECT content
-                               FROM session_turns
-                               WHERE session_id = s.session_id AND role = 'user'
-                               ORDER BY turn_id DESC
-                               LIMIT 1
-                           ) AS last_user_message,
-                           (
-                               SELECT created_at
-                               FROM session_turns
-                               WHERE session_id = s.session_id AND role = 'user'
-                               ORDER BY turn_id DESC
-                               LIMIT 1
-                           ) AS last_user_at,
-                           (
-                               SELECT COUNT(*)
-                               FROM session_turns
-                               WHERE session_id = s.session_id
-                           ) AS turn_count
-                    FROM sessions s
-                    ORDER BY s.updated_at DESC
-                    LIMIT %s
-                    """,
-                    (limit,),
-                )
+                if owner_id:
+                    cursor.execute(
+                        """
+                        SELECT s.session_id, s.summary, s.summary_json, s.updated_at,
+                               (
+                                   SELECT content
+                                   FROM session_turns
+                                   WHERE session_id = s.session_id AND role = 'user'
+                                   ORDER BY turn_id ASC
+                                   LIMIT 1
+                               ) AS first_user_message,
+                               (
+                                   SELECT content
+                                   FROM session_turns
+                                   WHERE session_id = s.session_id AND role = 'user'
+                                   ORDER BY turn_id DESC
+                                   LIMIT 1
+                               ) AS last_user_message,
+                               (
+                                   SELECT created_at
+                                   FROM session_turns
+                                   WHERE session_id = s.session_id AND role = 'user'
+                                   ORDER BY turn_id DESC
+                                   LIMIT 1
+                               ) AS last_user_at,
+                               (
+                                   SELECT COUNT(*)
+                                   FROM session_turns
+                                   WHERE session_id = s.session_id
+                               ) AS turn_count
+                        FROM sessions s
+                        WHERE s.owner_id = %s
+                        ORDER BY s.updated_at DESC
+                        LIMIT %s
+                        """,
+                        (owner_id, limit),
+                    )
+                elif session_prefix:
+                    cursor.execute(
+                        """
+                        SELECT s.session_id, s.summary, s.summary_json, s.updated_at,
+                               (
+                                   SELECT content
+                                   FROM session_turns
+                                   WHERE session_id = s.session_id AND role = 'user'
+                                   ORDER BY turn_id ASC
+                                   LIMIT 1
+                               ) AS first_user_message,
+                               (
+                                   SELECT content
+                                   FROM session_turns
+                                   WHERE session_id = s.session_id AND role = 'user'
+                                   ORDER BY turn_id DESC
+                                   LIMIT 1
+                               ) AS last_user_message,
+                               (
+                                   SELECT created_at
+                                   FROM session_turns
+                                   WHERE session_id = s.session_id AND role = 'user'
+                                   ORDER BY turn_id DESC
+                                   LIMIT 1
+                               ) AS last_user_at,
+                               (
+                                   SELECT COUNT(*)
+                                   FROM session_turns
+                                   WHERE session_id = s.session_id
+                               ) AS turn_count
+                        FROM sessions s
+                        WHERE s.session_id LIKE %s
+                        ORDER BY s.updated_at DESC
+                        LIMIT %s
+                        """,
+                        (f"{session_prefix}%", limit),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        SELECT s.session_id, s.summary, s.summary_json, s.updated_at,
+                               (
+                                   SELECT content
+                                   FROM session_turns
+                                   WHERE session_id = s.session_id AND role = 'user'
+                                   ORDER BY turn_id ASC
+                                   LIMIT 1
+                               ) AS first_user_message,
+                               (
+                                   SELECT content
+                                   FROM session_turns
+                                   WHERE session_id = s.session_id AND role = 'user'
+                                   ORDER BY turn_id DESC
+                                   LIMIT 1
+                               ) AS last_user_message,
+                               (
+                                   SELECT created_at
+                                   FROM session_turns
+                                   WHERE session_id = s.session_id AND role = 'user'
+                                   ORDER BY turn_id DESC
+                                   LIMIT 1
+                               ) AS last_user_at,
+                               (
+                                   SELECT COUNT(*)
+                                   FROM session_turns
+                                   WHERE session_id = s.session_id
+                               ) AS turn_count
+                        FROM sessions s
+                        ORDER BY s.updated_at DESC
+                        LIMIT %s
+                        """,
+                        (limit,),
+                    )
                 rows = cursor.fetchall()
 
         sessions: list[dict] = []
@@ -807,6 +977,7 @@ class SessionStore:
         active_entities: list[str] = []
         recent_user_topics: list[str] = []
         last_user_focus = ""
+        procedure_state: dict = {}
 
         for turn in recent_turns:
             metadata = turn.metadata or {}
@@ -822,6 +993,8 @@ class SessionStore:
                         selected_pages.append(page_number)
                 if metadata.get("answer_citations"):
                     last_answer_citations = metadata["answer_citations"][:4]
+                if isinstance(metadata.get("procedure_state"), dict) and metadata.get("procedure_state", {}).get("steps"):
+                    procedure_state = metadata["procedure_state"]
             else:
                 active_entities.extend(self._extract_entities(turn.content))
                 focus = self._extract_focus_phrase(turn.content)
@@ -847,6 +1020,7 @@ class SessionStore:
             "last_answer_citations": last_answer_citations,
             "last_user_focus": last_user_focus,
             "recent_user_topics": recent_user_topics[-4:],
+            "procedure_state": procedure_state,
         }
 
     def _stringify_summary(self, summary_json: dict, topic_state: dict) -> str:
