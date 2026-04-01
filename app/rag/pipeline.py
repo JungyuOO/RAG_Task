@@ -33,6 +33,28 @@ from app.services.turn_policy_service import TurnPolicyDecision, TurnPolicyInput
 
 
 class RagPipeline:
+    RESOURCE_QUERY_PHRASES = {
+        "pv": ("persistent volume",),
+        "pvc": ("persistent volume claim",),
+    }
+    RESOURCE_KIND_ALIASES = {
+        "pv": {"pv", "persistentvolume"},
+        "pvc": {"pvc", "persistentvolumeclaim"},
+        "configmap": {"configmap"},
+        "secret": {"secret"},
+        "pod": {"pod"},
+        "deployment": {"deployment"},
+        "service": {"service"},
+        "route": {"route"},
+        "ingress": {"ingress"},
+        "storageclass": {"storageclass"},
+        "rolebinding": {"rolebinding"},
+        "clusterrole": {"clusterrole"},
+        "clusterrolebinding": {"clusterrolebinding"},
+        "daemonset": {"daemonset"},
+        "statefulset": {"statefulset"},
+    }
+
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.ingestor = DocumentIngestor(settings)
@@ -150,7 +172,8 @@ class RagPipeline:
         policy: TurnPolicyDecision,
     ) -> str:
         if use_retrieved_context and context_blocks:
-            return "LLM 응답 생성에 실패했습니다. 현재는 검색된 문맥만 보여드릴게요.\n\n" + context_text[:1200]
+            fallback_excerpt = self._build_grounded_failure_excerpt(context_blocks)
+            return "LLM 응답 생성에 실패했습니다. 검색된 문맥 기준으로 핵심만 정리해 드릴게요.\n\n" + fallback_excerpt
         if policy.turn_type == "greeting":
             return "안녕하세요! 무엇을 도와드릴까요?"
         if policy.needs_clarification and policy.clarification_prompt:
@@ -158,6 +181,73 @@ class RagPipeline:
         if policy.response_mode == "conversational":
             return "문서와 관련된 내용이 더 필요하시면 이어서 질문해 주세요."
         return "현재 LLM 연결이 불안정해 일반 답변을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요."
+
+    def _build_grounded_failure_excerpt(self, context_blocks: list[str]) -> str:
+        cleaned_parts: list[str] = []
+        for block in context_blocks[:3]:
+            text = re.sub(r"```.*?```", " ", block, flags=re.DOTALL)
+            filtered_lines: list[str] = []
+            for raw_line in text.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                if line.startswith("[") and ".pdf" in line.lower():
+                    continue
+                if "|" in line and "---" in line:
+                    continue
+                if line.startswith("|"):
+                    continue
+                filtered_lines.append(line)
+            compact = " ".join(filtered_lines)
+            compact = re.sub(r"\s+", " ", compact).strip()
+            if compact:
+                cleaned_parts.append(compact[:220])
+        if not cleaned_parts:
+            return context_blocks[0][:400] if context_blocks else "관련 문맥을 요약하지 못했습니다."
+        return "\n".join(f"- {part}" for part in cleaned_parts[:3])
+
+    def _strip_code_blocks_for_non_code_route(self, answer: str, answer_route: str) -> str:
+        if answer_route == "extractive_code":
+            return answer
+        return re.sub(r"```(?:[\w+-]+)?\n.*?```", "", answer, flags=re.DOTALL).strip()
+
+    def _build_example_anchor(
+        self,
+        context_items: list[dict],
+        query_interpretation: dict | None,
+    ) -> dict:
+        query_interpretation = query_interpretation or {}
+        fields: list[str] = []
+        context_ids: list[str] = []
+        page_numbers: list[int] = []
+        section_paths: list[str] = []
+        source_path = ""
+        resource_kind = str(query_interpretation.get("resources", [""])[0] or "")
+        for item in context_items[:3]:
+            chunk = item["chunk"]
+            if not source_path:
+                source_path = str(chunk.get("source_path") or "")
+            chunk_id = str(chunk.get("chunk_id") or "")
+            if chunk_id and chunk_id not in context_ids:
+                context_ids.append(chunk_id)
+            page_number = int(chunk.get("page_number") or chunk.get("metadata", {}).get("page_start") or 0)
+            if page_number and page_number not in page_numbers:
+                page_numbers.append(page_number)
+            section_path = str(chunk.get("metadata", {}).get("section_path", "") or "")
+            if section_path and section_path not in section_paths:
+                section_paths.append(section_path)
+            for field in re.findall(r"(?im)^\s*([a-z][a-z0-9_-]*)\s*:", str(chunk.get("text", "") or "")):
+                lowered = field.casefold()
+                if lowered not in fields:
+                    fields.append(lowered)
+        return {
+            "resource_kind": resource_kind,
+            "context_ids": context_ids[:6],
+            "source_path": source_path,
+            "page_numbers": page_numbers[:6],
+            "section_paths": section_paths[:4],
+            "fields": fields[:12],
+        }
 
     @staticmethod
     def _detect_non_korean_query(text: str) -> str | None:
@@ -321,7 +411,8 @@ class RagPipeline:
             line = raw_line.strip()
             if not line:
                 continue
-            match = re.match(r"^(\d+)\.\s+(.+)$", line)
+            normalized_line = re.sub(r"^\*+|\*+$", "", line).strip()
+            match = re.match(r"^(?:\*\*)?(\d+)(?:\.\s+|\s*단계[:\s]+)(.+?)(?:\*\*)?$", normalized_line)
             if match:
                 current_step = {
                     "step_number": int(match.group(1)),
@@ -404,6 +495,60 @@ class RagPipeline:
         if any(marker in normalized for marker in ("처음부터", "1단계부터", "first step")):
             return {"type": "jump", "step_number": 1}
         return None
+
+    def _looks_like_step_navigation_without_state(self, user_message: str, procedure_state: dict) -> bool:
+        if procedure_state.get("steps"):
+            return False
+        normalized = normalize_text(user_message).lower()
+        if not normalized:
+            return False
+        if re.search(r"(\d+)\s*단계", normalized):
+            return True
+        if re.search(r"\bstep\s*(\d+)\b", normalized):
+            return True
+        return any(marker in normalized for marker in ("다음 단계", "next step"))
+
+    def _resolve_requested_resource_kinds(self, query_interpretation: dict | None) -> set[str]:
+        query_interpretation = query_interpretation or {}
+        requested_kinds: set[str] = set()
+        for resource in query_interpretation.get("resources", []) or []:
+            normalized = str(resource).casefold().strip()
+            requested_kinds.update(self.RESOURCE_KIND_ALIASES.get(normalized, {normalized}))
+        return requested_kinds
+
+    def _infer_item_resource_kinds(self, item: dict) -> set[str]:
+        metadata = item["chunk"].get("metadata", {})
+        lowered_text = str(item["chunk"].get("text", "")).casefold()
+        explicit_kind_match = re.search(r"(?im)^\s*kind:\s*([a-z0-9_-]+)\s*$", lowered_text)
+        inferred_kinds: set[str] = set()
+        if explicit_kind_match:
+            inferred_kinds.add(explicit_kind_match.group(1).casefold())
+        for signal in metadata.get("code_signals", []) or []:
+            normalized = str(signal).casefold().strip()
+            for alias_set in self.RESOURCE_KIND_ALIASES.values():
+                if normalized in alias_set:
+                    inferred_kinds.update(alias_set)
+        return inferred_kinds
+
+    def _expand_query_with_resource_aliases(
+        self,
+        query: str,
+        query_interpretation: dict | None,
+    ) -> str:
+        query_interpretation = query_interpretation or {}
+        lowered_query = query.casefold()
+        extra_tokens: list[str] = []
+        for resource in query_interpretation.get("resources", []) or []:
+            normalized = str(resource).casefold().strip()
+            phrase_aliases = self.RESOURCE_QUERY_PHRASES.get(normalized, ())
+            if any(phrase in lowered_query for phrase in phrase_aliases):
+                continue
+            for alias in sorted(self.RESOURCE_KIND_ALIASES.get(normalized, {normalized})):
+                if alias and alias not in lowered_query:
+                    extra_tokens.append(alias)
+        if not extra_tokens:
+            return query
+        return f"{query} {' '.join(extra_tokens)}".strip()
 
     def _build_procedure_followup_answer(self, followup: dict, procedure_state: dict) -> tuple[str, dict] | None:
         steps = procedure_state.get("steps", [])
@@ -498,7 +643,10 @@ class RagPipeline:
             "persistentvolume",
             "persistentvolumeclaim",
         }
-        requested_resource_kinds = {kind for kind in known_resource_kinds if kind in normalized}
+        requested_resource_kinds = set()
+        for resource_key, aliases in self.RESOURCE_KIND_ALIASES.items():
+            if any(alias in normalized for alias in aliases):
+                requested_resource_kinds.update(aliases)
         candidate_resource_kinds = code_signals & known_resource_kinds
 
         score = 0.0
@@ -567,7 +715,7 @@ class RagPipeline:
             for token in query_interpretation.get("normalized_keywords", tokenize(user_message))
             if len(token) >= 2 and token not in {"yaml", "manifest", "code", "example", "sample", "demo"}
         }
-        resources = {str(value).casefold() for value in query_interpretation.get("resources", []) if value}
+        resources = self._resolve_requested_resource_kinds(query_interpretation)
         actions = {str(value).casefold() for value in query_interpretation.get("actions", []) if value}
         format_constraints = {str(value).casefold() for value in query_interpretation.get("format_constraints", []) if value}
         response_shape = str(query_interpretation.get("response_shape", "") or "").casefold()
@@ -579,6 +727,7 @@ class RagPipeline:
         format_score = 0.0
         shape_score = 0.0
         lexical_score = 0.0
+        completeness_score = 0.0
 
         if resources:
             matched_resources = 0
@@ -593,7 +742,7 @@ class RagPipeline:
                     matched_resources += 1
                     resource_score += 0.55
             if matched_resources == 0 and explicit_resource_kind:
-                resource_score -= 0.25
+                resource_score -= 0.5
 
         if "create" in actions:
             if any(marker in lowered_text for marker in ("create", "생성", "만들", "작성")):
@@ -641,7 +790,10 @@ class RagPipeline:
         if intent in {"yaml_example", "cli_example", "code_example"} and "code" in block_types:
             shape_score += 0.25
 
-        metadata_score = heading_score + resource_score + action_score + format_score + shape_score + lexical_score
+        if "code" in block_types:
+            completeness_score += self._code_completeness_score(lowered_text)
+
+        metadata_score = heading_score + resource_score + action_score + format_score + shape_score + lexical_score + completeness_score
         return {
             "heading_overlap_score": heading_score,
             "resource_match_score": resource_score,
@@ -649,9 +801,17 @@ class RagPipeline:
             "format_match_score": format_score,
             "shape_match_score": shape_score,
             "lexical_match_score": lexical_score,
+            "completeness_score": completeness_score,
             "metadata_score": metadata_score,
             "metadata_final_score": float(item.get("rerank_score", 0.0)) + metadata_score,
         }
+
+    def _code_completeness_score(self, lowered_text: str) -> float:
+        field_lines = re.findall(r"(?im)^\s*([a-z][a-z0-9_-]*)\s*:", lowered_text)
+        unique_fields = {field.casefold() for field in field_lines}
+        if not unique_fields:
+            return 0.0
+        return min(len(unique_fields) * 0.05, 0.35)
 
     def _metadata_aware_rerank(
         self,
@@ -675,6 +835,14 @@ class RagPipeline:
         )
         return rescored
 
+    def _has_code_content(self, item: dict) -> bool:
+        """청크 텍스트에 코드 블록 패턴이 포함되어 있는지 확인한다."""
+        text = str(item["chunk"].get("text", "") or "")
+        if not text.strip():
+            return False
+        candidates = self.answer_service._extract_code_candidates(text)
+        return len(candidates) > 0
+
     def _select_code_example_context_items(
         self,
         user_message: str,
@@ -689,9 +857,37 @@ class RagPipeline:
             limit=None,
         )
         if not code_candidates:
+            # Fallback: scan all items for code content embedded in their text
+            code_candidates = [item for item in candidates if self._has_code_content(item)]
+        if not code_candidates:
             return selected_context_items
 
+        requested_resource_kinds = self._resolve_requested_resource_kinds(query_interpretation)
+        if requested_resource_kinds:
+            explicit_kind_matches = [
+                item for item in code_candidates
+                if self._extract_explicit_resource_kind(item) in requested_resource_kinds
+            ]
+            if explicit_kind_matches:
+                code_candidates = explicit_kind_matches
+            exact_resource_matches = [
+                item for item in code_candidates
+                if self._infer_item_resource_kinds(item) & requested_resource_kinds
+            ]
+            if exact_resource_matches:
+                code_candidates = exact_resource_matches
+
         rescored = self._metadata_aware_rerank(user_message, query_interpretation, code_candidates)
+
+        # Precision filter: if any item has a positive resource match, remove items
+        # that have a negative resource match so mismatched resources don't dominate.
+        has_positive_match = any(item.get("resource_match_score", 0) > 0 for item in rescored)
+        if has_positive_match:
+            rescored = [
+                item for item in rescored
+                if item.get("resource_match_score", 0) >= 0
+            ]
+
         for item in rescored:
             item["code_selection_score"] = float(item.get("metadata_final_score", 0.0))
             item["code_intent_score"] = (
@@ -702,6 +898,11 @@ class RagPipeline:
                 + float(item.get("lexical_match_score", 0.0))
             )
         return rescored
+
+    def _extract_explicit_resource_kind(self, item: dict) -> str:
+        lowered_text = str(item["chunk"].get("text", "")).casefold()
+        explicit_kind_match = re.search(r"(?im)^\s*kind:\s*([a-z0-9_-]+)\s*$", lowered_text)
+        return explicit_kind_match.group(1).casefold() if explicit_kind_match else ""
 
     def _should_expand_local_context(self, query_interpretation: dict | None) -> bool:
         query_interpretation = query_interpretation or {}
@@ -771,6 +972,163 @@ class RagPipeline:
 
         return self._metadata_aware_rerank(user_message, query_interpretation, expanded)
 
+    def _expand_topic_anchor_context_items(
+        self,
+        user_message: str,
+        query_interpretation: dict | None,
+        index_items: list[dict],
+        ranked_items: list[dict],
+        topic_state: dict,
+    ) -> list[dict]:
+        query_interpretation = query_interpretation or {}
+        topic_state = topic_state or {}
+        if not index_items:
+            return ranked_items
+
+        response_shape = str(query_interpretation.get("response_shape", "") or "").casefold()
+        format_constraints = {str(value).casefold() for value in query_interpretation.get("format_constraints", []) if value}
+        if response_shape not in {"code", "table"} and not format_constraints.intersection({"yaml", "cli", "table"}):
+            return ranked_items
+
+        anchor_pages = {int(page) for page in topic_state.get("last_example_source_pages", []) if str(page).isdigit()}
+        anchor_sections = {
+            str(path).casefold().strip()
+            for path in topic_state.get("last_grounded_section_paths", [])
+            if path
+        }
+        anchor_sources = {
+            str(source).casefold().strip()
+            for source in topic_state.get("selected_sources", [])
+            if source
+        }
+        if not anchor_pages and not anchor_sections:
+            return ranked_items
+
+        seen_chunk_ids = {item["chunk"]["chunk_id"] for item in ranked_items}
+        expanded: list[dict] = list(ranked_items)
+        for candidate in index_items:
+            chunk = candidate["chunk"]
+            chunk_id = str(chunk.get("chunk_id") or "")
+            if not chunk_id or chunk_id in seen_chunk_ids:
+                continue
+            source_name = Path(str(chunk.get("source_path") or "")).name.casefold()
+            if anchor_sources and source_name not in anchor_sources:
+                continue
+            metadata = chunk.get("metadata", {})
+            candidate_page = int(chunk.get("page_number") or metadata.get("page_start") or 0)
+            section_path = str(metadata.get("section_path", "") or "").casefold().strip()
+            same_page_band = any(abs(candidate_page - anchor_page) <= 1 for anchor_page in anchor_pages if candidate_page)
+            same_section = bool(section_path and section_path in anchor_sections)
+            if not same_page_band and not same_section:
+                continue
+            expanded.append(
+                {
+                    "chunk": chunk,
+                    "dense_score": 0.0,
+                    "sparse_score": 0.0,
+                    "rerank_score": 0.0,
+                }
+            )
+            seen_chunk_ids.add(chunk_id)
+
+        return self._metadata_aware_rerank(user_message, query_interpretation, expanded)
+
+    def _looks_like_example_anchor_followup(
+        self,
+        user_message: str,
+        query_interpretation: dict | None,
+        topic_state: dict | None,
+    ) -> bool:
+        query_interpretation = query_interpretation or {}
+        topic_state = topic_state or {}
+        if not topic_state.get("last_example_source_pages"):
+            return False
+        normalized = normalize_text(user_message).lower()
+        if not normalized:
+            return False
+        format_constraints = {str(value).casefold() for value in query_interpretation.get("format_constraints", []) if value}
+        response_shape = str(query_interpretation.get("response_shape", "") or "").casefold()
+        if format_constraints.intersection({"yaml", "cli"}) or response_shape == "code":
+            return True
+        return any(marker in normalized for marker in ("그 yaml", "그 코드", "field", "필드", "속성", "selector", "port", "host"))
+
+    def _find_fallback_code_context_items(
+        self,
+        user_message: str,
+        query_interpretation: dict | None,
+        index_items: list[dict],
+        topic_state: dict | None,
+    ) -> list[dict]:
+        query_interpretation = query_interpretation or {}
+        topic_state = topic_state or {}
+        if str(query_interpretation.get("response_shape", "") or "").casefold() != "code":
+            return []
+
+        selected_source_names = {
+            str(source).casefold().strip()
+            for source in topic_state.get("selected_sources", [])
+            if source
+        }
+        candidate_pool: list[dict] = []
+        for item in index_items:
+            chunk = item["chunk"]
+            source_name = Path(str(chunk.get("source_path") or "")).name.casefold()
+            if selected_source_names and source_name not in selected_source_names:
+                continue
+            if self._has_code_content(item) or "code" in str(chunk.get("metadata", {}).get("block_types", "")).split(","):
+                candidate_pool.append(
+                    {
+                        "chunk": chunk,
+                        "rerank_score": float(item.get("rerank_score", 0.0)),
+                        "dense_score": float(item.get("dense_score", 0.0)),
+                        "sparse_score": float(item.get("sparse_score", 0.0)),
+                        "score": float(item.get("score", 0.0)),
+                    }
+                )
+
+        if not candidate_pool:
+            return []
+
+        selected = self._select_code_example_context_items(
+            user_message,
+            query_interpretation,
+            candidate_pool,
+            candidate_pool,
+        )
+        return selected[: max(int(self.settings.grounded_chunk_top_n), 1)]
+
+    def _apply_precision_filter(
+        self,
+        items: list[dict],
+        query_interpretation: dict | None,
+    ) -> list[dict]:
+        """Post-expansion precision pass: remove items too far below the top score or
+        with a negative resource match when better-matched items are present.
+
+        This keeps expansion's recall benefit while preventing low-relevance chunks
+        from being sent to the LLM as context.
+        """
+        if not items:
+            return items
+
+        query_interpretation = query_interpretation or {}
+        resources = {str(v).casefold() for v in query_interpretation.get("resources", []) if v}
+
+        # Drop items with negative resource_match_score when positive matches exist
+        if resources:
+            has_positive = any(item.get("resource_match_score", 0) > 0 for item in items)
+            if has_positive:
+                items = [item for item in items if item.get("resource_match_score", 0) >= 0]
+
+        # Drop items whose score is too far below the best
+        if len(items) > 1:
+            top_score = max(float(item.get("metadata_final_score", 0)) for item in items)
+            if top_score > 0:
+                threshold = top_score * 0.2
+                items = [item for item in items if float(item.get("metadata_final_score", 0)) >= threshold]
+
+        return items
+
     def _resolve_answer_route(self, query_interpretation: dict | None) -> str:
         query_interpretation = query_interpretation or {}
         intent = str(query_interpretation.get("intent", "") or "").casefold()
@@ -780,9 +1138,24 @@ class RagPipeline:
             return "extractive_code"
         if intent == "table" or response_shape == "table":
             return "extractive_table"
-        if intent == "procedure_followup" or response_shape == "procedure":
-            return "procedure_state_followup"
         return "grounded_generation"
+
+    def _should_capture_procedure_state(
+        self,
+        query_interpretation: dict | None,
+        answer_route: str,
+        policy_decision: TurnPolicyDecision,
+    ) -> bool:
+        if answer_route == "procedure_state_followup":
+            return True
+        query_interpretation = query_interpretation or {}
+        intent = str(query_interpretation.get("intent", "") or "").casefold()
+        response_shape = str(query_interpretation.get("response_shape", "") or "").casefold()
+        if intent == "procedure_followup" or response_shape == "procedure":
+            return True
+        if policy_decision.response_mode == "conversational" and policy_decision.turn_type != "conversational_ack":
+            return True
+        return False
 
     def _build_missing_extractive_answer(self, answer_route: str) -> str:
         if answer_route == "extractive_code":
@@ -815,7 +1188,6 @@ class RagPipeline:
         session_id: str,
         rewritten_query: str,
         context_ids: list[str],
-        memory_snapshot: dict,
         answer_route: str,
         query_interpretation: dict | None,
         topic_id: str | None,
@@ -823,9 +1195,8 @@ class RagPipeline:
         interpretation = query_interpretation or {}
         cache_scope = {
             "session_id": session_id,
-            "topic_id": topic_id or "",
             "rewritten_query": rewritten_query,
-            "context_ids": context_ids,
+            "context_ids": sorted(context_ids),
             "answer_route": answer_route,
             "intent": str(interpretation.get("intent", "") or ""),
             "response_shape": str(interpretation.get("response_shape", "") or ""),
@@ -837,9 +1208,43 @@ class RagPipeline:
             "normalized_keywords": sorted(
                 str(value) for value in interpretation.get("normalized_keywords", []) if value
             ),
-            "memory_snapshot": memory_snapshot,
         }
         return stable_hash(json.dumps(cache_scope, ensure_ascii=False, sort_keys=True))
+
+    def _should_run_judge_agent(
+        self,
+        policy_decision: TurnPolicyDecision,
+        query_interpretation: dict | None,
+        top_score: float,
+    ) -> bool:
+        query_interpretation = query_interpretation or {}
+        if policy_decision.turn_type == "document_followup":
+            return False
+        if query_interpretation.get("resources") and top_score >= 0.35:
+            return False
+        return True
+
+    def _canonical_cache_query(
+        self,
+        user_message: str,
+        rewritten_query: str,
+        query_interpretation: dict | None,
+    ) -> str:
+        query_interpretation = query_interpretation or {}
+        normalized = normalize_text(user_message).lower()
+        normalized_keywords = [str(value).lower() for value in query_interpretation.get("normalized_keywords", []) if value]
+        has_referential_marker = any(
+            marker in normalized
+            for marker in ("그거", "그건", "그중", "그 yaml", "그 코드", "다시", "그럼", "that", "this", "again")
+        )
+        if query_interpretation.get("resources") and normalized_keywords and not has_referential_marker:
+            return " ".join(sorted(dict.fromkeys(normalized_keywords)))
+        return rewritten_query
+
+    def _public_context_payload(self, payload: dict) -> dict:
+        public_payload = dict(payload or {})
+        public_payload.pop("_stored_procedure_state", None)
+        return public_payload
 
     def _build_prompt_memory_snapshot(self, session_id: str, topic_id: str | None = None) -> dict:
         snapshot = self.session_repository.memory_snapshot(session_id)
@@ -875,6 +1280,13 @@ class RagPipeline:
             "selected_sources": topic_state.get("selected_sources", [])[:3],
             "selected_pages": topic_state.get("selected_pages", [])[:4],
             "last_retrieval_mode": topic_state.get("last_retrieval_mode", ""),
+            "last_explicit_resource": topic_state.get("last_explicit_resource", ""),
+            "last_explicit_resources": topic_state.get("last_explicit_resources", [])[:4],
+            "last_intent": topic_state.get("last_intent", ""),
+            "last_response_shape": topic_state.get("last_response_shape", ""),
+            "last_answer_route": topic_state.get("last_answer_route", ""),
+            "last_format_constraints": topic_state.get("last_format_constraints", [])[:4],
+            "last_code_resource_kind": topic_state.get("last_code_resource_kind", ""),
             "recent_turns": compact_recent_turns,
         }
 
@@ -906,6 +1318,17 @@ class RagPipeline:
             "last_answer_citations": [],
             "last_user_focus": topic.get("last_user_focus", ""),
             "recent_user_topics": [topic.get("topic_label") or summary.get("topic_label") or ""],
+            "last_explicit_resource": summary.get("last_explicit_resource", ""),
+            "last_explicit_resources": summary.get("last_explicit_resources", [])[:4],
+            "last_intent": summary.get("last_intent", ""),
+            "last_response_shape": summary.get("last_response_shape", ""),
+            "last_answer_route": summary.get("last_answer_route", ""),
+            "last_format_constraints": summary.get("last_format_constraints", [])[:4],
+            "last_code_resource_kind": summary.get("last_code_resource_kind", ""),
+            "last_grounded_chunk_ids": summary.get("last_grounded_chunk_ids", [])[:6],
+            "last_grounded_section_paths": summary.get("last_grounded_section_paths", [])[:4],
+            "last_example_source_pages": summary.get("last_example_source_pages", [])[:6],
+            "last_example_anchor": summary.get("last_example_anchor", {}),
         }
 
     def _build_rewrite_context_from_topic(self, topic: dict | None, topic_turns: list) -> dict | None:
@@ -913,6 +1336,7 @@ class RagPipeline:
             return None
         topic_state = self._topic_to_topic_state(topic)
         conversation_history: list[dict] = []
+        last_assistant_turn = None
         for turn in topic_turns[-4:]:
             entry = {"role": turn.role, "content": str(turn.content)[:200]}
             if turn.role == "assistant" and turn.metadata:
@@ -923,7 +1347,17 @@ class RagPipeline:
                 ]
                 if sources:
                     entry["sources"] = sources
+                last_assistant_turn = turn
             conversation_history.append(entry)
+
+        # 마지막 assistant 응답의 포맷/형태 정보 추출 (LLM 재작성에 활용)
+        last_response_shape = ""
+        last_response_intent = ""
+        if last_assistant_turn and last_assistant_turn.metadata:
+            qi = last_assistant_turn.metadata.get("query_interpretation") or {}
+            last_response_shape = str(qi.get("response_shape") or "")
+            last_response_intent = str(qi.get("intent") or "")
+
         return {
             "conversation_history": conversation_history,
             "active_topic": str(topic_state.get("active_topic") or ""),
@@ -931,6 +1365,11 @@ class RagPipeline:
             "selected_sources": topic_state.get("selected_sources", [])[:3],
             "selected_pages": topic_state.get("selected_pages", [])[:5],
             "last_retrieval_mode": str(topic_state.get("last_retrieval_mode") or ""),
+            "last_response_shape": last_response_shape,
+            "last_response_intent": last_response_intent,
+            "last_explicit_resources": topic_state.get("last_explicit_resources", [])[:4],
+            "last_code_resource_kind": str(topic_state.get("last_code_resource_kind") or ""),
+            "last_example_anchor": topic_state.get("last_example_anchor", {}),
         }
 
     def _build_prompt_recent_turns_clean(self, session_id: str, topic_id: str | None = None) -> list[dict]:
@@ -1003,6 +1442,9 @@ class RagPipeline:
         topic_id: str | None,
     ) -> int:
         enriched_metadata = dict(metadata or {})
+        stored_procedure_state = enriched_metadata.pop("_stored_procedure_state", {})
+        if stored_procedure_state and not enriched_metadata.get("procedure_state"):
+            enriched_metadata["procedure_state"] = stored_procedure_state
         enriched_metadata.setdefault("procedure_state", {})
         turn_id = self.session_repository.add_turn(session_id, "assistant", content, metadata=enriched_metadata)
         if topic_id:
@@ -1027,9 +1469,20 @@ class RagPipeline:
         policy: TurnPolicyDecision,
         retrieved: list[dict],
         top_score: float,
+        query_interpretation: dict | None = None,
     ) -> bool:
         if top_score < self.settings.retrieval_min_score or not retrieved:
-            return False
+            query_interpretation = query_interpretation or {}
+            lowered_shape = str(query_interpretation.get("response_shape", "") or "").casefold()
+            lowered_intent = str(query_interpretation.get("intent", "") or "").casefold()
+            has_explicit_resources = bool(query_interpretation.get("resources"))
+            relaxed_threshold = self.settings.retrieval_min_score
+            if has_explicit_resources or lowered_shape in {"code", "table", "procedure", "comparison"} or lowered_intent in {
+                "yaml_example", "cli_example", "code_example", "table", "compare", "procedure_followup", "explain"
+            }:
+                relaxed_threshold = min(self.settings.retrieval_min_score, max(self.settings.retrieval_retry_min_score, 0.15))
+            if top_score < relaxed_threshold or not retrieved:
+                return False
 
         top_item = retrieved[0]
         lexical_signal = (
@@ -1199,7 +1652,8 @@ class RagPipeline:
             query_interpretation.response_shape,
             query_interpretation.normalized_keywords,
         )
-        expanded_query = self._expand_query_with_context(refined_query, topic_state)
+        aliased_query = self._expand_query_with_resource_aliases(refined_query, query_interpretation.to_dict())
+        expanded_query = self._expand_query_with_context(aliased_query, topic_state)
         query_vector = self.embedder.encode(expanded_query)
         index_items = self.retrieval_service.filter_index_items(index_items_all, allowed_source_paths)
         retrieved = self.retriever.search_rrf(
@@ -1211,7 +1665,8 @@ class RagPipeline:
         seen_chunk_ids: set[str] = {r["chunk"]["chunk_id"] for r in retrieved}
         merged_extras: list[dict] = []
         for alt_query in alternative_queries[:2]:
-            alt_expanded = self._expand_query_with_context(alt_query, topic_state)
+            alt_aliased = self._expand_query_with_resource_aliases(alt_query, query_interpretation.to_dict())
+            alt_expanded = self._expand_query_with_context(alt_aliased, topic_state)
             alt_vector = self.embedder.encode(alt_expanded)
             alt_retrieved = self.retriever.search_rrf(
                 alt_expanded, alt_vector, index_items, rrf_k=60,
@@ -1257,12 +1712,24 @@ class RagPipeline:
                 index_items,
                 retrieved,
             )
+            retrieved = self._expand_topic_anchor_context_items(
+                user_message,
+                query_interpretation.to_dict(),
+                index_items,
+                retrieved,
+                topic_state,
+            )
 
         retrieval_metrics = self.retriever.compute_retrieval_metrics(
             retrieved, min_score=self.settings.retrieval_min_score,
         )
         top_score = retrieval_metrics["top_score"]
-        use_retrieved_context = self._should_use_retrieved_context(policy, retrieved, top_score)
+        use_retrieved_context = self._should_use_retrieved_context(
+            policy,
+            retrieved,
+            top_score,
+            query_interpretation.to_dict(),
+        )
         logger.info(
             "[Retrieval] top_score=%.4f use_context=%s min_score=%.4f",
             top_score, use_retrieved_context, self.settings.retrieval_min_score,
@@ -1271,6 +1738,23 @@ class RagPipeline:
         grounded_pages = self.retrieval_service.aggregate_page_grounding(context_items)
         ordered_context_items = self.retrieval_service.order_context_items_by_grounded_pages(context_items, grounded_pages)
         selected_context_items = self.retrieval_service.select_context_items_by_grounded_pages(ordered_context_items, grounded_pages)
+        selected_context_items = self._apply_precision_filter(
+            selected_context_items,
+            query_interpretation.to_dict() if hasattr(query_interpretation, "to_dict") else query_interpretation,
+        )
+        if not selected_context_items and str(query_interpretation.response_shape or "").casefold() == "code":
+            fallback_code_items = self._find_fallback_code_context_items(
+                user_message,
+                query_interpretation.to_dict(),
+                index_items,
+                topic_state,
+            )
+            if fallback_code_items:
+                selected_context_items = fallback_code_items
+                ordered_context_items = fallback_code_items
+                grounded_pages = self.retrieval_service.aggregate_page_grounding(fallback_code_items)
+                top_score = max(top_score, max(float(item.get("rerank_score", 0.0)) for item in fallback_code_items))
+                use_retrieved_context = True
         preferred_preview_source = self.retrieval_service.select_grounded_preview_source(grounded_pages)
         preview_pages = self.retrieval_service.build_grounded_preview_pages(preferred_preview_source, grounded_pages)
         return {
@@ -1363,12 +1847,15 @@ class RagPipeline:
         preferred_preview_source: str | None,
         response_mode: str,
         policy_decision: TurnPolicyDecision,
+        query_interpretation: dict | None,
+        answer_route: str,
     ) -> tuple[str, list[dict], dict]:
         """답변을 정제하고, 인용·미리보기·최종 페이로드를 구성한다.
 
         Returns:
             (final_answer, answer_citations, final_payload) 튜플.
         """
+        answer = self._strip_code_blocks_for_non_code_route(answer, answer_route)
         answer = self.answer_service.sanitize_answer(answer, use_retrieved_context)
         answer_citations = (
             self.answer_service.build_answer_citation_payload(
@@ -1393,9 +1880,19 @@ class RagPipeline:
             selected_context_items, grounded_pages, answer_citations,
             preview_finalized=True,
         )
-        procedure_state = self._extract_procedure_state(final_answer)
+        final_payload["query_interpretation"] = query_interpretation or {}
+        final_payload["answer_route"] = answer_route
+        if answer_route == "extractive_code":
+            final_payload["last_example_anchor"] = self._build_example_anchor(selected_context_items, query_interpretation)
+        if self._should_capture_procedure_state(query_interpretation, answer_route, policy_decision):
+            procedure_state = self._extract_procedure_state(final_answer)
+        else:
+            procedure_state = {}
         if procedure_state:
-            final_payload["procedure_state"] = procedure_state
+            if answer_route == "procedure_state_followup":
+                final_payload["procedure_state"] = procedure_state
+            else:
+                final_payload["_stored_procedure_state"] = procedure_state
         return final_answer, answer_citations, final_payload
 
     def _build_llm_messages(
@@ -1512,6 +2009,33 @@ class RagPipeline:
                 self._store_assistant_turn(session_id, procedure_answer, final_payload, resolved_topic_id)
                 yield {"type": "done", "cached": False}
                 return
+        if self._looks_like_step_navigation_without_state(
+            user_message,
+            topic_state_before.get("procedure_state", {}) if isinstance(topic_state_before, dict) else {},
+        ):
+            guidance_answer = (
+                "어떤 절차의 몇 단계인지 조금 더 구체적으로 알려 주세요. "
+                "예를 들어 `ConfigMap 생성 2단계`, `RBAC 설정 2단계`처럼 다시 적어 주시면 바로 이어서 설명하겠습니다."
+            )
+            if append_user_turn:
+                self.session_repository.add_turn(session_id, "user", user_message)
+            final_payload = self.answer_service.build_context_payload(
+                user_message.strip(),
+                "general",
+                0.0,
+                None,
+                [],
+                [],
+                [],
+                [],
+                preview_finalized=True,
+            )
+            yield {"type": "context", **final_payload}
+            yield {"type": "token", "content": guidance_answer, "cached": False}
+            resolved_topic_id = topic_state_before.get("last_active_topic_id") if isinstance(topic_state_before, dict) else None
+            self._store_assistant_turn(session_id, guidance_answer, final_payload, resolved_topic_id)
+            yield {"type": "done", "cached": False}
+            return
 
         turn_context = self._resolve_turn_context(session_id, user_message)
         state = self._domain_guard_state(user_message, turn_context)
@@ -1557,12 +2081,10 @@ class RagPipeline:
         if append_user_turn:
             user_turn_id = self.session_repository.add_turn(session_id, "user", user_message)
             resolved_topic_id = self._ensure_topic_for_resolution(session_id, user_message, state, user_turn_id)
-        memory_snapshot = self.session_repository.memory_snapshot(session_id)
         cache_key = self._build_answer_cache_key(
             session_id=session_id,
-            rewritten_query=rewritten_query,
+            rewritten_query=self._canonical_cache_query(user_message, rewritten_query, query_interpretation),
             context_ids=context_ids,
-            memory_snapshot=memory_snapshot,
             answer_route=answer_route,
             query_interpretation=query_interpretation,
             topic_id=resolved_topic_id,
@@ -1577,7 +2099,27 @@ class RagPipeline:
             selected_context_items, grounded_pages, [],
             preview_finalized=False,
         )
-        yield {"type": "context", **context_payload}
+        yield {"type": "context", **self._public_context_payload(context_payload)}
+        if cached_answer is not None:
+            full_text = self.answer_service.sanitize_answer(cached_answer["answer"], use_retrieved_context)
+            streamed = ""
+            for token in full_text.split(" "):
+                chunk = token + " "
+                streamed += chunk
+                yield {"type": "token", "content": chunk, "cached": True}
+            final_answer, answer_citations, final_payload = self._finalize_answer(
+                streamed.strip(), rewritten_query, use_retrieved_context, top_score,
+                selected_context_items, grounded_pages, preferred_preview_source,
+                response_mode, policy_decision, query_interpretation, answer_route,
+            )
+            if final_answer != streamed.strip():
+                suffix = final_answer[len(streamed.strip()):]
+                if suffix:
+                    yield {"type": "token", "content": suffix, "cached": True}
+            yield {"type": "context", **self._public_context_payload(final_payload)}
+            self._store_assistant_turn(session_id, final_answer, final_payload, resolved_topic_id)
+            yield {"type": "done", "cached": True}
+            return
         if policy_decision.turn_type == "conversational_ack":
             ack_answer = self._build_policy_answer("conversational_ack", top_score)
             yield {"type": "token", "content": ack_answer, "cached": False}
@@ -1586,7 +2128,7 @@ class RagPipeline:
                 None, [], [], [], [],
                 preview_finalized=True,
             )
-            yield {"type": "context", **final_payload}
+            yield {"type": "context", **self._public_context_payload(final_payload)}
             self._store_assistant_turn(session_id, ack_answer, final_payload, resolved_topic_id)
             yield {"type": "done", "cached": False}
             return
@@ -1601,7 +2143,7 @@ class RagPipeline:
                 None, [], [], [], [],
                 preview_finalized=True,
             )
-            yield {"type": "context", **final_payload}
+            yield {"type": "context", **self._public_context_payload(final_payload)}
             self._store_assistant_turn(session_id, greeting_answer, final_payload, resolved_topic_id)
             yield {"type": "done", "cached": False}
             return
@@ -1616,7 +2158,7 @@ class RagPipeline:
                 None, [], [], [], [],
                 preview_finalized=True,
             )
-            yield {"type": "context", **final_payload}
+            yield {"type": "context", **self._public_context_payload(final_payload)}
             self._store_assistant_turn(session_id, reject_answer, final_payload, resolved_topic_id)
             yield {"type": "done", "cached": False}
             return
@@ -1631,13 +2173,18 @@ class RagPipeline:
                 None, [], [], [], [],
                 preview_finalized=True,
             )
-            yield {"type": "context", **final_payload}
+            yield {"type": "context", **self._public_context_payload(final_payload)}
             self._store_assistant_turn(session_id, no_result_answer, final_payload, resolved_topic_id)
+            self.answer_cache_repository.set(cache_key, {"answer": no_result_answer})
             yield {"type": "done", "cached": False}
             return
 
         # --- JudgeAgent: 검색 결과 적합성 판단 ---
-        if use_retrieved_context and context_blocks:
+        if use_retrieved_context and context_blocks and self._should_run_judge_agent(
+            policy_decision,
+            query_interpretation,
+            top_score,
+        ):
             judge_result = await self.judge_agent.evaluate(
                 user_message, context_blocks, top_score,
             )
@@ -1656,8 +2203,9 @@ class RagPipeline:
                     None, [], [], [], [],
                     preview_finalized=True,
                 )
-                yield {"type": "context", **final_payload}
+                yield {"type": "context", **self._public_context_payload(final_payload)}
                 self._store_assistant_turn(session_id, clarification, final_payload, resolved_topic_id)
+                self.answer_cache_repository.set(cache_key, {"answer": clarification})
                 yield {"type": "done", "cached": False}
                 return
 
@@ -1672,33 +2220,12 @@ class RagPipeline:
                 None, [], [], [], [],
                 preview_finalized=True,
             )
-            yield {"type": "context", **final_payload}
+            yield {"type": "context", **self._public_context_payload(final_payload)}
             self._store_assistant_turn(session_id, clarification_answer, final_payload, resolved_topic_id)
             self.answer_cache_repository.set(cache_key, {"answer": clarification_answer})
             yield {"type": "done", "cached": False}
             return
 
-        # --- 캐시 히트: 동일 질의+문맥에 대해 저장된 답변을 재사용 ---
-        if cached_answer is not None:
-            full_text = self.answer_service.sanitize_answer(cached_answer["answer"], use_retrieved_context)
-            streamed = ""
-            for token in full_text.split(" "):
-                chunk = token + " "
-                streamed += chunk
-                yield {"type": "token", "content": chunk, "cached": True}
-            final_answer, answer_citations, final_payload = self._finalize_answer(
-                streamed.strip(), rewritten_query, use_retrieved_context, top_score,
-                selected_context_items, grounded_pages, preferred_preview_source,
-                response_mode, policy_decision,
-            )
-            if final_answer != streamed.strip():
-                suffix = final_answer[len(streamed.strip()):]
-                if suffix:
-                    yield {"type": "token", "content": suffix, "cached": True}
-            yield {"type": "context", **final_payload}
-            self._store_assistant_turn(session_id, final_answer, final_payload, resolved_topic_id)
-            yield {"type": "done", "cached": True}
-            return
         if answer_route == "extractive_code" and use_retrieved_context:
             code_context_items = self._select_code_example_context_items(
                 user_message,
@@ -1706,7 +2233,10 @@ class RagPipeline:
                 ordered_context_items,
                 selected_context_items,
             )
-            extractive_code_answer = self.answer_service.build_extractive_code_answer(code_context_items)
+            extractive_code_answer = self.answer_service.build_extractive_code_answer(
+                code_context_items,
+                requested_resource_kinds=self._resolve_requested_resource_kinds(query_interpretation),
+            )
             if extractive_code_answer:
                 final_answer, answer_citations, final_payload = self._finalize_answer(
                     extractive_code_answer,
@@ -1718,9 +2248,15 @@ class RagPipeline:
                     preferred_preview_source,
                     response_mode,
                     policy_decision,
+                    query_interpretation,
+                    answer_route,
+                )
+                final_payload["last_example_anchor"] = self._build_example_anchor(
+                    code_context_items,
+                    query_interpretation,
                 )
                 yield {"type": "token", "content": final_answer, "cached": False}
-                yield {"type": "context", **final_payload}
+                yield {"type": "context", **self._public_context_payload(final_payload)}
                 self._store_assistant_turn(session_id, final_answer, final_payload, resolved_topic_id)
                 self.answer_cache_repository.set(cache_key, {"answer": final_answer})
                 yield {"type": "done", "cached": False}
@@ -1739,7 +2275,7 @@ class RagPipeline:
                 [],
                 preview_finalized=True,
             )
-            yield {"type": "context", **final_payload}
+            yield {"type": "context", **self._public_context_payload(final_payload)}
             self._store_assistant_turn(session_id, no_code_answer, final_payload, resolved_topic_id)
             yield {"type": "done", "cached": False}
             return
@@ -1762,9 +2298,11 @@ class RagPipeline:
                     preferred_preview_source,
                     response_mode,
                     policy_decision,
+                    query_interpretation,
+                    answer_route,
                 )
                 yield {"type": "token", "content": final_answer, "cached": False}
-                yield {"type": "context", **final_payload}
+                yield {"type": "context", **self._public_context_payload(final_payload)}
                 self._store_assistant_turn(session_id, final_answer, final_payload, resolved_topic_id)
                 self.answer_cache_repository.set(cache_key, {"answer": final_answer})
                 yield {"type": "done", "cached": False}
@@ -1783,7 +2321,7 @@ class RagPipeline:
                 [],
                 preview_finalized=True,
             )
-            yield {"type": "context", **final_payload}
+            yield {"type": "context", **self._public_context_payload(final_payload)}
             self._store_assistant_turn(session_id, no_table_answer, final_payload, resolved_topic_id)
             yield {"type": "done", "cached": False}
             return
@@ -1809,13 +2347,13 @@ class RagPipeline:
         final_answer, answer_citations, final_payload = self._finalize_answer(
             "".join(parts).strip(), rewritten_query, use_retrieved_context, top_score,
             selected_context_items, grounded_pages, preferred_preview_source,
-            response_mode, policy_decision,
+            response_mode, policy_decision, query_interpretation, answer_route,
         )
         if final_answer != "".join(parts).strip():
             suffix = final_answer[len("".join(parts).strip()):]
             if suffix:
                 yield {"type": "token", "content": suffix, "cached": False}
-        yield {"type": "context", **final_payload}
+        yield {"type": "context", **self._public_context_payload(final_payload)}
         self._store_assistant_turn(session_id, final_answer, final_payload, resolved_topic_id)
         self.answer_cache_repository.set(cache_key, {"answer": final_answer})
         logger.info(
