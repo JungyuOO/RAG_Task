@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 
 from app.rag.types import ChatTurn
 from app.rag.utils import normalize_text
+from app.services.query_interpreter import QueryInterpreter
 from app.services.turn_policy_helpers import (
     build_clarification_scope_hint,
     cited_pages,
@@ -49,6 +50,7 @@ class _TurnPolicyContext:
 
 class TurnPolicyService:
     """Classify the current user turn and decide retrieval/clarification policy."""
+    RESOURCE_MARKERS = QueryInterpreter.RESOURCE_MARKERS
 
     ACK_MARKERS = (
         "고마워",
@@ -115,11 +117,16 @@ class TurnPolicyService:
         "그건",
         "그 문서",
         "그 페이지",
+        "그중",
+        "그 yaml",
         "다시",
         "이전",
         "방금",
         "그럼",
         "그리고",
+        "만 더",
+        "바꿔",
+        "로도",
         "that",
         "this",
         "those",
@@ -132,12 +139,30 @@ class TurnPolicyService:
         "also",
     )
     GENERAL_CHAT_MARKERS = ("추천", "잡담", "기분", "오늘", "취미", "일정", "recommend")
+    OFF_TOPIC_MARKERS = (
+        "날씨",
+        "맛집",
+        "레시피",
+        "주가",
+        "주식",
+        "환율",
+        "로또",
+        "운세",
+        "영화",
+        "드라마",
+        "음악",
+        "노래",
+        "weather",
+        "recipe",
+        "stock",
+        "movie",
+        "drama",
+    )
     CASUAL_CHAT_MARKERS = (
         "너는",
         "이름",
         "누구",
         "뭐해",
-        "뭐야",
         "무슨 일",
         "정체",
         "자기소개",
@@ -395,15 +420,18 @@ class TurnPolicyService:
         return self._should_treat_as_short_contextual_follow_up(normalized, topic_state, context)
 
     def _is_document_query(self, normalized: str, topic_state: dict) -> bool:
+        if self._is_clearly_off_topic(normalized):
+            return False
         if self._looks_like_casual_chat(normalized):
             return False
-        if self._has_document_intent(normalized) and len(normalized) >= 4:
-            return True
-        if self._is_question_like_document_query(normalized):
+        if len(normalized) >= 4:
             return True
         if self._mentions_selected_source(normalized, topic_state):
             return True
-        return self._has_uppercase_document_token(normalized)
+        return False
+
+    def _is_clearly_off_topic(self, normalized: str) -> bool:
+        return contains_any_marker(normalized, self.OFF_TOPIC_MARKERS) or contains_any_marker(normalized, self.GENERAL_CHAT_MARKERS)
 
     def _looks_like_general_chat(self, normalized: str) -> bool:
         return contains_any_marker(normalized, self.GENERAL_CHAT_MARKERS)
@@ -456,6 +484,10 @@ class TurnPolicyService:
 
         if not (looks_like_candidate and is_code_request):
             return False
+        if self._has_example_anchor_field_reference(normalized, topic_state):
+            return False
+        if self._has_explicit_resource_reference(normalized, topic_state):
+            return False
         if self._has_multiple_scope_candidates(recent_turns, topic_state):
             return True
         return self._should_clarify_from_topic_competition(normalized, topic_state, context)
@@ -500,3 +532,17 @@ class TurnPolicyService:
                         candidates.append(lowered)
 
         return candidates
+
+    def _has_explicit_resource_reference(self, normalized: str, topic_state: dict) -> bool:
+        for markers in self.RESOURCE_MARKERS.values():
+            if any(QueryInterpreter._marker_in_text(normalized, marker) for marker in markers):
+                return True
+        last_explicit_resources = [str(value).lower() for value in topic_state.get("last_explicit_resources", []) if value]
+        return any(resource in normalized for resource in last_explicit_resources)
+
+    def _has_example_anchor_field_reference(self, normalized: str, topic_state: dict) -> bool:
+        anchor = topic_state.get("last_example_anchor") or {}
+        fields = [str(value).lower() for value in anchor.get("fields", []) if value]
+        if not fields:
+            return False
+        return any(field in normalized for field in fields)
