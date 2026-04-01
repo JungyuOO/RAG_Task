@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 
 from app.rag.types import ChatTurn
 from app.rag.utils import normalize_text
+from app.services.query_interpreter import QueryInterpreter
 
 
 @dataclass(slots=True)
@@ -32,6 +33,7 @@ class TurnContextResolution:
 
 
 class TurnContextResolver:
+    RESOURCE_MARKERS = QueryInterpreter.RESOURCE_MARKERS
     EXPLICIT_SWITCH_MARKERS = (
         "instead",
         "back to",
@@ -52,6 +54,9 @@ class TurnContextResolver:
         "그 코드",
         "그 예시",
         "그 차이",
+        "그중",
+        "바꿔",
+        "로도",
         "아까 그거",
     )
     CODE_REQUEST_MARKERS = (
@@ -85,8 +90,9 @@ class TurnContextResolver:
         looks_like_referent = any(marker in normalized for marker in self.REFERENT_MARKERS)
         looks_like_code_request = any(marker in normalized for marker in self.CODE_REQUEST_MARKERS)
         ambiguity_gap = best.score - (second.score if second else 0.0)
+        explicit_resource = self._has_explicit_resource_reference(normalized)
 
-        if looks_like_referent and looks_like_code_request and second and ambiguity_gap < 0.15:
+        if looks_like_referent and looks_like_code_request and second and ambiguity_gap < 0.15 and not explicit_resource:
             return TurnContextResolution(
                 resolution_type="ambiguous",
                 topic_id=None,
@@ -195,3 +201,9 @@ class TurnContextResolver:
 
     def _normalize(self, value: str) -> str:
         return " ".join(normalize_text(value).lower().split())
+
+    def _has_explicit_resource_reference(self, normalized_message: str) -> bool:
+        for markers in self.RESOURCE_MARKERS.values():
+            if any(QueryInterpreter._marker_in_text(normalized_message, marker) for marker in markers):
+                return True
+        return False
