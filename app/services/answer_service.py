@@ -58,9 +58,14 @@ class AnswerService:
             parts.append(table["table"])
         return "\n\n".join(parts).strip()
 
-    def build_extractive_code_answer(self, context_items: list[dict]) -> str | None:
+    def build_extractive_code_answer(
+        self,
+        context_items: list[dict],
+        requested_resource_kinds: set[str] | None = None,
+    ) -> str | None:
         snippets: list[dict[str, str]] = []
         seen_blocks: set[str] = set()
+        requested_resource_kinds = {str(value).casefold() for value in (requested_resource_kinds or set()) if value}
 
         for item in context_items:
             chunk = item["chunk"]
@@ -68,19 +73,23 @@ class AnswerService:
             if not text.strip():
                 continue
             for block in self._extract_code_candidates(text):
-                normalized = re.sub(r"\s+", " ", block).strip().casefold()
-                if len(normalized) < 24 or normalized in seen_blocks:
-                    continue
-                seen_blocks.add(normalized)
-                snippets.append(
-                    {
-                        "file_name": Path(chunk["source_path"]).name,
-                        "page_start": str(chunk["metadata"].get("page_start") or chunk.get("page_number") or 1),
-                        "page_end": str(chunk["metadata"].get("page_end") or chunk["metadata"].get("page_start") or chunk.get("page_number") or 1),
-                        "code": block.strip(),
-                        "code_language": str(chunk["metadata"].get("code_language", "") or ""),
-                    }
-                )
+                normalized_blocks = self._split_and_filter_code_blocks(block, requested_resource_kinds)
+                for normalized_block in normalized_blocks:
+                    normalized = re.sub(r"\s+", " ", normalized_block).strip().casefold()
+                    if len(normalized) < 24 or normalized in seen_blocks:
+                        continue
+                    seen_blocks.add(normalized)
+                    snippets.append(
+                        {
+                            "file_name": Path(chunk["source_path"]).name,
+                            "page_start": str(chunk["metadata"].get("page_start") or chunk.get("page_number") or 1),
+                            "page_end": str(chunk["metadata"].get("page_end") or chunk["metadata"].get("page_start") or chunk.get("page_number") or 1),
+                            "code": normalized_block.strip(),
+                            "code_language": str(chunk["metadata"].get("code_language", "") or ""),
+                        }
+                    )
+                    if len(snippets) >= 3:
+                        break
                 if len(snippets) >= 3:
                     break
             if len(snippets) >= 3:
@@ -102,6 +111,20 @@ class AnswerService:
             parts.append(snippet["code"])
             parts.append("```")
         return "\n\n".join(parts).strip()
+
+    def _split_and_filter_code_blocks(self, block: str, requested_resource_kinds: set[str]) -> list[str]:
+        if not requested_resource_kinds:
+            return [block]
+        yaml_docs = [part.strip() for part in re.split(r"(?m)^\s*---\s*$", block) if part.strip()]
+        matched_docs = [
+            doc for doc in yaml_docs
+            if self._extract_code_block_kind(doc) in requested_resource_kinds
+        ]
+        return matched_docs or [block]
+
+    def _extract_code_block_kind(self, block: str) -> str:
+        match = re.search(r"(?im)^\s*kind:\s*([a-z0-9_-]+)\s*$", block)
+        return match.group(1).casefold() if match else ""
 
     def sanitize_answer(self, answer: str, use_retrieved_context: bool) -> str:
         if not answer:
@@ -274,11 +297,19 @@ class AnswerService:
             return True
         if re.match(r"^[A-Za-z0-9_.-]+\.(ya?ml|json)$", stripped):
             return True
+        if lowered.startswith(("host:", "to:", "provisioner:", "parameters:", "allowvolumeexpansion:")):
+            return True
         return False
 
     def _looks_like_code_continuation(self, line: str) -> bool:
         lowered = line.casefold()
-        if lowered.startswith(("-", "name:", "image:", "path:", "storage:", "accessmodes:", "resources:", "requests:", "claimname:", "mountpath:", "containers:", "volumes:", "templ", "selector:", "matchlabels:", "replicas:", "provisioner:", "parameters:", "type:", "allowvolumeexpansion:", "mountoptions:", "persistentvolumeclaim:", "volumemounts:", "volumemode:", "persistentvolumereclaimpolicy:")):
+        if lowered.startswith((
+            "-", "name:", "image:", "path:", "storage:", "accessmodes:", "resources:", "requests:",
+            "claimname:", "mountpath:", "containers:", "volumes:", "templ", "selector:", "matchlabels:",
+            "replicas:", "provisioner:", "parameters:", "type:", "allowvolumeexpansion:", "mountoptions:",
+            "persistentvolumeclaim:", "volumemounts:", "volumemode:", "persistentvolumereclaimpolicy:",
+            "host:", "to:", "port:", "targetport:", "tls:", "weight:", "reclaimpolicy:",
+        )):
             return True
         if re.match(r"^[A-Za-z_][A-Za-z0-9_-]*:\s*", line):
             return True
@@ -294,6 +325,11 @@ class AnswerService:
             "oc apply -f",
             "oc get ",
             "kubectl ",
+            "route.openshift.io",
+            "storage.k8s.io",
+            "rbac.authorization.k8s.io",
+            "host:",
+            "provisioner:",
         )
         return any(indicator in lowered for indicator in indicators)
 

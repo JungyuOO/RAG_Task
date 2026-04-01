@@ -30,6 +30,17 @@ DEFAULT_TOPIC_STATE = {
     "last_answer_citations": [],
     "last_user_focus": "",
     "recent_user_topics": [],
+    "last_explicit_resource": "",
+    "last_explicit_resources": [],
+    "last_intent": "",
+    "last_response_shape": "",
+    "last_answer_route": "",
+    "last_format_constraints": [],
+    "last_code_resource_kind": "",
+    "last_grounded_chunk_ids": [],
+    "last_grounded_section_paths": [],
+    "last_example_source_pages": [],
+    "last_example_anchor": {},
     "procedure_state": {},
 }
 
@@ -43,6 +54,17 @@ DEFAULT_TOPIC_THREAD_SUMMARY = {
     "resolved_facts": [],
     "last_user_focus": "",
     "last_retrieval_mode": "",
+    "last_explicit_resource": "",
+    "last_explicit_resources": [],
+    "last_intent": "",
+    "last_response_shape": "",
+    "last_answer_route": "",
+    "last_format_constraints": [],
+    "last_code_resource_kind": "",
+    "last_grounded_chunk_ids": [],
+    "last_grounded_section_paths": [],
+    "last_example_source_pages": [],
+    "last_example_anchor": {},
     "turn_count": 0,
 }
 
@@ -653,6 +675,7 @@ class SessionStore:
 
         # 최근 대화 턴을 간결하게 정리
         conversation_history: list[dict] = []
+        last_assistant_turn: ChatTurn | None = None
         for turn in recent[-4:]:
             entry: dict = {"role": turn.role, "content": turn.content[:200]}
             if turn.role == "assistant" and turn.metadata:
@@ -663,7 +686,16 @@ class SessionStore:
                 ]
                 if sources:
                     entry["sources"] = sources
+                last_assistant_turn = turn
             conversation_history.append(entry)
+
+        # 마지막 assistant 응답의 포맷/형태 정보 추출 (LLM 재작성에 활용)
+        last_response_shape = ""
+        last_response_intent = ""
+        if last_assistant_turn and last_assistant_turn.metadata:
+            qi = last_assistant_turn.metadata.get("query_interpretation") or {}
+            last_response_shape = str(qi.get("response_shape") or "")
+            last_response_intent = str(qi.get("intent") or "")
 
         return {
             "conversation_history": conversation_history,
@@ -672,6 +704,10 @@ class SessionStore:
             "selected_sources": [str(s) for s in topic_state.get("selected_sources", []) if s][:3],
             "selected_pages": topic_state.get("selected_pages", [])[:5],
             "last_retrieval_mode": str(topic_state.get("last_retrieval_mode") or ""),
+            "last_response_shape": last_response_shape,
+            "last_response_intent": last_response_intent,
+            "last_explicit_resources": [str(v) for v in topic_state.get("last_explicit_resources", []) if v][:4],
+            "last_code_resource_kind": str(topic_state.get("last_code_resource_kind") or ""),
         }
 
     def export_session(self, session_id: str, owner_id: str | None = None) -> dict:
@@ -978,11 +1014,47 @@ class SessionStore:
         recent_user_topics: list[str] = []
         last_user_focus = ""
         procedure_state: dict = {}
+        last_explicit_resource = ""
+        last_explicit_resources: list[str] = []
+        last_intent = ""
+        last_response_shape = ""
+        last_answer_route = ""
+        last_format_constraints: list[str] = []
+        last_code_resource_kind = ""
+        last_grounded_chunk_ids: list[str] = []
+        last_grounded_section_paths: list[str] = []
+        last_example_source_pages: list[int] = []
+        last_example_anchor: dict = {}
 
         for turn in recent_turns:
             metadata = turn.metadata or {}
             if turn.role == "assistant":
                 last_retrieval_mode = str(metadata.get("mode") or last_retrieval_mode)
+                query_interpretation = metadata.get("query_interpretation") or {}
+                resources = [
+                    normalize_text(str(value)).lower()
+                    for value in query_interpretation.get("resources", []) or []
+                    if value
+                ]
+                if resources:
+                    last_explicit_resources = []
+                    for resource in resources:
+                        if resource and resource not in last_explicit_resources:
+                            last_explicit_resources.append(resource)
+                    last_explicit_resource = last_explicit_resources[0]
+                last_intent = str(query_interpretation.get("intent") or last_intent)
+                last_response_shape = str(query_interpretation.get("response_shape") or last_response_shape)
+                last_answer_route = str(metadata.get("answer_route") or last_answer_route)
+                formats = [
+                    normalize_text(str(value)).lower()
+                    for value in query_interpretation.get("format_constraints", []) or []
+                    if value
+                ]
+                if formats:
+                    last_format_constraints = []
+                    for fmt in formats:
+                        if fmt and fmt not in last_format_constraints:
+                            last_format_constraints.append(fmt)
                 for item in metadata.get("source_grounding", []):
                     file_name = normalize_text(str(item.get("file_name") or ""))
                     if file_name and file_name not in selected_sources:
@@ -991,10 +1063,39 @@ class SessionStore:
                     page_number = int(item.get("page_number") or 0)
                     if page_number and page_number not in selected_pages:
                         selected_pages.append(page_number)
+                    if page_number and page_number not in last_example_source_pages:
+                        last_example_source_pages.append(page_number)
                 if metadata.get("answer_citations"):
                     last_answer_citations = metadata["answer_citations"][:4]
                 if isinstance(metadata.get("procedure_state"), dict) and metadata.get("procedure_state", {}).get("steps"):
                     procedure_state = metadata["procedure_state"]
+                if isinstance(metadata.get("last_example_anchor"), dict) and metadata.get("last_example_anchor"):
+                    last_example_anchor = metadata["last_example_anchor"]
+                for item in metadata.get("items", []) or []:
+                    chunk_id = normalize_text(str(item.get("chunk_id") or ""))
+                    section_path = normalize_text(str(item.get("section_path") or ""))
+                    page_number = int(item.get("page_number") or item.get("page_start") or 0)
+                    if chunk_id and chunk_id not in last_grounded_chunk_ids:
+                        last_grounded_chunk_ids.append(chunk_id)
+                    if section_path and section_path not in last_grounded_section_paths:
+                        last_grounded_section_paths.append(section_path)
+                    if page_number and page_number not in last_example_source_pages:
+                        last_example_source_pages.append(page_number)
+                    if not last_code_resource_kind and str(item.get("code_subtype") or "") == "k8s_manifest":
+                        code_signals = [
+                            normalize_text(str(value)).lower()
+                            for value in item.get("code_signals", []) or []
+                            if value
+                        ]
+                        for signal in code_signals:
+                            if signal in {
+                                "configmap", "secret", "pod", "deployment", "service",
+                                "persistentvolume", "persistentvolumeclaim", "route", "ingress", "storageclass",
+                            }:
+                                last_code_resource_kind = signal
+                                break
+                if not last_code_resource_kind and len(last_explicit_resources) == 1 and last_answer_route == "extractive_code":
+                    last_code_resource_kind = last_explicit_resources[0]
             else:
                 active_entities.extend(self._extract_entities(turn.content))
                 focus = self._extract_focus_phrase(turn.content)
@@ -1020,6 +1121,17 @@ class SessionStore:
             "last_answer_citations": last_answer_citations,
             "last_user_focus": last_user_focus,
             "recent_user_topics": recent_user_topics[-4:],
+            "last_explicit_resource": last_explicit_resource,
+            "last_explicit_resources": last_explicit_resources[:4],
+            "last_intent": last_intent,
+            "last_response_shape": last_response_shape,
+            "last_answer_route": last_answer_route,
+            "last_format_constraints": last_format_constraints[:4],
+            "last_code_resource_kind": last_code_resource_kind,
+            "last_grounded_chunk_ids": last_grounded_chunk_ids[:6],
+            "last_grounded_section_paths": last_grounded_section_paths[:4],
+            "last_example_source_pages": last_example_source_pages[:6],
+            "last_example_anchor": last_example_anchor,
             "procedure_state": procedure_state,
         }
 
@@ -1060,6 +1172,17 @@ class SessionStore:
             "resolved_facts": resolved_facts[:5],
             "last_user_focus": topic_state.get("last_user_focus", ""),
             "last_retrieval_mode": topic_state.get("last_retrieval_mode", ""),
+            "last_explicit_resource": topic_state.get("last_explicit_resource", ""),
+            "last_explicit_resources": topic_state.get("last_explicit_resources", [])[:4],
+            "last_intent": topic_state.get("last_intent", ""),
+            "last_response_shape": topic_state.get("last_response_shape", ""),
+            "last_answer_route": topic_state.get("last_answer_route", ""),
+            "last_format_constraints": topic_state.get("last_format_constraints", [])[:4],
+            "last_code_resource_kind": topic_state.get("last_code_resource_kind", ""),
+            "last_grounded_chunk_ids": topic_state.get("last_grounded_chunk_ids", [])[:6],
+            "last_grounded_section_paths": topic_state.get("last_grounded_section_paths", [])[:4],
+            "last_example_source_pages": topic_state.get("last_example_source_pages", [])[:6],
+            "last_example_anchor": topic_state.get("last_example_anchor", {}),
             "turn_count": len(turns),
         }
 
