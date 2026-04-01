@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass
 
 from app.rag.utils import normalize_query_keywords, normalize_text
@@ -40,6 +41,13 @@ class QueryInterpreter:
         "namespace": ("namespace",),
         "openshift": ("openshift",),
         "kubernetes": ("kubernetes",),
+        "argocd": ("argocd", "argo cd", "argo-cd"),
+        "tekton": ("tekton",),
+        "daemonset": ("daemonset",),
+        "statefulset": ("statefulset",),
+        "pipeline": ("pipeline",),
+        "cicd": ("ci/cd", "cicd"),
+        "operator": ("operator",),
     }
     ACTION_MARKERS = {
         "create": ("생성", "만들", "작성", "create"),
@@ -56,6 +64,23 @@ class QueryInterpreter:
         "cli": ("cli", "kubectl", "oc ", "oc\n", "command", "명령어"),
         "table": ("표", "table"),
     }
+    REFERENTIAL_MARKERS = (
+        "그거",
+        "그건",
+        "그중",
+        "그 yaml",
+        "그 코드",
+        "그 예시",
+        "그럼",
+        "다시",
+        "바꿔",
+        "로도",
+        "that",
+        "this",
+        "those",
+        "again",
+        "also",
+    )
     MULTITURN_MARKERS = ("다음", "계속", "step", "단계", "1단계", "2단계", "3단계")
     CODE_MARKERS = ("yaml", "manifest", "code", "example", "sample", "demo", "코드", "예시", "샘플")
     PROCEDURE_MARKERS = ("단계", "절차", "순서", "step")
@@ -72,8 +97,11 @@ class QueryInterpreter:
         "페이지",
         "출처",
         "무엇",
+        "뭐",
         "왜",
         "어떻게",
+        "알려줘",
+        "보여줘",
         "what",
         "how",
         "why",
@@ -81,6 +109,18 @@ class QueryInterpreter:
         "difference",
         "explain",
     )
+
+    @staticmethod
+    def _marker_in_text(normalized_message: str, marker: str) -> bool:
+        normalized_marker = str(marker or "").strip().lower()
+        if not normalized_marker:
+            return False
+        if " " in normalized_marker or "/" in normalized_marker:
+            return normalized_marker in normalized_message
+        if re.fullmatch(r"[a-z0-9_-]+", normalized_marker):
+            pattern = rf"(?<![a-z0-9]){re.escape(normalized_marker)}(?![a-z0-9])"
+            return re.search(pattern, normalized_message) is not None
+        return normalized_marker in normalized_message
 
     def interpret(
         self,
@@ -118,14 +158,46 @@ class QueryInterpreter:
     def _extract_resources(self, normalized_message: str, normalized_keywords: list[str], topic_state: dict) -> list[str]:
         resources: list[str] = []
         for name, markers in self.RESOURCE_MARKERS.items():
-            if any(marker in normalized_message for marker in markers) or any(marker in normalized_keywords for marker in markers):
+            if any(self._marker_in_text(normalized_message, marker) for marker in markers) or any(marker in normalized_keywords for marker in markers):
                 resources.append(name)
 
         active_entities = [str(value).lower() for value in topic_state.get("active_entities", []) if value]
+        known_resources = set(self.RESOURCE_MARKERS.keys())
         for entity in active_entities:
+            if entity not in known_resources:
+                continue
             if entity in normalized_keywords and entity not in resources:
                 resources.append(entity)
+        if not resources and self._should_inherit_resources(normalized_message, normalized_keywords, topic_state):
+            anchor = topic_state.get("last_example_anchor") or {}
+            anchor_resource = str(anchor.get("resource_kind") or "").lower().strip()
+            if anchor_resource and anchor_resource in known_resources:
+                resources.append(anchor_resource)
+            for resource in topic_state.get("last_explicit_resources", []) or []:
+                normalized_resource = str(resource).lower().strip()
+                if normalized_resource in known_resources and normalized_resource not in resources:
+                    resources.append(normalized_resource)
         return resources
+
+    def _should_inherit_resources(
+        self,
+        normalized_message: str,
+        normalized_keywords: list[str],
+        topic_state: dict,
+    ) -> bool:
+        if not topic_state.get("last_explicit_resources"):
+            return False
+        if any(marker in normalized_message for marker in self.REFERENTIAL_MARKERS):
+            return True
+        if any(marker in normalized_message for marker in self.CODE_MARKERS):
+            return True
+        if any(marker in normalized_message for marker in self.PROCEDURE_MARKERS):
+            return True
+        if len(normalized_message) <= 32 and topic_state.get("active_topic"):
+            return True
+        return bool(
+            {"yaml", "yml", "manifest", "code", "example", "sample", "demo", "예시", "코드"} & set(normalized_keywords)
+        )
 
     def _extract_actions(self, normalized_message: str, normalized_keywords: list[str]) -> list[str]:
         actions: list[str] = []
