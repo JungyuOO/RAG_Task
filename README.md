@@ -20,7 +20,7 @@
 
 * LLM 연동 – 아래 제공되는 LLM만 사용할 것
 
-  * Endpoint: http://cllm.cywell.co.kr/v1
+  * Endpoint: 
 
   * Model: Qwen/Qwen3.5-9B
 
