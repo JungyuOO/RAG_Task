@@ -47,43 +47,6 @@ class TaskRepository:
                     """
                 )
 
-    def create_task(self, task_id: str, task_type: str, payload: dict | None = None) -> None:
-        with self._connection() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO tasks (task_id, task_type, status, payload_json, result_json, error, created_at, updated_at)
-                    VALUES (%s, %s, 'pending', %s, '{}', '', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    """,
-                    (task_id, task_type, json.dumps(payload or {}, ensure_ascii=False)),
-                )
-
-    def update_task(
-        self,
-        task_id: str,
-        *,
-        status: str,
-        result: dict | None = None,
-        error: str | None = None,
-    ) -> None:
-        with self._connection() as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    UPDATE tasks
-                    SET status = %s,
-                        result_json = %s,
-                        error = %s,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE task_id = %s
-                    """,
-                    (
-                        status,
-                        json.dumps(result or {}, ensure_ascii=False),
-                        error or "",
-                        task_id,
-                    ),
-                )
 
     def get_task(self, task_id: str) -> dict | None:
         with self._connection() as connection:
