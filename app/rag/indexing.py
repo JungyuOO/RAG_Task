@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import logging
 import re
 from collections import defaultdict
 from pathlib import Path
 
 from app.config import Settings
+from app.storage import CacheRepository, IndexRepository
 from app.rag.artifacts import extracted_markdown_path
-from app.rag.chunking import StructuredMarkdownChunker, TextChunker
 from app.rag.bge_embeddings import BGEOllamaEmbedder
+from app.rag.chunking import StructuredMarkdownChunker, TextChunker
 from app.rag.ingestion import DocumentIngestor
 from app.rag.utils import stable_hash
-from app.repositories.cache_repository import CacheRepository
-from app.repositories.index_repository import IndexRepository
+
+logger = logging.getLogger("rag.startup")
 
 
 class IndexingService:
@@ -34,7 +36,6 @@ class IndexingService:
         self.embedding_cache_repository = embedding_cache_repository
 
     def _encode_chunk(self, text: str) -> list[float]:
-        """청크 텍스트를 임베딩 벡터로 인코딩한다."""
         return self.embedder.encode_passage(text)
 
     def rebuild_index(self, source_paths: list[Path], progress_callback=None) -> dict:
@@ -68,8 +69,7 @@ class IndexingService:
         }
 
     def index_single_file(self, source_path: Path, progress_callback=None) -> dict:
-        """단일 파일을 인제스트·청킹·임베딩하여 인덱스에 upsert한다."""
-        documents, skipped = self.ingestor.ingest_paths([source_path], progress_callback=progress_callback)
+        documents, _skipped = self.ingestor.ingest_paths([source_path], progress_callback=progress_callback)
         if not documents:
             return {"indexed_chunks": 0, "indexed_pages": 0, "skipped": True}
 
@@ -204,3 +204,77 @@ class IndexingService:
             "indexed_chunks": indexed_chunks,
             "skipped_files": 0,
         }
+
+    def sync_unindexed_documents(self, startup_state: dict) -> None:
+        library = self.list_library_documents()
+        unindexed = [doc for doc in library["indexed_documents"] if doc["indexed_chunks"] == 0]
+        if not unindexed:
+            logger.info("모든 문서가 이미 인덱싱된 상태입니다.")
+            startup_state.update(status="done", progress_pct=100)
+            return
+
+        total = len(unindexed)
+        startup_state.update(
+            status="indexing",
+            total_files=total,
+            completed_files=0,
+            current_file="",
+            current_stage="",
+            current_chunk=0,
+            total_chunks=0,
+            progress_pct=0,
+        )
+        logger.info("%d개 미인덱싱 문서를 발견해 자동 인덱싱을 시작합니다.", total)
+
+        for index, doc in enumerate(unindexed):
+            source_path = Path(doc["source_path"])
+            startup_state.update(
+                current_file=doc["file_name"],
+                completed_files=index,
+                current_stage="prepare",
+                current_chunk=0,
+                total_chunks=0,
+                progress_pct=int((index / max(total, 1)) * 100),
+            )
+            if not source_path.exists():
+                logger.warning("파일이 존재하지 않아 건너뜁니다: %s", source_path)
+                continue
+
+            def progress_callback(stage, current, chunk_total, meta=None):
+                file_progress = current / max(chunk_total, 1)
+                overall_progress = ((index + file_progress) / max(total, 1)) * 100
+                startup_state.update(
+                    current_file=doc["file_name"],
+                    current_stage=stage,
+                    current_chunk=current,
+                    total_chunks=chunk_total,
+                    progress_pct=min(100, int(overall_progress)),
+                )
+
+            try:
+                result = self.index_single_file(source_path, progress_callback)
+                logger.info(
+                    "자동 인덱싱 완료: %s (청크 %d개 / 페이지 %d개)",
+                    doc["file_name"],
+                    result.get("indexed_chunks", 0),
+                    result.get("indexed_pages", 0),
+                )
+                startup_state.update(
+                    completed_files=index + 1,
+                    current_stage="done",
+                    current_chunk=result.get("indexed_chunks", 0),
+                    total_chunks=result.get("indexed_chunks", 0),
+                    progress_pct=min(100, int(((index + 1) / max(total, 1)) * 100)),
+                )
+            except Exception:
+                logger.exception("자동 인덱싱 실패: %s", doc["file_name"])
+
+        startup_state.update(
+            status="done",
+            completed_files=total,
+            current_file="",
+            current_stage="done",
+            current_chunk=0,
+            total_chunks=0,
+            progress_pct=100,
+        )
