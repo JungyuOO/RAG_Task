@@ -20,6 +20,7 @@ from app.api.schemas import (
     TaskStatusResponse,
 )
 from app.dependencies import AppContainer, get_container
+from app.rag.chat_service import ChatTurnRequest, RetryChatRequestModel
 from app.rag.artifacts import extracted_markdown_candidates
 
 try:
@@ -59,7 +60,7 @@ async def index() -> FileResponse:
 
 @router.get("/api/library")
 async def get_library(request: Request, container: AppContainer = Depends(get_container)) -> LibraryStatusResponse:
-    data = container.pipeline.list_library_documents()
+    data = container.indexing_service.list_library_documents()
     startup_state = getattr(request.app.state, "startup_indexing", None)
     reindex_state = getattr(request.app.state, "reindexing", None)
     if startup_state:
@@ -163,7 +164,7 @@ async def delete_library_file(
             markdown_path.unlink()
             deleted_markdown = True
 
-    result = container.pipeline.delete_library_document(target_path)
+    result = container.indexing_service.delete_library_document(target_path)
     return DeleteLibraryResponse(
         deleted_file=target_path.name,
         deleted_markdown=deleted_markdown,
@@ -201,7 +202,7 @@ async def upload_to_library(
 
             # 스레드풀에서 인덱싱 실행 (진행률 콜백은 queue에 이벤트 적재)
             index_task = asyncio.ensure_future(
-                run_in_threadpool(container.pipeline.index_single_file, source_path, progress_cb)
+                run_in_threadpool(container.indexing_service.index_single_file, source_path, progress_cb)
             )
 
             # 인덱싱 완료까지 queue에서 progress 이벤트를 소비하며 SSE 전송
@@ -224,7 +225,7 @@ async def upload_to_library(
                 continue
 
             total_chunks += result.get("indexed_chunks", 0)
-            library = container.pipeline.list_library_documents()
+            library = container.indexing_service.list_library_documents()
             yield (
                 "data: "
                 + json.dumps(
@@ -281,7 +282,7 @@ async def reindex_all(request: Request, container: AppContainer = Depends(get_co
         )
 
     try:
-        result = await run_in_threadpool(container.pipeline.rebuild_index, source_files, progress_callback)
+        result = await run_in_threadpool(container.indexing_service.rebuild_index, source_files, progress_callback)
     except Exception:
         reindex_state.update(status="idle", current_stage="error")
         raise
@@ -303,7 +304,7 @@ async def get_task_status(
     task_id: str,
     container: AppContainer = Depends(get_container),
 ) -> TaskStatusResponse:
-    task = container.task_service.get_task(task_id)
+    task = container.task_repository.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found.")
     return TaskStatusResponse(**task)
@@ -313,7 +314,7 @@ async def get_task_status(
 async def list_sessions(request: Request, container: AppContainer = Depends(get_container)) -> SessionHistoryResponse:
     owner_id = resolve_owner_id(request)
     logger.info("[SessionList] owner_id=%s", owner_id)
-    sessions = container.pipeline.session_repository.list_sessions(owner_id=owner_id)
+    sessions = container.session_repository.list_sessions(owner_id=owner_id)
     sanitized = [
         {
             **item,
@@ -328,10 +329,7 @@ async def list_sessions(request: Request, container: AppContainer = Depends(get_
 async def get_session(session_id: str, request: Request, container: AppContainer = Depends(get_container)) -> dict:
     owner_id = resolve_owner_id(request)
     logger.info("[SessionLoad] owner_id=%s session_id=%s", owner_id, session_id)
-    exported = container.pipeline.session_repository.export_session(
-        scoped_session_id(owner_id, session_id),
-        owner_id=owner_id,
-    )
+    exported = container.session_repository.export_session(scoped_session_id(owner_id, session_id), owner_id)
     if not exported:
         raise HTTPException(status_code=404, detail="Session not found.")
     return {
@@ -344,10 +342,7 @@ async def get_session(session_id: str, request: Request, container: AppContainer
 async def delete_session(session_id: str, request: Request, container: AppContainer = Depends(get_container)) -> dict:
     owner_id = resolve_owner_id(request)
     logger.info("[SessionDelete] owner_id=%s session_id=%s", owner_id, session_id)
-    deleted = container.pipeline.session_repository.delete_session(
-        scoped_session_id(owner_id, session_id),
-        owner_id=owner_id,
-    )
+    deleted = container.session_repository.delete_session(scoped_session_id(owner_id, session_id), owner_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Session not found.")
     return {"deleted": True, "session_id": session_id}
@@ -364,10 +359,11 @@ async def chat(
     logger.info("[Chat] owner_id=%s session_id=%s", owner_id, request.session_id)
 
     async def event_stream():
-        async for event in container.pipeline.stream_chat(
+        chat_request = ChatTurnRequest(
             session_id=effective_session_id,
-            user_message=request.message,
-        ):
+            message=request.message,
+        )
+        async for event in container.chat_service.stream(chat_request):
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
@@ -402,18 +398,6 @@ async def retry_chat(
     owner_id = resolve_owner_id(http_request)
     effective_session_id = scoped_session_id(owner_id, request.session_id)
     logger.info("[ChatRetry] owner_id=%s session_id=%s", owner_id, request.session_id)
-    requested_message = (request.message or "").strip()
-    pending_message = container.pipeline.session_repository.pending_user_message(
-        effective_session_id,
-        owner_id=owner_id,
-    )
-    user_message = pending_message or requested_message
-    if not user_message:
-        raise HTTPException(status_code=404, detail="No pending user message found for retry.")
-
-    append_user_turn = True
-    if pending_message and (not requested_message or pending_message == requested_message):
-        append_user_turn = False
 
     allowed_source_paths: set[str] | None = None
     if request.file_names:
@@ -423,13 +407,18 @@ async def retry_chat(
         }
 
     async def event_stream():
-        async for event in container.pipeline.stream_chat(
+        retry_request = RetryChatRequestModel(
             session_id=effective_session_id,
-            user_message=user_message,
+            message=request.message or "",
+            owner_id=owner_id,
             allowed_source_paths=allowed_source_paths,
-            append_user_turn=append_user_turn,
-        ):
-            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            append_user_turn=True,
+        )
+        try:
+            async for event in container.chat_service.retry(retry_request):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -451,7 +440,7 @@ async def chat_with_upload(
         total_chunks = 0
         for file_name in uploaded_files:
             source_path = container.settings.rag_source_dir / file_name
-            result = await run_in_threadpool(container.pipeline.index_single_file, source_path)
+            result = await run_in_threadpool(container.indexing_service.index_single_file, source_path)
             total_chunks += result.get("indexed_chunks", 0)
         uploaded_source_paths = {
             str((container.settings.rag_source_dir / file_name).resolve())
