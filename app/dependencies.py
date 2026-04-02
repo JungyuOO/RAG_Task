@@ -5,34 +5,38 @@ from dataclasses import dataclass
 from fastapi import Request
 
 from app.config import Settings, get_settings
+from app.rag.chat_service import ChatService
 from app.rag.pipeline import RagPipeline
-from app.repositories.task_repository import TaskRepository
-from app.services.task_service import TaskService
+from app.rag.indexing import IndexingService
+from app.session.repository import SessionRepository
+from app.storage import TaskRepository
 
 
 @dataclass(slots=True)
 class AppContainer:
-    """애플리케이션 의존성 컨테이너 — 서버 시작 시 한 번 생성되어 전 라우트에서 공유된다.
-
-    RagPipeline(검색·LLM·세션 관리)과 TaskService(비동기 태스크)를
-    하나의 진입점으로 묶어 라우트가 Depends(get_container)로 접근한다.
-    """
+    """Shared runtime container exposed to FastAPI routes."""
 
     settings: Settings
     pipeline: RagPipeline
-    task_service: TaskService
+    chat_service: ChatService
+    session_repository: SessionRepository
+    indexing_service: IndexingService
+    task_repository: TaskRepository
 
 
 def build_container(settings: Settings | None = None) -> AppContainer:
-    """Settings를 주입받아 파이프라인과 태스크 서비스를 초기화하고 컨테이너를 반환한다."""
+    """Build the runtime container from settings."""
     resolved_settings = settings or get_settings()
     pipeline = RagPipeline(resolved_settings)
+    session_repository = SessionRepository(pipeline.session_store)
     task_repository = TaskRepository(resolved_settings.db_dsn)
-    task_service = TaskService(task_repository)
     return AppContainer(
         settings=resolved_settings,
         pipeline=pipeline,
-        task_service=task_service,
+        chat_service=ChatService(pipeline, session_repository),
+        session_repository=session_repository,
+        indexing_service=pipeline.indexing_service,
+        task_repository=task_repository,
     )
 
 
