@@ -90,7 +90,7 @@ class RetrievalStateBuilder:
         refined_query = query_result["refined_query"]
         alternative_queries = query_result.get("alternative_queries", [])
         logger.info(
-            "[QueryAgent] ?먮낯=%r ??理쒖쟻??%r | ???%r | ?ㅼ썙??%r",
+            "[QueryAgent] 재작성=%r 검색질의=%r | 대안=%r | 키워드=%r",
             rewritten_query, refined_query, alternative_queries, query_result.get("search_keywords", []),
         )
 
@@ -312,9 +312,9 @@ class RetrievalStateBuilder:
             return expanded_query
 
         resource_str = " ".join(resources)
-        suffix_parts = [f"{resource_str} 媛쒕뀗 ??븷 ?뱀쭠 ?ㅻ챸"]
+        suffix_parts = [f"{resource_str} 개념 역할 특징 설명"]
         if intent == "explain" or response_shape == "text":
-            suffix_parts.append("?숈옉 ?먮━ 援ъ꽦 ?붿냼")
+            suffix_parts.append("동작 원리 구성 요소")
 
         suffix = " ".join(suffix_parts)
         if suffix.strip() and suffix.strip() not in expanded_query:
