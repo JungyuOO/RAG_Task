@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
+from app.rag.query import QueryInterpreter
 from app.rag.types import ChatTurn
 from app.rag.utils import normalize_text
-from app.services.query_interpreter import QueryInterpreter
 
 
 @dataclass(slots=True)
@@ -34,64 +34,25 @@ class TurnContextResolution:
 
 class TurnContextResolver:
     RESOURCE_MARKERS = QueryInterpreter.RESOURCE_MARKERS
-    EXPLICIT_SWITCH_MARKERS = (
-        "instead",
-        "back to",
-        "switch to",
-        "다시",
-        "이번엔",
-        "말고",
-        "아까",
-        "이전",
-    )
+    EXPLICIT_SWITCH_MARKERS = ("instead", "back to", "switch to", "다시", "이번엔", "말고", "아까", "이전")
     REFERENT_MARKERS = (
-        "that",
-        "this",
-        "those",
-        "it",
-        "그거",
-        "그건",
-        "그 코드",
-        "그 예시",
-        "그 차이",
-        "그중",
-        "바꿔",
-        "로도",
-        "아까 그거",
+        "that", "this", "those", "it", "그거", "그건", "그 코드", "그 예시", "그 차이", "그중", "바꿔", "로도", "아까 그거",
     )
-    CODE_REQUEST_MARKERS = (
-        "yaml",
-        "manifest",
-        "code",
-        "example",
-        "sample",
-        "예시",
-        "코드",
-        "보여",
-    )
+    CODE_REQUEST_MARKERS = ("yaml", "manifest", "code", "example", "sample", "예시", "코드", "보여")
 
-    def resolve(
-        self,
-        user_message: str,
-        session_topics: list[dict],
-        recent_turns: list[ChatTurn],
-        current_topic_id: str | None = None,
-    ) -> TurnContextResolution:
+    def resolve(self, user_message: str, session_topics: list[dict], recent_turns: list[ChatTurn], current_topic_id: str | None = None) -> TurnContextResolution:
         normalized = self._normalize(user_message)
         if not session_topics:
             return TurnContextResolution("new_topic", None, 1.0, [])
-
         candidates = self._score_topics(normalized, session_topics, current_topic_id)
         if not candidates:
             return TurnContextResolution("new_topic", None, 1.0, [])
-
         best = candidates[0]
         second = candidates[1] if len(candidates) > 1 else None
         looks_like_referent = any(marker in normalized for marker in self.REFERENT_MARKERS)
         looks_like_code_request = any(marker in normalized for marker in self.CODE_REQUEST_MARKERS)
         ambiguity_gap = best.score - (second.score if second else 0.0)
         explicit_resource = self._has_explicit_resource_reference(normalized)
-
         if looks_like_referent and looks_like_code_request and second and ambiguity_gap < 0.15 and not explicit_resource:
             return TurnContextResolution(
                 resolution_type="ambiguous",
@@ -101,10 +62,8 @@ class TurnContextResolver:
                 needs_clarification=True,
                 clarification_prompt=self._build_clarification_prompt(session_topics, candidates[:2]),
             )
-
         if best.score < 0.2 and not self._looks_like_topic_continuation(normalized, recent_turns):
             return TurnContextResolution("new_topic", None, max(best.score, 0.0), candidates[:3])
-
         resolution_type = "continue" if best.topic_id == current_topic_id else "switch_existing"
         if current_topic_id is None and best.score < 0.35:
             resolution_type = "new_topic"
@@ -115,12 +74,7 @@ class TurnContextResolver:
             candidate_topics=candidates[:3],
         )
 
-    def _score_topics(
-        self,
-        normalized_message: str,
-        session_topics: list[dict],
-        current_topic_id: str | None,
-    ) -> list[TopicCandidate]:
+    def _score_topics(self, normalized_message: str, session_topics: list[dict], current_topic_id: str | None) -> list[TopicCandidate]:
         scored: list[TopicCandidate] = []
         for topic in session_topics:
             topic_id = str(topic.get("topic_id") or "")
@@ -129,7 +83,6 @@ class TurnContextResolver:
             sources = [self._normalize(str(value)) for value in topic.get("sources", []) if value]
             entities = [self._normalize(str(value)) for value in topic.get("entities", []) if value]
             last_user_focus = self._normalize(str(topic.get("last_user_focus") or ""))
-
             score = 0.0
             reasons: list[str] = []
             if label and label in normalized_message:
@@ -159,14 +112,7 @@ class TurnContextResolver:
                 if label and label in normalized_message:
                     score += 0.2
                     reasons.append("switch")
-
-            scored.append(
-                TopicCandidate(
-                    topic_id=topic_id,
-                    score=round(score, 4),
-                    reason=",".join(reasons) if reasons else "weak",
-                )
-            )
+            scored.append(TopicCandidate(topic_id, round(score, 4), ",".join(reasons) if reasons else "weak"))
         scored.sort(key=lambda item: item.score, reverse=True)
         return scored
 
@@ -177,27 +123,18 @@ class TurnContextResolver:
             return True
         return False
 
-    def _build_clarification_prompt(
-        self,
-        session_topics: list[dict],
-        candidates: list[TopicCandidate],
-    ) -> str:
+    def _build_clarification_prompt(self, session_topics: list[dict], candidates: list[TopicCandidate]) -> str:
         labels: list[str] = []
         by_id = {str(topic.get("topic_id")): topic for topic in session_topics}
         for candidate in candidates:
             topic = by_id.get(candidate.topic_id)
             if not topic:
                 continue
-            label = normalize_text(str(topic.get("topic_label") or "")) or normalize_text(
-                str(topic.get("summary", {}).get("topic_label", "") or "")
-            )
+            label = normalize_text(str(topic.get("topic_label") or "")) or normalize_text(str(topic.get("summary", {}).get("topic_label", "") or ""))
             if label and label not in labels:
                 labels.append(label)
         scope_hint = ", ".join(labels[:3]) or "방금 이야기한 항목"
-        return (
-            f"어느 주제를 말하는지 조금만 더 구체적으로 적어주세요. "
-            f"예를 들어 {scope_hint} 중 하나를 지정해주시면 바로 이어서 답변하겠습니다."
-        )
+        return f"어느 주제를 말하는지 조금만 더 구체적으로 적어주세요. 예를 들어 {scope_hint} 중 하나를 지정해주시면 바로 이어서 답변하겠습니다."
 
     def _normalize(self, value: str) -> str:
         return " ".join(normalize_text(value).lower().split())

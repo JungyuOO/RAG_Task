@@ -27,11 +27,6 @@ class BuildIndexResponse(BaseModel):
     indexed_chunks: int
     skipped_files: int
 
-
-class UploadLibraryResponse(BuildIndexResponse):
-    uploaded_files: list[str]
-
-
 class DeleteLibraryResponse(BuildIndexResponse):
     deleted_file: str
     deleted_markdown: bool

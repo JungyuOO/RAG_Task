@@ -1,578 +1,444 @@
 # RAG Task
 
-■ 과제 목적
+## 1. 프로젝트 개요 및 목표
 
-* RAG → LLM으로 이어지는 챗봇 구조를 이해하고
+이 프로젝트는 PDF 기반 기술 문서를 읽고, 사용자의 질문에 대해 문서 근거를 붙여 답하는 RAG 시스템
 
-* 향후 OCP 환경에 적용 가능한 AI 기반 지식 저장소 구축 역량 확보
+**핵심 목표**
 
- 
+1. 문서를 업로드하면 자동으로 읽고 검색 가능한 조각으로 변환
+2. 질문을 그대로 검색하지 않고 의도와 대화 문맥을 반영해 검색 질의로 변환
+3. 검색 결과를 그대로 쓰지 않고 답변에 필요한 근거만 남겨 응답 생성
+4. 한 번의 질문으로 끝나지 않고 후속 질문에서도 이전 문맥 유지
 
-■ 과제 내용
+프로젝트의 중심은 단순한 LLM 연동이 아니라,
+`문서 분할 -> 질의 해석 -> 후보 검색 -> 후보 정제 -> 근거 기반 응답 -> 세션 상태 갱신`
+흐름을 코드 수준에서 끝까지 구현
 
-* 사용자 → RAG → LLM으로 이어지는 UI 및 전체 파이프라인 직접 구현
+---
 
-  (오픈소스 프레임워크 사용 금지, 모든 구성 직접 개발)
+## 2. 실행 방법
 
-* RAG 시스템 구축 (기술 스택 자유) – 자료는 금주 교육자료 및 타 팀에서 제공하는 정리문서 등 자율적으로 수집
+### 2.1 실행: Docker Compose
 
-* 멀티턴 대화 (최소 5턴 이상) 지원
+이 프로젝트는 외부 저장소 서비스, 임베딩 서비스, 애플리케이션 서버를 함께 사용하므로 Docker Compose 실행이 가장 안전
 
-* LLM 연동 – 아래 제공되는 LLM만 사용할 것
-
-  * Endpoint: 
-
-  * Model: Qwen/Qwen3.5-9B
-
- 
-
-■ 추가 요구사항
-
-* Streaming 응답 처리 구현 (토큰 단위 또는 chunk 단위 출력)
-
-* Vector Index 구조 직접 설계 및 구현 (단순 라이브러리 호출 지양)
-
-* 대화 이력 기반 Context 관리 (세션 단위 memory 구조 설계)
-
-* RAG 성능 개선 전략 1가지 이상 적용 (예: reranking, chunking 전략 등)
-
-* 캐싱 전략 적용 (예: 동일 질의 응답 캐싱, embedding 캐싱 등)
-
-## 기술 스택
-
-| 구분 | 기술 |
-|------|------|
-| Backend | Python + FastAPI |
-| Frontend | HTML / Vanilla JS |
-| Database | PostgreSQL |
-| PDF 파싱 | PyMuPDF (fitz) |
-| 임베딩 | HashingEmbedder (자체 구현) / multilingual-e5-small (선택) |
-| LLM 통신 | httpx (사내 LLM 엔드포인트 — Qwen3.5-9B) |
-| 스트리밍 | Server-Sent Events (SSE) |
-| 컨테이너 | Docker + Docker Compose |
-
-## 프로젝트 구조
-
-```
-RAG_Task/
-├── app/
-│   ├── main.py                  # FastAPI 앱 팩토리 + 시작 시 자동 인덱싱
-│   ├── config.py                # Settings (Pydantic BaseSettings, 파라미터 설정)
-│   ├── dependencies.py          # AppContainer 싱글톤 DI
-│   ├── api/
-│   │   ├── routes.py            # API 엔드포인트 (12개)
-│   │   └── schemas.py           # 요청/응답 Pydantic 모델
-│   ├── rag/
-│   │   ├── pipeline.py          # RagPipeline (핵심 오케스트레이터)
-│   │   ├── retrieval.py         # HybridRetriever (Dense + BM25 + Title)
-│   │   ├── embeddings.py        # HashingEmbedder (SHA-256 해싱 기반, 768차원)
-│   │   ├── e5_embeddings.py     # E5Embedder (multilingual-e5-small, 384차원)
-│   │   ├── index.py             # VectorIndex (PostgreSQL 저장, 인메모리 검색)
-│   │   ├── memory.py            # SessionStore (세션 메모리 + 자동 요약)
-│   │   ├── llm.py               # LlmClient (스트리밍 + 비스트리밍 호출)
-│   │   ├── ingestion.py         # DocumentIngestor (PDF 추출 + 슬라이드 감지)
-│   │   ├── chunking.py          # TextChunker / StructuredMarkdownChunker
-│   │   ├── cache.py             # JsonFileCache (TTL + LRU)
-│   │   ├── types.py             # Document, Chunk, ChatTurn 데이터클래스
-│   │   ├── utils.py             # 토크나이저, 코사인 유사도, 한국어 조사 스트리핑
-│   │   └── artifacts.py         # 마크다운 추출 경로
-│   ├── services/
-│   │   ├── indexing_service.py   # 인덱싱 (ingest → chunk → embed → store)
-│   │   ├── retrieval_service.py  # 검색 결과 집계 및 컨텍스트 구성
-│   │   ├── answer_service.py     # 인용 추출 및 정제
-│   │   ├── agent_service.py      # QueryAgent / JudgeAgent (멀티 에이전트)
-│   │   ├── turn_policy_service.py # 턴 분류 (인사/RAG/일반/명확화/off-topic)
-│   │   └── task_service.py       # 비동기 작업 추적
-│   ├── repositories/
-│   │   ├── index_repository.py   # VectorIndex 레포 (인메모리 캐싱)
-│   │   ├── cache_repository.py   # JsonFileCache 레포
-│   │   ├── session_repository.py # SessionStore 레포
-│   │   └── task_repository.py    # Task CRUD (PostgreSQL)
-│   └── web/                      # 프론트엔드 (HTML + JS)
-│       ├── index.html
-│       └── js/
-│           ├── app.js            # 메인 앱 로직
-│           ├── chat.js           # 채팅 UI & SSE 처리
-│           ├── library.js        # 자료실 관리 + 실시간 인덱싱 상태
-│           ├── preview.js        # PDF 미리보기
-│           ├── session.js        # 세션 이력
-│           └── shared.js         # 공통 유틸리티
-├── scripts/
-│   └── build_index.py            # 전체 인덱스 재구축 CLI
-├── data/
-│   ├── corpus/pdfs/              # PDF 원본 저장소
-│   ├── extracted_markdown/       # 추출된 마크다운
-│   └── cache/
-│       ├── embeddings/           # 임베딩 캐시
-│       └── answers/              # 응답 캐시
-├── requirements.txt
-├── Dockerfile
-├── docker-compose.yml
-└── .env.example
-```
-
-## 실행 방법
-
-### 1. 환경 설정
-
-```bash
-# 의존성 설치
-pip install -r requirements.txt
-
-# 환경 변수 설정
-cp .env.example .env
-# .env 파일을 열어 아래 항목 설정
-```
-
-`.env` 주요 설정:
-
-| 변수 | 설명 | 기본값 |
-|------|------|--------|
-| `CLLM_BASE_URL` | LLM 엔드포인트 | (필수) |
-| `CLLM_MODEL` | LLM 모델명 | (필수) |
-| `EMBEDDING_MODEL` | 임베딩 모델 (`hash` 또는 `e5`) | `hash` |
-| `DB_HOST` | PostgreSQL 호스트 | (필수) |
-| `DB_PORT` | PostgreSQL 포트 | (필수) |
-| `DB_NAME` | 데이터베이스명 | (필수) |
-| `DB_USER` | DB 사용자 | (필수) |
-| `DB_PASSWORD` | DB 비밀번호 | (필수) |
-
-### 2. Docker로 실행
+1. `.env.example`을 복사해 `.env` 생성
+2. 실행 환경에 맞는 필수 값 설정
+   민감한 접속 정보와 모델 연결 정보는 README에 적지 않고 `.env`에서만 관리
+3. 실행
 
 ```bash
 docker-compose up --build -d
 ```
 
-`docker-compose.yml`이 PostgreSQL과 앱 컨테이너를 함께 구성
-- `ports: "8000:8000"` — 호스트 PC의 8000번 포트를 컨테이너 내부 8000번에 매핑
-- `http://192.168.68.156:8000`으로 접속 가능
+실행 후 확인 경로:
 
+- 앱: `http://localhost:8000`
+- 라이브러리 상태 확인: `http://localhost:8000/api/library`
 
-### 3. 인덱스 구축
+`docker-compose.yml` 기준 구성:
 
-- 웹 UI의 자료실에서 PDF를 업로드하면 자동으로 인덱싱
-- 서버 시작 시 `data/corpus/pdfs/`에 파일이 있으면 미인덱싱 문서를 자동 감지하여 백그라운드 인덱싱
-- CLI로 전체 재구축: `python scripts/build_index.py`
+- 저장소 서비스: 세션, 작업 상태, 벡터/청크 저장
+- 임베딩 서비스: 문서/질문 벡터 생성
+- 임베딩 초기화 서비스: 모델 준비
+- `app`: FastAPI 서버
 
+### 2.2 로컬 실행
 
-## 시스템 아키텍처
+로컬에서도 실행할 수 있지만, 애플리케이션이 기대하는 외부 서비스와 환경 변수가 먼저 준비되어 있어야 함
 
-### 전체 데이터 흐름
-
-```
-사용자 질문 (Web UI)
-    │
-    ▼ SSE
-FastAPI (/api/chat)
-    │
-    ▼
-RagPipeline.stream_chat()
-    │
-    ├─ 1. TurnPolicyService ─────── 턴 분류 (greeting/document_query/general_chat/off_topic)
-    │                                 60+ 한/영 패턴 매칭
-    │
-    ├─ 2. SessionStore ──────────── 최근 대화 + 요약 조회 (메모리 윈도우: 6턴)
-    │
-    ├─ 3. [후속 질문이면]
-    │      LLM 쿼리 리라이트 ───── 대명사 해소 ("그거" → "네트워크 정책")
-    │
-    ├─ 4. QueryAgent ────────────── 검색 쿼리 최적화 + 대안 쿼리 2개 + 키워드 추출
-    │
-    ├─ 5. Embedder ──────────────── 쿼리 벡터화 (Hash 768차원 / E5 384차원)
-    │
-    ├─ 6. HybridRetriever.search()
-    │      ├─ Dense score (코사인 유사도)
-    │      ├─ Sparse score (BM25)
-    │      ├─ Title score (키워드 오버랩)
-    │      ├─ 소스 다양성 필터링
-    │      └─ 2차 리랭킹 → top_k=3 반환
-    │
-    ├─ 7. JudgeAgent ────────────── 검색 결과 관련성 평가 (relevant/confidence/clarification)
-    │
-    ├─ 8. RetrievalService ──────── 페이지/소스 단위 그라운딩
-    │
-    ├─ 9. LLM 스트리밍 응답 생성 ── 컨텍스트 + 대화 이력 주입
-    │
-    ├─ 10. AnswerService ─────────── 인용 파싱 + 응답 정제
-    │
-    └─ 11. SessionStore ─────────── 턴 저장 + 요약/토픽 상태 자동 갱신
+```bash
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### 인덱싱 흐름
+### 2.3 문서 색인 방식
 
-```
-PDF 업로드
-    │
-    ▼
-DocumentIngestor.ingest_paths()
-    ├─ 슬라이드 PDF 감지 (가로 비율 + 이미지/텍스트 블록 비율)
-    ├─ 슬라이드형: 좌표 기반 텍스트 재조립
-    ├─ 일반형: 구조화된 마크다운 변환 (테이블/헤딩/코드 블록 인식)
-    ├─ 푸터 패턴 감지 및 제거
-    └─ 교차 페이지 테이블 병합
-    │
-    ▼
-청킹 전략 자동 선택 (auto)
-    ├─ TextChunker (슬라이드형)
-    └─ StructuredMarkdownChunker (일반 문서)
-    │
-    ▼
-Embedder.encode()
-    ├─ 임베딩 캐시 조회 (SHA-256 키)
-    └─ 미스 시 인코딩 후 캐시 저장
-    │
-    ▼
-VectorIndex (PostgreSQL)
-    └─ 청크 + 토큰 + 메타데이터 + 벡터(JSON) 저장
-```
+- UI에서 PDF 업로드 시 즉시 색인 진행
+- 서버 시작 시 아직 색인되지 않은 문서가 있으면 백그라운드 색인 시도
+- 전체 재색인은 `/api/reindex` 또는 UI를 통해 수행
 
-### 레이어 구조
+---
 
-```
-routes.py (API 계층)
-  └─ AppContainer (dependencies.py)
-       ├─ RagPipeline (pipeline.py) ← 전체 오케스트레이션
-       │    ├─ IndexingService      ← 인제스트 → 청킹 → 임베딩 → 저장
-       │    ├─ RetrievalService     ← 검색, 컨텍스트 구성, 그라운딩
-       │    ├─ AnswerService        ← 인용 추출, 코드 예제 감지, 정제
-       │    ├─ QueryAgent           ← LLM 기반 쿼리 최적화
-       │    ├─ JudgeAgent           ← LLM 기반 검색 결과 적합성 판단
-       │    ├─ TurnPolicyService    ← 턴 분류, off-topic 거부
-       │    └─ Repositories         ← 데이터 접근 추상화 계층
-       └─ TaskService              ← 비동기 작업 관리
-```
+## 3. 현재 아키텍처 설명
 
-## 핵심 구현 상세
+현재 구조는 "책임이 다른 것만 분리하고, 얇은 전달 계층은 제거" 기준으로 정리
 
-### 1. 임베딩 모델 (2가지)
+### 3.1 현재 app 구조
 
-`.env`의 `EMBEDDING_MODEL` 설정으로 전환 가능하며, 모델에 따라 검색 가중치가 자동 조정
-
-#### HashingEmbedder (`hash`, 기본값) — 768차원
-
-외부 임베딩 모델 없이 SHA-256 해싱으로 고정 차원 벡터를 생성
-
-
-**3가지 시그널이 벡터에 반영된다:**
-
-| 시그널 | 방법 | 이유 |
-|--------|------|------|
-| 유니그램 | 각 토큰을 SHA-256으로 해싱 | 개별 단어가 있는지 여부를 벡터에 반영 |
-| 바이그램 | 인접 토큰 쌍 `"네트워크_정책"` 해싱 (가중치 0.5) | 단어 순서를 반영하기 위함. "네트워크 정책"과 "정책 네트워크"가 다른 벡터가 됨 |
-| 위치 감쇠 | `1.0 - 0.3 × (position/total)` | 기술 문서 특성상 앞부분에 핵심 키워드가 나오는 경우가 많아서 앞쪽 토큰에 가중치를 더 줌 |
-
-**왜 부호(+1/-1)를 랜덤으로 부여하나?**
-768차원짜리 벡터에 수많은 토큰이 매핑되다 보면 같은 인덱스에 여러 토큰이 겹치는 경우가 생긴다. 이때 부호를 랜덤으로 주면 관련 없는 토큰끼리는 +/-가 상쇄되어 노이즈가 줄어든다. random projection이라는 기법의 원리를 활용한 것이다.
-
-
-벡터 길이를 1로 맞추면 검색 시 코사인 유사도를 내적만으로 계산 가능
-
-**트레이드오프:**
-- 장점: 외부 모델 불필요, 결정론적, 매우 빠름, 완전 오프라인
-- 단점: 의미적 유사도를 잡지 못함 (예: "PV"라고 검색했을 때 "PersistentVolume"이라고 적힌 청크를 못 찾음) → BM25와 타이틀 매칭으로 보완
-
-#### E5Embedder (`e5`) — 384차원
-
-`intfloat/multilingual-e5-small` 사전학습 모델을 사용
-
-```python
-# 인덱싱할 때 (스토리지.pdf에서 추출한 청크)
-"passage: PersistentVolume은 클러스터 레벨의 스토리지 리소스로, Pod와 독립적으로 존재한다"
-
-# 사용자가 질문할 때
-"query: PV가 뭐야?"
+```text
+app/
+  app_factory.py
+  config.py
+  dependencies.py
+  main.py
+  api/
+    routes.py
+    schemas.py
+  llm/
+    agents.py
+  rag/
+    answer.py
+    chat_service.py
+    chunking.py
+    context.py
+    indexing.py
+    ingestion.py
+    llm.py
+    memory.py
+    pipeline.py
+    policy.py
+    prompting.py
+    query.py
+    retrieval.py
+    retrieval_service.py
+    retrieval_state_builder.py
+    turn_flow.py
+  session/
+    repository.py
+    state.py
+    store_sql.py
+  storage/
+    cache_repository.py
+    task_repository.py
+    vector_store.py
 ```
 
-E5 모델은 질문과 문서를 서로 다른 임베딩 공간에 매핑하도록 학습되어 있어서 `query:`/`passage:` 접두사가 필수다.
-모델은 서버 시작 시 바로 불러오지 않고, 실제로 첫 인코딩 요청이 들어올 때 로드한다 (메모리 절약).
-의미적으로 유사한 표현도 잡을 수 있다 — 예를 들어 "PV"로 검색하면 "PersistentVolume"이라고 적힌 청크도 찾아낸다.
+### 3.2 각 계층의 역할
 
-#### 두 모델 비교
+- `app_factory.py`
+  앱 생성, startup/reindex 상태 초기화, 정적 파일 mount
+- `dependencies.py`
+  실제 런타임 객체 조립
+- `api/routes.py`
+  HTTP 요청 수신과 유스케이스 연결
+- `rag/*`
+  질문 해석, 검색, 문맥 판단, 답변 생성의 핵심 알고리즘
+- `session/*`
+  대화 기록, 요약, 주제 상태 유지
+- `storage/*`
+  캐시, 작업 상태, 벡터 저장 같은 영속화 책임
 
-| | HashingEmbedder | E5Embedder |
-|--|----------------|------------|
-| 차원 | 768 | 384 |
-| 의미 이해 | 불가 | 가능 |
-| 속도 | 매우 빠름 (해시 연산만) | 느림 (신경망 추론) |
-| 외부 의존성 | 없음 | sentence-transformers |
-| 오프라인 동작 | 가능 | 초기 모델 다운로드 필요 |
+현재 구조는 `RagPipeline`이 전체 흐름의 오케스트레이터 역할을 유지하면서도,
+`turn_flow.py`, `retrieval_state_builder.py`는 명시적 협력자 계약을 통해 동작하도록 정리
 
-### 2. 코사인 유사도 구현
+---
 
-```python
-def cosine_similarity(a, b):
-    return sum(x * y for x, y in zip(a, b))
+## 4. 프로젝트 설명
+
+### 4.1 문서 처리 방식
+
+문서를 잘못 자르면 뒤 단계가 모두 혼동. 그래서 이 프로젝트는 먼저 문서 분할을 중요하게 처리
+
+핵심 파일:
+
+- [ingestion.py](/C:/Users/KJungyu/OneDrive/Desktop/Company/과제/RAG_Task/app/rag/ingestion.py)
+- [chunking.py](/C:/Users/KJungyu/OneDrive/Desktop/Company/과제/RAG_Task/app/rag/chunking.py)
+
+처리 흐름:
+
+1. PDF에서 텍스트 추출
+2. 페이지 경계 때문에 끊긴 표, YAML, 코드 블록 복원
+3. 문서 특성에 따라 두 가지 전략 중 하나 선택
+
+- 단순 페이지 기반 분할
+- 구조 기반 분할
+
+즉 시스템은 먼저 문서를 다음 형태로 변환
+
+`PDF -> 복구된 텍스트 -> 의미 단위 chunk -> 검색 가능한 레코드`
+
+### 4.2 질문을 그대로 검색하지 않는 이유
+
+사용자는 이전에 했던 질문에 기반하여 아래와 같은 질문을 할 수 있음.
+
+- "그거 다시 설명해줘"
+- "2단계만 알려줘"
+- "Service 예시 yaml 보여줘"
+
+이런 질문은 단독으로 검색하기엔 어려움이 존재. 그래서 먼저 질문을 해석하고, 필요한 경우 이전 대화에서 빠진 주어를 복원하게 처리
+
+핵심 파일:
+
+- [query.py](/C:/Users/KJungyu/OneDrive/Desktop/Company/과제/RAG_Task/app/rag/query.py)
+- [context.py](/C:/Users/KJungyu/OneDrive/Desktop/Company/과제/RAG_Task/app/rag/context.py)
+- [policy.py](/C:/Users/KJungyu/OneDrive/Desktop/Company/과제/RAG_Task/app/rag/policy.py)
+
+이 단계에서 하는 일:
+
+1. 인사, 문서 질문, 후속 질문, 일반 대화 구분
+2. 현재 세션에서 어떤 주제를 이야기했는지 확인
+3. 리소스 이름, 액션, 원하는 응답 형태 추출
+
+질문은 검색어로 바로 쓰이지 않고 아래 형태로 변환
+
+`사용자 문장 -> 의도 + 대상 + 응답 형태 + 문맥 보강된 검색 질의`
+
+### 4.3 검색은 점수 하나로 끝나지 않는다
+
+문서 검색은 "가장 비슷한 것 하나"로 끝내면 오답이 많음. 이 프로젝트는 검색 후보를 여러 관점으로 점수화한 뒤 마지막에 다시 정렬.
+
+핵심 파일:
+
+- [retrieval.py](/C:/Users/KJungyu/OneDrive/Desktop/Company/과제/RAG_Task/app/rag/retrieval.py)
+- [retrieval_state_builder.py](/C:/Users/KJungyu/OneDrive/Desktop/Company/과제/RAG_Task/app/rag/retrieval_state_builder.py)
+- [retrieval_service.py](/C:/Users/KJungyu/OneDrive/Desktop/Company/과제/RAG_Task/app/rag/retrieval_service.py)
+
+검색 알고리즘 흐름:
+
+1. 질문을 벡터로 변환
+2. 각 chunk에 대해 dense score와 sparse score 계산
+3. 두 점수를 합쳐 1차 후보 구성
+4. 후보들끼리 다시 재정렬
+5. 점수가 높은 페이지와 문서에 grounding 부여
+6. 실제 답변에 넣을 chunk를 별도 규칙으로 재선택
+
+여기서 `retrieval_state_builder.py`는 단순 검색 호출기가 아니라,
+질문 해석부터 질의 확장, 검색, 후처리, grounding, 최종 컨텍스트 선택까지 묶어 retrieval state를 생성.
+
+### 4.4 왜 검색 결과를 다시 걸러내는가
+
+검색 상위 결과가 항상 좋은 답변은 아니었음.
+예를 들어 `Service yaml 예시`를 물었는데 `Route 예시`, `Ingress 설명`이 같이 들어올 수 있음.
+
+그래서 이 프로젝트는 검색 후 한 번 더 처리 진행.
+
+핵심 로직:
+
+- 관련 없는 형식 제거
+- 페이지 grounding 기준 정렬
+- 같은 문서와 같은 주제 안에서 필요한 블록 우선
+- 코드 요청이면 코드 블록 우선
+- 주제가 흐트러지면 precision filter 적용
+
+검색은 "후보를 넓게 모으는 단계", 품질은 "그 후보를 얼마나 잘 버리는가"에서 결정.
+
+### 4.5 답변은 생성과 근거 정리를 동시에 진행
+
+핵심 파일:
+
+- [answer.py](/C:/Users/KJungyu/OneDrive/Desktop/Company/과제/RAG_Task/app/rag/answer.py)
+- [turn_flow.py](/C:/Users/KJungyu/OneDrive/Desktop/Company/과제/RAG_Task/app/rag/turn_flow.py)
+
+답변 생성 흐름:
+
+1. 선택된 context chunk를 prompt에 주입
+2. LLM이 스트리밍 응답 생성
+3. 답변에서 인용 가능한 근거 추출
+4. preview 페이지와 citation payload 정리
+5. 코드 예시 요청이면 추출형 응답 우선
+
+시스템은 LLM 응답을 그대로 내보내지 않고 아래 형태로 마감
+
+`LLM 응답 -> 정리 -> 인용/페이지 정보 부착 -> 최종 payload`
+
+### 4.6 멀티턴은 단순 채팅 기록 저장이 X
+
+핵심 파일:
+
+- [memory.py](/C:/Users/KJungyu/OneDrive/Desktop/Company/과제/RAG_Task/app/rag/memory.py)
+- [repository.py](/C:/Users/KJungyu/OneDrive/Desktop/Company/과제/RAG_Task/app/session/repository.py)
+- [state.py](/C:/Users/KJungyu/OneDrive/Desktop/Company/과제/RAG_Task/app/session/state.py)
+
+이 프로젝트에서 세션은 단순 기록 저장소가 아니라 다음 질문을 더 잘 해석하기 위한 상태 저장소
+
+저장하는 것:
+
+- 최근 대화 몇 턴
+- 현재 이야기 중인 주제
+- 직전에 명시된 리소스
+- 마지막 예시 anchor
+- 인용된 페이지
+- 절차형 답변의 현재 단계
+
+그래서 `"그거 다시 보여줘"` 같은 질문도 문장만 보고 해석하지 않고 직전 topic state를 같이 읽고 답함.
+
+### 4.7 캐시는 어디 사용
+
+핵심 파일:
+
+- [cache.py](/C:/Users/KJungyu/OneDrive/Desktop/Company/과제/RAG_Task/app/rag/cache.py)
+- [cache_repository.py](/C:/Users/KJungyu/OneDrive/Desktop/Company/과제/RAG_Task/app/storage/cache_repository.py)
+
+캐시는 두 군데에 사용
+
+1. 임베딩 캐시
+2. 답변 캐시
+
+캐시는 속도 개선만이 아니라 이미 계산한 데이터를 다시 계산하지 않기 위한 중복 제거 장치.
+
+---
+
+## 5. 코드 수준에서 보는 전체 흐름
+
+질문 한 번이 들어오면 대략 아래 순서로 흐름.
+
+```text
+사용자 입력
+  -> api/routes.py
+  -> chat_service.py
+  -> turn_flow.py
+  -> policy.py / context.py / query.py
+  -> retrieval_state_builder.py
+  -> retrieval.py / retrieval_service.py
+  -> prompting.py
+  -> llm.py
+  -> answer.py
+  -> memory.py / session/*
+  -> SSE 응답 반환
 ```
 
+좀 더 구체적으로 적으면:
 
-### 3. 하이브리드 검색 & 스코어링
+1. `routes.py`가 요청 수신
+2. `ChatService`가 세션과 메시지를 전달
+3. `ChatTurnOrchestrator`가 이번 턴 전체 흐름 관리
+4. 필요하면 `RetrievalStateBuilder`가 검색 상태 생성
+5. `RagPipeline`은 협력자들을 조립하는 중심축 역할
+6. `AnswerGenerator`가 최종 응답 payload 마감
 
-#### 1차 스코어링 — 3중 시그널 결합
+**현재 구조의 핵심**
 
-```
-score = dense × W_d + sparse × W_s + title × W_t + title_match_bonus + compact_bonus
-```
+- `RagPipeline`은 orchestration 중심축
+- `turn_flow.py`, `retrieval_state_builder.py`는 pipeline 내부 구현을 직접 긁지 않고 명시적 협력자 계약으로 동작
 
-| 시그널 | Hash 가중치 | E5 가중치 | 역할 |
-|--------|-------------|-----------|------|
-| Dense (코사인 유사도) | **0.45** | 0.30 | 벡터 유사도 — 전체적인 내용 유사성 |
-| Sparse (BM25) | 0.25 | **0.35** | 키워드 정확 매칭 — 특정 용어가 있는 청크 |
-| Title match | 0.15 | 0.20 | 소스 파일명과 쿼리의 키워드 겹침 비율 |
-| Title match bonus | 최대 0.35 | 최대 0.35 | 파일명이 쿼리에 통째로 포함될 때 확정 부스트 |
-| Compact bonus | 최대 0.32 | 최대 0.32 | 공백 제거 후 연속 부분문자열 매칭 |
+---
 
-**왜 모델마다 가중치가 다른가:**
-Hash 임베딩은 키워드가 겹치는 정도는 반영하지만 의미까지는 못 잡는다. 그래서 Dense(벡터 유사도)를 0.45로 높여서 전반적인 유사성을 최대한 뽑아냈다. 반면 E5는 의미 매칭 자체가 강력하니까 Dense를 0.30으로 낮추고, 대신 BM25(0.35)와 Title(0.20)을 올려서 "정확히 이 키워드가 있는 문서"를 더 잘 찾도록 했다.
+## 6. 일정 및 진행사항
 
-**Title match와 Title match bonus는 뭐가 다른가:**
-- Title match: 토큰 단위로 겹치는 비율을 계산한다. 예를 들어 "ArgoCD 배포 방법"이라고 질문하면 `CD(ArgoCD).pdf`와 토큰이 1/3 겹치니까 0.33점
-- Title match bonus: 공백을 다 빼고 파일명이 쿼리에 통째로 들어있는지 본다. "네트워킹 문서에서 Service 알려줘"라고 질문하면 "네트워킹"이 `네트워킹.pdf`에 그대로 포함되니까 0.35점을 확정 부여
 
-왜 둘 다 필요하냐면, 한국어는 조사 때문에 토큰 분리가 달라지는 경우가 있다. "스토리지에서" → 토큰화 → "스토리지"로 되긴 하지만, 파일명이 복합어일 때 토큰 매칭이 실패하는 케이스가 있어서 부분문자열 매칭으로 보완했다.
+### 2026-03-17: 초기 골격 구성
 
-**Compact bonus는 왜 만들었나:**
-실제로 테스트하다 보니 "yaml파일작성"처럼 띄어쓰기 없이 복합어로 질문하는 경우가 있었다. 토큰 단위로는 매칭이 안 되는데, 공백을 다 빼고 연속 부분문자열로 비교하면 `yaml_파일_작성_방법.pdf`의 청크와 매칭된다. 다만 35% 미만의 짧은 우연적 매칭(예: 조사 "는"이 겹치는 정도)은 무시하고, 상한을 0.32로 두어서 보조적인 역할만 하도록 했다.
+- 초기 프로젝트 설계안 작성
+- FastAPI 백엔드 골격 생성
+- 애플리케이션 패키지 구조 생성
+- 초기 페이지 및 라우트 연결
+- 필수 라이브러리 설치와 기본 설정 정의
 
-#### 소스 다양성 보장
 
-1차 스코어링 후 후보 풀(8개)을 구성할 때, 각 소스(문서)별로 최고 점수 청크를 먼저 선발 
-단, 1위 점수의 30% 미만인 소스는 제외하여 무관한 문서가 슬롯을 차지하는 것을 방지
+### 2026-03-18: 문서 처리와 첫 RAG 파이프라인 구현
 
-#### 2차 리랭킹
+- PDF 업로드, 삭제 API 추가
+- 설정 구조, 청킹, 캐시, 인덱스 저장 구조 추가
+- PDF 추출과 마크다운 변환 로직 추가
+- 외부 LLM 스트리밍 연결
+- 세션 히스토리 저장
+- 하이브리드 검색과 파이프라인 오케스트레이션 구현
 
-후보 풀 8개에서 최종 3개(top_k)를 선별:
 
-```
-final = score × 0.68 + keyword_overlap × 0.17 + title × 0.08 + title_bonus × 0.07 + compact × 0.12
-```
+### 2026-03-19 ~ 2026-03-20: 책임 분리와 검색 품질 보강
 
-| 리랭킹 시그널 | 가중치 | 역할 |
-|---------------|--------|------|
-| base (1차 점수) | 0.68 | 1차 검색 점수 유지 |
-| keyword overlap | 0.17 | 쿼리-청크 간 키워드 겹침으로 정밀도 보강 |
-| title | 0.08 | 파일명 매칭 시 출처 관련성 보정 |
-| title bonus | 0.07 | 파일명 정확 매칭 보너스 |
-| compact | 0.12 | 연속 부분문자열 매칭으로 구문 일치도 반영 |
+- 전역 파이프라인 대신 컨테이너화
+- 작업 추적 추가
+- RAG 책임 분리
+- 폴백, policy, 메모리 확장 강화
+- 짧은 질의용 LLM 호출 추가
+- 하드코딩 키워드 매칭 제거
+- 리랭킹 및 키워드 매칭 강화
 
-#### 검색 품질 지표
 
-검색 결과의 신뢰도를 측정하기 위해 다음 지표를 계산한다:
-- **hit_rate**: min_score 이상인 결과 비율
-- **score_gap**: 1위와 2위의 점수 차이 (높을수록 1위가 확실)
-- **dense_sparse_correlation**: Dense와 Sparse 점수 순위의 스피어만 상관도 (둘 다 높은 순위에 합의하면 결과 신뢰도 높음)
+### 2026-03-23: 배포 환경 단순화와 컨테이너화
 
-### 4. BM25 구현
+- Docker 컨테이너화 설계 문서 작성
+- Docker 컨테이너화 구현 플랜 정리
+- OCR 제거
+- Dockerfile 및 앱 빌드 설정 추가
 
 
-| 파라미터 | 값 | 의미 |
-|---------|-----|------|
-| k1 | 1.2 | TF 포화 속도 — 같은 단어가 반복될수록 점수 증가하지만 한계가 있음 (Elasticsearch/Lucene 기본값) |
-| b | 0.75 | 문서 길이 정규화 — 1.0이면 완전 정규화, 0.0이면 정규화 없음. 짧은 청크에 약간의 TF 부스트를 주면서 긴 청크의 과대 매칭을 억제 |
 
-최종 점수를 `max_possible`로 나눠 0~1 범위로 정규화하여 Dense 점수와 동일 스케일에서 가중합이 가능
+### 2026-03-25: 저장소 전환, 멀티턴 강화, 임베딩 모델 확장
 
-### 5. 청킹 전략
+- 저장소 설정 반영
+- 페이지 경계에서 문서가 끊기는 현상 보완
+- topic 연결 기반 멀티턴 대응 강화
+- source 다양성 및 후보 추출 조정
+- 임베딩 모델 전환 로직 추가
+- agent 기반 파이프라인 확장
+- 문서 업로드 상태바와 자동 인덱싱 보강
 
-#### 왜 청킹이 필요한가
 
-LLM에 문서 전체를 넣을 수 없으므로 문서를 검색 가능한 단위로 나누어야 함. 
-이 조각 하나하나가 "청크"이고, 잘 자르는 것이 검색 품질을 높임
 
-#### TextChunker — 단순 슬라이딩 윈도우
+### 2026-03-26 ~ 2026-03-27: 질의 판단, 캐시, 지연 요인 제거
 
-```
-[========700자========]
-                [==120자 오버랩==][========700자========]
-                                              [==120자==][========700자========]
-```
+- 파라미터를 config로 이동
+- 캐시 적중률 로깅 추가
+- 최근 대화 수 제한으로 DB 부하 감소
+- 전체 인덱스 호출 대신 캐시 기반 조회
+- 단순 반응 search 제거
+- 관련 없는 dense 매칭 채택 방지
+- 자료 보기, 프롬프트, 후속 질문 정책 보강
 
-- **chunk_size: 700자**, **overlap: 120자**
-- 글자 수 기준으로 기계적으로 분할
-- 페이지 단위로 처리 (각 페이지의 텍스트를 독립적으로 청킹)
 
-**오버랩을 두는 이유:** 청크 경계에서 문장이 잘리면 앞 청크는 문장 전반부만, 뒷 청크는 후반부만 포함하게 됨
-120자 오버랩이 있으면 양쪽 청크 모두 경계 부근의 전체 문장을 포함하여 검색 누락을 방지
 
-**사용 시점:** 슬라이드형 PDF처럼 페이지당 글자가 적고(420자 이하), 짧은 줄(55%+)이나 불릿(20%+)이 많은 경우
+### 2026-03-30: BGE-M3, RRF, reranker 도입
 
-#### StructuredMarkdownChunker — 구조 인식 청킹
+- `BGEOllamaEmbedder` 추가
+- `HybridRetriever`에 RRF 추가
+- reranker 추가
+- BGE, RRF, reranker를 `RagPipeline`에 연결
+- 기존 Hash, E5 경로 제거
+- code chunk 병합과 topic store 세분화
 
-- **chunk_size: 1000자**, **overlap: 150자**
-- 마크다운 블록 유형을 인식하여 의미 단위로 분할
 
-| 블록 유형 | 감지 방법 |
-|----------|----------|
-| heading | `#`으로 시작하거나, 40자 이하 + 콜론 종료 ("정적 프로비저닝:") |
-| list | `- ` 또는 `1. `으로 시작 |
-| table | 파이프(`\|`)가 있고 구분선(`\|---\|---\|`) 포함 |
-| code | ` ``` `로 시작/종료 |
-| paragraph | 나머지 전부 |
 
-**핵심 규칙들:**
+### 2026-03-31: 사용자 분리, 의도 라우팅, 구조 정보 강화
 
-1. **새 heading이면 무조건 새 청크 시작** — 섹션 전환 시 분리
-2. **단독 heading 청크 방지** — 제목만 있는 청크는 검색에 무의미하므로, 다음 블록과 합침
-3. **heading 이월** — 청크가 분리될 때 직전 섹션 heading을 이월하여 모든 청크에 소속 섹션 제목이 포함되도록 함
-4. **짧은 도입 문단 + 표는 합침** — 150자 이하 문단 뒤의 표는 분리하지 않음 (표의 맥락 유지)
-5. **같은 블록 유형이면 페이지가 달라도 안 자름** — PDF 페이지 경계는 인위적이므로, 같은 유형의 흐름이면 유지
-6. **1400자 초과 블록은 슬라이딩 윈도우로 강제 분할**
+- user별 대화 이력 격리
+- 의도 라우팅 추가
+- query keyword 정규화
+- 코드 메타데이터 추가
+- user별 session 조회, 삭제 보강
+- 질문 의도, 자료, 포맷 추출 추가
 
-**사용 시점:** 일반 텍스트 문서 (구조화된 마크다운이 감지되는 경우).
 
-#### 자동 전략 선택 (auto)
 
-```python
-if avg_chars_per_page <= 420 and (short_line_ratio >= 0.55 or bullet_ratio >= 0.2):
-    return "page_window"        # TextChunker
-return "structured_markdown"    # StructuredMarkdownChunker
-```
+### 2026-04-01: 후속질문 정밀화와 grounding 보강
 
-| 조건 | 전략 | 이유 |
-|------|------|------|
-| 페이지당 420자 이하 + 짧은 줄 55%+ | TextChunker | 슬라이드형 PDF — 구조 파싱할 내용 부족 |
-| 페이지당 420자 이하 + 불릿 20%+ | TextChunker | 불릿 위주 슬라이드 |
-| 그 외 | StructuredMarkdownChunker | 일반 문서 — 구조 인식이 품질 향상 |
+- 절차 캐시와 retrieval 흐름 정교화
+- topic 확장 및 intent, route, resource 세션 메모리 저장
+- 코드 섹션 분할 추출 개선
+- follow-up resource 오탐 방지
+- ambiguity보다 follow-up 우선 처리
+- example anchor와 clarification 보강
 
-### 6. 인덱싱 & 벡터 저장
 
-#### PostgreSQL을 순수 스토리지로 사용 (pgvector 미사용)
 
-```
-chunks 테이블:
-  chunk_id | doc_id | source_path | text | tokens_json | page_number | metadata_json | vector_json
-```
-
-- 벡터는 **JSON 문자열**로 저장
-- 검색 시 **전체 청크를 메모리에 로드** → Python에서 점수 계산
-- `IndexRepository`가 메모리 캐시를 유지하며, 문서 변경(save/upsert/delete) 시에만 무효화
-
-**pgvector를 사용하지 않는 이유:**
-- 외부 확장 의존성 없이 순수 구현
-- 문서 수가 수백~수천 건 수준에서는 인메모리 검색이 충분히 빠름
-- 하이브리드 스코어링(Dense + BM25 + Title + 보너스)을 자유롭게 커스터마이즈 가능
-- 대규모 시 pgvector나 FAISS로 교체 가능한 구조
-
-#### 임베딩 캐싱
-
-- 청크 텍스트의 SHA-256 해시를 키로 파일 기반 캐시 (`data/cache/embeddings/`)
-- 동일 텍스트 재인덱싱 시 임베딩 재계산을 생략
-- TTL: 72시간, 최대 500개 엔트리, 가장 오래 안 쓰인 항목부터 교체(LRU)
-
-### 7. 한국어 BM25 최적화
-
-한국어 조사/어미가 붙은 토큰의 BM25 매칭 실패를 방지
-
-```python
-# 예시
-"네트워킹의" → "네트워킹"
-"쿠버네티스에서는" → "쿠버네티스"
-"스토리지에서" → "스토리지"
-```
-
-- 빈도 높은 조사 30여 개를 **길이 순으로 매칭** ("에서"가 "에"보다 먼저 매칭)
-- 결과가 2자 미만이면 원본 유지 (과도한 스트리핑 방지)
-- 토큰화 시점에 적용되어 인덱싱과 검색 모두에서 일관되게 동작
-
-### 8. 멀티 에이전트 파이프라인
-
-단순 검색→응답이 아닌, LLM 기반 에이전트들이 파이프라인 각 단계를 담당
-
-| 에이전트 | 역할 | 구현 방식 |
-|----------|------|----------|
-| **TurnPolicyService** | 턴 분류 — 인사/확인/후속질문/문서질의/명확화/off-topic (6가지) | 60+ 한/영 패턴 매칭 |
-| **QueryAgent** | 사용자 질문 → 검색 최적화 쿼리 + 대안 쿼리 2개 + 키워드 추출 | LLM 기반 |
-| **JudgeAgent** | 검색된 컨텍스트가 질문에 적합한지 판단 (relevant/confidence/clarification) | LLM 기반 |
-
-- **TurnPolicyService**: 인사/확인은 검색 없이 즉시 응답, off-topic은 거부, 문서 질문만 RAG 수행
-- **QueryAgent**: 실패 시 원본 쿼리를 그대로 반환 (graceful degradation)
-- **JudgeAgent**: 부적합 판정 시 재질문 메시지를 생성하여 사용자에게 반환
-
-### 9. 세션 메모리 (Session Memory)
-
-LLM 히스토리 전달이 아닌 **애플리케이션 레벨 컨텍스트 관리**:
-
-- PostgreSQL에 턴별 원본 대화, 구조화된 JSON 요약, 토픽 상태를 저장
-- `add_turn()` 호출 시마다 자동 갱신:
-  - **요약**: topic, user_goal, recent_documents, unresolved_questions
-  - **토픽 상태**: active_entities, selected_sources, last_retrieval_mode
-- 후속 질문의 대명사/지시어를 해소하기 위한 **쿼리 리라이트**: 세션 컨텍스트를 포함하여 LLM이 "그거" → "네트워크 정책"으로 재작성
-- 메모리 윈도우: 최근 6턴
-
-### 10. SSE 스트리밍
-
-모든 응답(채팅, 인덱싱, 디버그)을 SSE로 스트리밍 
-고정 메시지(인사, 거부, 재질문 유도 등)도 글자 단위로 스트리밍하여 일관된 UX를 제공
-
-| 이벤트 타입 | 설명 |
-|------------|------|
-| `context` | 검색 메타데이터 (생성 전/후 전송) |
-| `token` | 텍스트 청크 (`cached: true/false` 포함) |
-| `done` | 스트림 종료 신호 |
-
-### 11. 캐싱 전략
-
-파일 기반 JSON 캐시 (TTL + 가장 오래 안 쓰인 항목부터 교체(LRU)):
-
-| 캐시 | 경로 | 용도 |
-|------|------|------|
-| 임베딩 캐시 | `data/cache/embeddings/` | 동일 청크 재계산 방지 |
-| 응답 캐시 | `data/cache/answers/` | 동일 질의+컨텍스트 조합 재사용 |
-
-- 캐시 키: SHA-256 해시
-- TTL: 72시간
-- 최대 500개 엔트리
-- 가장 오래 안 쓰인 항목부터 교체(LRU) 방식
-
-## API 엔드포인트
-
-| 메서드 | 경로 | 설명 |
-|--------|------|------|
-| `GET` | `/` | 웹 UI 페이지 |
-| `POST` | `/api/chat` | 채팅 (SSE 스트리밍) |
-| `POST` | `/api/chat/retry` | 마지막 실패 턴 재시도 |
-| `POST` | `/api/chat/upload` | PDF 업로드 + 채팅 |
-| `GET` | `/api/library` | 자료실 목록 조회 (인덱싱 상태 포함) |
-| `GET` | `/api/library/preview` | PDF 미리보기 |
-| `GET` | `/api/library/page-image` | PDF 페이지 이미지 |
-| `GET` | `/api/library/download` | PDF 다운로드 |
-| `DELETE` | `/api/library` | 자료 삭제 |
-| `POST` | `/api/library/upload` | PDF 업로드 (인덱싱 진행률 스트리밍) |
-| `POST` | `/api/reindex` | 전체 재인덱싱 |
-| `GET` | `/api/tasks/{task_id}` | 비동기 작업 상태 조회 |
-| `GET` | `/api/sessions` | 세션 목록 |
-| `GET` | `/api/sessions/{session_id}` | 세션 이력 내보내기 |
-| `DELETE` | `/api/sessions/{session_id}` | 세션 삭제 |
-| `POST` | `/api/debug/retrieval` | 검색 결과 디버그 |
-
-## 주요 설정 파라미터
-
-| 파라미터 | 기본값 | 설명 |
-|---------|--------|------|
-| `retrieval_top_k` | 3 | 최종 반환 청크 수 |
-| `candidate_pool_size` | 8 | 리랭킹 전 1차 후보 수 |
-| `retrieval_min_score` | 0.25 | 최소 점수 임계값 (미달 시 컨텍스트 제외) |
-| `retrieval_retry_min_score` | 0.10 | 재질문 유도 임계값 (0.10~0.25: 재질문, 0.10 미만: 완전 실패) |
-| `bm25_k1` | 1.2 | BM25 TF 포화 계수 |
-| `bm25_b` | 0.75 | BM25 문서 길이 정규화 계수 |
-| `chunk_size` | 700 | TextChunker 청크 크기 |
-| `chunk_overlap` | 120 | TextChunker 오버랩 |
-| `structured_chunk_size` | 1000 | StructuredMarkdownChunker 청크 크기 |
-| `structured_chunk_overlap` | 150 | StructuredMarkdownChunker 오버랩 |
-| `memory_window_turns` | 6 | 세션 메모리 윈도우 (최근 턴 수) |
-| `cache_ttl_hours` | 72 | 캐시 TTL |
-| `cache_max_entries` | 500 | 캐시 최대 엔트리 수 |
-
-## 의존성
-
-```
-fastapi==0.135.1
-httpx==0.28.1
-numpy==2.3.4
-pydantic-settings==2.13.1
-pymupdf==1.27.2
-python-multipart==0.0.22
-psycopg2-binary==2.9.10
-sentence-transformers==3.4.1
-uvicorn==0.42.0
-python-dotenv==1.1.1
-```
+### 2026-04-02: app 구조 재배치와 협력 구조 정리
+
+- app, session, storage, llm, rag 하위로 책임 재배치
+- legacy service, repository 경로 제거
+- `turn_flow`, `retrieval_state_builder` 분리
+- `RagPipeline` 협력 구조 정리
+- API 라우팅과 컨테이너 재배선
+
+
+
+### 현재까지 완료된 범위
+
+- PDF 적재, 추출, 청킹
+- 하이브리드 검색과 재정렬
+- grounding 기반 답변 생성
+- 멀티턴 세션, 토픽 상태 관리
+- 사용자별 세션 범위 분리
+- 컨테이너 기반 실행
+- app 구조 리팩터링
+
+
+### 현재 진행 중인 개선
+
+- 교육자료 문서 기반 테스트 데이터셋 생성
+- 테스트 데이터를 통해 weight 조절
+- 문서 데이터 ingestion 방식 고도화
+
+
+### 앞으로 더 개선할 것
+
+- tokenizer-aware chunk sizing
+- 모델 입력 길이를 더 직접 반영한 chunk sizing 검토
+- selection policy 추가 분리 여부 검토
+- retrieval selection 규칙 확대 시 별도 domain service 분리 검토
+- 문서별 extraction 품질 보강
+- 페이지 경계에서 끊기는 코드, 표, YAML 복원 품질 보강
+- 평가용 실험 로그 정리
+- retrieval acceptance, chunking 전략, follow-up 처리 전후 비교 로그 정리

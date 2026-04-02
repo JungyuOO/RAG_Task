@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import math
 import re
 from collections import Counter
 
@@ -138,13 +137,6 @@ def normalize_query_keywords(text: str, keywords: list[str] | None = None) -> li
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
     return sum(x * y for x, y in zip(a, b))
-
-
-def l2_normalize(vector: list[float]) -> list[float]:
-    norm = math.sqrt(sum(value * value for value in vector))
-    if norm == 0:
-        return vector
-    return [value / norm for value in vector]
 
 
 def stable_hash(value: str) -> str:

@@ -459,10 +459,42 @@ class DocumentIngestor:
             # YAML 시작 패턴 감지
             if _YAML_START_RE.match(line.strip()):
                 code_lines = [line]
+                in_block_scalar = bool(re.match(r".*:\s*[|>]\s*$", line.strip()))
+                block_scalar_indent: int | None = None
                 j = i + 1
                 while j < len(lines):
                     next_line = lines[j]
                     next_stripped = next_line.strip()
+
+                    # block scalar (| 또는 >) 내부 처리
+                    if in_block_scalar:
+                        if not next_stripped:
+                            # 빈 줄은 block scalar 내에서 허용
+                            code_lines.append(next_line)
+                            j += 1
+                            continue
+                        curr_indent = len(next_line) - len(next_line.lstrip())
+                        if block_scalar_indent is None:
+                            # 첫 content 라인의 indent를 기준으로 설정
+                            if curr_indent > 0 or next_stripped.startswith("-----"):
+                                block_scalar_indent = max(curr_indent, 1)
+                                code_lines.append(next_line)
+                                j += 1
+                                continue
+                            else:
+                                in_block_scalar = False
+                                block_scalar_indent = None
+                                # fall through to normal YAML check
+                        else:
+                            if curr_indent >= block_scalar_indent or next_stripped.startswith("-----"):
+                                code_lines.append(next_line)
+                                j += 1
+                                continue
+                            else:
+                                in_block_scalar = False
+                                block_scalar_indent = None
+                                # fall through to normal YAML check
+
                     # 빈 줄, 들여쓰기된 줄, YAML 키-값, 리스트 항목(- ), 주석(#)
                     is_yaml = (
                         not next_stripped
@@ -471,11 +503,17 @@ class DocumentIngestor:
                         or _YAML_START_RE.match(next_stripped)
                         or next_stripped.startswith("- ")
                         or next_stripped.startswith("# ")
-                        or re.match(r"^[\w.-]+\s*:", next_stripped)
+                        or re.match(r"^[\w./-]+\s*:", next_stripped)
                     )
                     if not is_yaml:
                         break
                     code_lines.append(next_line)
+
+                    # block scalar 시작 감지 (key: | 또는 key: >)
+                    if re.match(r".*:\s*[|>]\s*$", next_stripped):
+                        in_block_scalar = True
+                        block_scalar_indent = None
+
                     j += 1
 
                 # 빈 줄로 끝나는 경우 제거
@@ -567,44 +605,70 @@ class DocumentIngestor:
         documents: list[Document],
         markdown_sections: list[dict],
     ) -> None:
-        """인접 페이지에 나뉜 fenced YAML 블록을 하나로 합친다."""
+        """인접 페이지에 나뉜 fenced YAML 블록을 하나로 합친다.
+
+        3페이지 이상에 걸친 YAML도 처리하기 위해 변경이 없을 때까지 반복한다.
+        """
         if len(markdown_sections) < 2:
             return
 
-        for i in range(len(markdown_sections) - 1):
-            curr_text = str(markdown_sections[i]["text"])
-            next_text = str(markdown_sections[i + 1]["text"])
+        max_passes = len(markdown_sections)
+        for _pass in range(max_passes):
+            merged_any = False
 
-            curr_yaml = self._find_trailing_yaml_block(curr_text)
-            if curr_yaml is None:
-                continue
+            for i in range(len(markdown_sections) - 1):
+                curr_text = str(markdown_sections[i]["text"])
+                if not curr_text.strip():
+                    continue
 
-            next_yaml = self._find_leading_yaml_block(next_text)
-            if next_yaml is None:
-                continue
+                # 빈 섹션을 건너뛰고 다음 non-empty 섹션 찾기
+                j = i + 1
+                while j < len(markdown_sections) and not str(markdown_sections[j]["text"]).strip():
+                    j += 1
+                if j >= len(markdown_sections):
+                    continue
+                next_text = str(markdown_sections[j]["text"])
 
-            merged_body_lines = curr_yaml["body_lines"] + next_yaml["body_lines"]
-            if len([line for line in merged_body_lines if line.strip()]) < 3:
-                continue
+                curr_yaml = self._find_trailing_yaml_block(curr_text)
+                next_yaml = self._find_leading_yaml_block(next_text)
+                if next_yaml is None:
+                    # trailing fenced YAML + leading unfenced YAML continuation
+                    if curr_yaml is not None:
+                        next_yaml = self._find_leading_yaml_preamble(next_text)
+                    if next_yaml is None:
+                        continue
+                if curr_yaml is None:
+                    curr_yaml = self._find_trailing_yaml_preamble(curr_text)
+                    if curr_yaml is None:
+                        continue
 
-            merged_block = "```yaml\n" + "\n".join(merged_body_lines).rstrip() + "\n```"
-            merged_curr_text = (
-                curr_text[:curr_yaml["start_pos"]].rstrip()
-                + ("\n\n" if curr_text[:curr_yaml["start_pos"]].strip() else "")
-                + merged_block
-            )
-            merged_next_text = next_text[next_yaml["end_pos"]:].lstrip("\n")
+                merged_body_lines = curr_yaml["body_lines"] + next_yaml["body_lines"]
+                if len([line for line in merged_body_lines if line.strip()]) < 3:
+                    continue
 
-            markdown_sections[i]["text"] = merged_curr_text.strip()
-            markdown_sections[i]["chars"] = len(merged_curr_text.strip())
-            markdown_sections[i + 1]["text"] = merged_next_text.strip()
-            markdown_sections[i + 1]["chars"] = len(merged_next_text.strip())
+                merged_block = "```yaml\n" + "\n".join(merged_body_lines).rstrip() + "\n```"
+                merged_curr_text = (
+                    curr_text[:curr_yaml["start_pos"]].rstrip()
+                    + ("\n\n" if curr_text[:curr_yaml["start_pos"]].strip() else "")
+                    + merged_block
+                )
+                merged_next_text = next_text[next_yaml["end_pos"]:].lstrip("\n")
 
-            for doc in documents:
-                if doc.page_number == markdown_sections[i]["page_number"]:
-                    doc.text = normalize_text(merged_curr_text)
-                elif doc.page_number == markdown_sections[i + 1]["page_number"]:
-                    doc.text = normalize_text(merged_next_text)
+                markdown_sections[i]["text"] = merged_curr_text.strip()
+                markdown_sections[i]["chars"] = len(merged_curr_text.strip())
+                markdown_sections[j]["text"] = merged_next_text.strip()
+                markdown_sections[j]["chars"] = len(merged_next_text.strip())
+
+                for doc in documents:
+                    if doc.page_number == markdown_sections[i]["page_number"]:
+                        doc.text = normalize_text(merged_curr_text)
+                    elif doc.page_number == markdown_sections[j]["page_number"]:
+                        doc.text = normalize_text(merged_next_text)
+
+                merged_any = True
+
+            if not merged_any:
+                break
 
     def _find_trailing_yaml_block(self, text: str) -> dict | None:
         """텍스트 끝의 fenced YAML 블록을 찾아 위치와 본문을 반환한다."""
@@ -641,6 +705,62 @@ class DocumentIngestor:
             "body_lines": body_lines,
         }
 
+    def _find_trailing_yaml_preamble(self, text: str) -> dict | None:
+        """텍스트 끝의 unfenced YAML 시작 조각을 찾아 위치와 본문을 반환한다."""
+        lines = text.rstrip().splitlines()
+        if not lines:
+            return None
+
+        collected: list[str] = []
+        start_index: int | None = None
+        saw_yaml_signal = False
+        for index in range(len(lines) - 1, -1, -1):
+            raw_line = lines[index].rstrip()
+            stripped = raw_line.strip()
+            if not stripped:
+                if collected:
+                    break
+                continue
+
+            is_yaml_signal = bool(
+                _YAML_START_RE.match(stripped)
+                or re.match(r"^[\w./-]+\s*:", stripped)
+                or stripped.startswith("- ")
+                or raw_line.startswith(" ")
+                or raw_line.startswith("\t")
+            )
+            is_yaml_filename = stripped.lower().endswith((".yaml", ".yml")) or (
+                stripped.startswith("#") and any(ext in stripped.lower() for ext in (".yaml", ".yml"))
+            )
+
+            if not collected and not (is_yaml_signal or is_yaml_filename):
+                continue
+            if collected and not (is_yaml_signal or is_yaml_filename):
+                break
+
+            if is_yaml_signal:
+                saw_yaml_signal = True
+            collected.insert(0, raw_line)
+            start_index = index
+
+        if start_index is None or not saw_yaml_signal:
+            return None
+
+        body_lines = [line.rstrip() for line in collected if line.strip()]
+        if len(body_lines) < 1:
+            return None
+
+        preamble_text = "\n".join(lines[start_index:]).rstrip()
+        start_pos = text.rfind(preamble_text)
+        if start_pos < 0:
+            return None
+
+        return {
+            "start_pos": start_pos,
+            "end_pos": start_pos + len(preamble_text),
+            "body_lines": body_lines,
+        }
+
     def _looks_like_yaml_lines(self, lines: list[str]) -> bool:
         meaningful = [line for line in lines if line.strip()]
         if len(meaningful) < 2:
@@ -651,12 +771,69 @@ class DocumentIngestor:
             if (
                 _YAML_START_RE.match(stripped)
                 or stripped.startswith("- ")
-                or re.match(r"^[\w.-]+\s*:", stripped)
+                or re.match(r"^[\w./-]+\s*:", stripped)
                 or line.startswith(" ")
                 or line.startswith("\t")
             ):
                 yaml_like += 1
         return yaml_like >= max(2, len(meaningful) // 2)
+
+    def _find_leading_yaml_preamble(self, text: str) -> dict | None:
+        """텍스트 시작의 unfenced YAML continuation 조각을 찾아 위치와 본문을 반환한다.
+
+        이전 페이지의 fenced YAML에 이어지는 unfenced YAML 라인을 감지한다.
+        """
+        lines = text.lstrip("\n").splitlines()
+        if not lines:
+            return None
+
+        collected: list[str] = []
+        saw_yaml_signal = False
+        for index, raw_line in enumerate(lines):
+            stripped = raw_line.strip()
+            if not stripped:
+                if collected:
+                    break
+                continue
+
+            is_yaml_signal = bool(
+                _YAML_START_RE.match(stripped)
+                or re.match(r"^[\w./-]+\s*:", stripped)
+                or stripped.startswith("- ")
+                or raw_line.startswith(" ")
+                or raw_line.startswith("\t")
+            )
+
+            # fenced block 시작이면 중단 (별도 merge 경로에서 처리)
+            if stripped.startswith("```"):
+                break
+
+            if not is_yaml_signal:
+                break
+
+            saw_yaml_signal = True
+            collected.append(raw_line.rstrip())
+
+        if not saw_yaml_signal or not collected:
+            return None
+
+        body_lines = [line for line in collected if line.strip()]
+        if not body_lines:
+            return None
+
+        # 위치 계산
+        leading_ws = len(text) - len(text.lstrip("\n"))
+        preamble_text = "\n".join(collected)
+        start_pos = text.find(preamble_text, leading_ws)
+        if start_pos < 0:
+            start_pos = leading_ws
+        end_pos = start_pos + len(preamble_text)
+
+        return {
+            "start_pos": 0,  # 텍스트 시작부터
+            "end_pos": end_pos,
+            "body_lines": body_lines,
+        }
 
     def _find_trailing_table(self, text: str) -> dict | None:
         """텍스트 끝에 있는 마크다운 테이블을 찾아 라인과 위치를 반환한다."""

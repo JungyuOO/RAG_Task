@@ -5,11 +5,7 @@ from app.rag.types import ChatTurn
 
 
 class SessionRepository:
-    """세션 데이터 접근 계층 — SessionStore와 파이프라인 사이의 추상 경계.
-
-    현재는 SessionStore에 직접 위임하지만, 향후 캐싱·로깅·트랜잭션 관리 등
-    교차 관심사를 이 계층에서 일괄 적용할 수 있도록 분리한다.
-    """
+    """Session persistence adapter used by API, chat, and session services."""
 
     def __init__(self, backend: SessionStore) -> None:
         self.backend = backend

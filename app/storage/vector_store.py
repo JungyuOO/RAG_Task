@@ -28,9 +28,6 @@ class IndexRepository:
         self._cache = self.backend.load()
         return self._cache
 
-    def invalidate_cache(self) -> None:
-        """인메모리 캐시를 수동으로 무효화한다."""
-        self._cache = None
 
     def upsert_document(self, source_path: str, chunks: list[Chunk], vectors: list[list[float]]) -> None:
         self.backend.upsert_document(source_path, chunks, vectors)
@@ -42,4 +39,3 @@ class IndexRepository:
 
     def list_documents(self) -> list[dict]:
         return self.backend.list_documents()
-
