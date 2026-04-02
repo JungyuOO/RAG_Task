@@ -220,6 +220,7 @@ class RetrievalService:
 
         selected_page_limit = max(int(self.settings.grounded_page_top_n), 1)
         selected_chunk_limit = max(int(self.settings.grounded_chunk_top_n), 1)
+        preferred_preview_source = self.select_grounded_preview_source(grounded_pages)
 
         # 소스 다양성 보장: 각 소스에서 best-ranked 페이지 1개를 먼저 확보하고,
         # 남은 슬롯을 점수 순으로 채운다. RBAC처럼 한 문서가 상위 페이지를 독점해도
@@ -231,10 +232,45 @@ class RetrievalService:
                 source_best_pages[source] = page
         diversity_pages = list(source_best_pages.values())
         diversity_page_keys = {(p["source_path"], p["page_number"]) for p in diversity_pages}
-        fill_pages = [p for p in grounded_pages if (p["source_path"], p["page_number"]) not in diversity_page_keys]
-        selected_pages = (diversity_pages + fill_pages)[:selected_page_limit]
+        preferred_page = next(
+            (page for page in diversity_pages if page["source_path"] == preferred_preview_source),
+            None,
+        )
+        continuity_pages: list[dict] = []
+        if preferred_page is not None:
+            continuity_pages = [
+                page
+                for page in grounded_pages
+                if page["source_path"] == preferred_preview_source
+                and (page["source_path"], page["page_number"]) not in diversity_page_keys
+                and abs(int(page["page_number"]) - int(preferred_page["page_number"])) <= 1
+            ]
+            continuity_pages.sort(
+                key=lambda page: (
+                    abs(int(page["page_number"]) - int(preferred_page["page_number"])),
+                    -float(page["score"]),
+                    -float(page["best_chunk_score"]),
+                )
+            )
+        continuity_page_keys = {(p["source_path"], p["page_number"]) for p in continuity_pages}
+        fill_pages = [
+            p for p in grounded_pages
+            if (p["source_path"], p["page_number"]) not in diversity_page_keys
+            and (p["source_path"], p["page_number"]) not in continuity_page_keys
+        ]
+        selected_pages: list[dict] = []
+        if preferred_page is not None:
+            selected_pages.append(preferred_page)
+            selected_pages.extend(continuity_pages[:1])
+        selected_pages.extend(
+            page
+            for page in diversity_pages
+            if preferred_page is None
+            or (page["source_path"], page["page_number"]) != (preferred_page["source_path"], preferred_page["page_number"])
+        )
+        selected_pages.extend(fill_pages)
+        selected_pages = selected_pages[:selected_page_limit]
 
-        preferred_preview_source = self.select_grounded_preview_source(grounded_pages)
         selected_page_ranks = {
             (item["source_path"], int(item["page_number"])): index
             for index, item in enumerate(selected_pages)
