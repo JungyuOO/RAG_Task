@@ -17,4 +17,3 @@ class CacheRepository:
 
     def set(self, key: str, value: dict) -> None:
         self.backend.set(key, value)
-
