@@ -117,7 +117,7 @@ class Settings(BaseSettings):
     @classmethod
     def _overlap_less_than_size(cls, value: int, info) -> int:
         """chunk_overlap은 chunk_size보다 작아야 한다."""
-        chunk_size = info.data.get("chunk_size", 700)
+        chunk_size = info.data.get("chunk_size", 512)
         if value >= chunk_size:
             raise ValueError(f"chunk_overlap({value})은 chunk_size({chunk_size})보다 작아야 합니다")
         return value
