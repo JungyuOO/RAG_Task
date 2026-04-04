@@ -3,8 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.config import Settings
-from app.rag.ingestion_pdf_extract import PdfExtractionSupport
-from app.rag.ingestion_pdf_merge import PdfMergeSupport
+from app.rag.ingestion_pdf_extract import PdfExtractionSupport, PdfMergeSupport
 from app.rag.types import Document
 from app.rag.utils import normalize_text, stable_hash
 
