@@ -190,6 +190,7 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
         user_message: str,
         allowed_source_paths: set[str] | None = None,
         append_user_turn: bool = True,
+        version_tag: str | None = None,
     ) -> AsyncIterator[dict]:
         deps = self.deps
 
@@ -253,7 +254,7 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
         yield {"type": "status", "stage": "searching_documents", "message": STAGE_MESSAGES["searching_documents"]}
         try:
             if state is None:
-                state = await deps.prepare_retrieval_state(session_id, user_message, allowed_source_paths)
+                state = await deps.prepare_retrieval_state(session_id, user_message, allowed_source_paths, version_tag=version_tag)
         except EmbeddingModelUnavailableError:
             error_message = "임베딩 모델이 아직 준비되지 않았습니다. 잠시 후 다시 시도해 주세요."
             yield {"type": "token", "content": error_message, "cached": False, "error": "embedding_model_unavailable"}

@@ -20,7 +20,7 @@ async def chat(request: ChatRequest, http_request: Request, container: AppContai
     logger.info("[Chat] owner_id=%s session_id=%s", owner_id, request.session_id)
 
     async def event_stream():
-        chat_request = ChatTurnRequest(session_id=effective_session_id, message=request.message)
+        chat_request = ChatTurnRequest(session_id=effective_session_id, message=request.message, version_tag=request.version_tag)
         async for event in container.chat_service.stream(chat_request):
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 

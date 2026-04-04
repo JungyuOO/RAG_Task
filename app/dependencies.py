@@ -57,6 +57,7 @@ class ChatService:
             user_message=request.message,
             allowed_source_paths=request.allowed_source_paths,
             append_user_turn=request.append_user_turn,
+            version_tag=getattr(request, "version_tag", None),
         )
 
     def retry(self, request: Any):

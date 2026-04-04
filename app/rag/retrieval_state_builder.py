@@ -48,8 +48,11 @@ class RetrievalStateBuilder:
         session_id: str,
         user_message: str,
         allowed_source_paths: set[str] | None = None,
+        *,
+        version_tag: str | None = None,
     ) -> dict:
         deps = self.deps
+        target_versions = [version_tag] if version_tag else None
         turn_context = await deps.resolve_turn_context(session_id, user_message)
         resolution = turn_context["resolution"]
         resolved_topic = turn_context["resolved_topic"]
@@ -130,6 +133,7 @@ class RetrievalStateBuilder:
         base_rrf_pool = deps.retriever.search_rrf(
             expanded_query, query_vector, index_items, rrf_k=60,
             limit=deps.retriever.candidate_pool_size,
+            target_versions=target_versions,
         )
         retrieved = base_rrf_pool[: deps.retriever.top_k]
 
@@ -167,6 +171,7 @@ class RetrievalStateBuilder:
                     query_vector,
                     selected_source_items,
                     rrf_k=60,
+                    target_versions=target_versions,
                 )
                 for item in source_retrieved:
                     cid = item["chunk"]["chunk_id"]
@@ -191,7 +196,7 @@ class RetrievalStateBuilder:
             alt_aliased = deps.expand_query_with_resource_aliases(alt_query, query_interpretation_dict)
             alt_expanded = deps.expand_query_with_context(alt_aliased, topic_state)
             alt_vector = deps.embedder.encode(alt_expanded)
-            alt_retrieved = deps.retriever.search_rrf(alt_expanded, alt_vector, index_items, rrf_k=60)
+            alt_retrieved = deps.retriever.search_rrf(alt_expanded, alt_vector, index_items, rrf_k=60, target_versions=target_versions)
             for item in alt_retrieved:
                 cid = item["chunk"]["chunk_id"]
                 if cid not in seen_chunk_ids:

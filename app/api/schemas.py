@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 class ChatRequest(BaseModel):
     session_id: str = Field(..., min_length=1)
     message: str = Field(..., min_length=1)
+    version_tag: str | None = None
 
 
 class RetryChatRequest(BaseModel):
@@ -93,6 +94,7 @@ class ChatTurnRequest:
     message: str
     allowed_source_paths: set[str] | None = None
     append_user_turn: bool = True
+    version_tag: str | None = None
 
 
 @dataclass(slots=True)
