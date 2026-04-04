@@ -28,12 +28,11 @@ class TestProcedureFlow(unittest.TestCase):
         from app.rag.pipeline import PipelineOrchestrator
         orch = PipelineOrchestrator.__new__(PipelineOrchestrator)
 
-        mock_services = MagicMock()
-        mock_services.session_store = MagicMock()
-        mock_services.session_store.topic_state = AsyncMock(return_value={
+        mock_session_repository = MagicMock()
+        mock_session_repository.topic_state = MagicMock(return_value={
             "procedure_state": {"current_step": 2, "total_steps": 5}
         })
-        orch.services = mock_services
+        orch.session_repository = mock_session_repository
 
         intent = {"intent": "step_navigation", "step_target": "next"}
         result = asyncio.run(orch.handle_step_navigation(intent, "session-1", []))
@@ -45,12 +44,11 @@ class TestProcedureFlow(unittest.TestCase):
         from app.rag.pipeline import PipelineOrchestrator
         orch = PipelineOrchestrator.__new__(PipelineOrchestrator)
 
-        mock_services = MagicMock()
-        mock_services.session_store = MagicMock()
-        mock_services.session_store.topic_state = AsyncMock(return_value={
+        mock_session_repository = MagicMock()
+        mock_session_repository.topic_state = MagicMock(return_value={
             "procedure_state": {"current_step": 1, "total_steps": 5}
         })
-        orch.services = mock_services
+        orch.session_repository = mock_session_repository
 
         intent = {"intent": "step_navigation", "step_target": "3"}
         result = asyncio.run(orch.handle_step_navigation(intent, "session-1", []))
@@ -61,12 +59,11 @@ class TestProcedureFlow(unittest.TestCase):
         from app.rag.pipeline import PipelineOrchestrator
         orch = PipelineOrchestrator.__new__(PipelineOrchestrator)
 
-        mock_services = MagicMock()
-        mock_services.session_store = MagicMock()
-        mock_services.session_store.topic_state = AsyncMock(return_value={
+        mock_session_repository = MagicMock()
+        mock_session_repository.topic_state = MagicMock(return_value={
             "procedure_state": {"current_step": 3, "total_steps": 5}
         })
-        orch.services = mock_services
+        orch.session_repository = mock_session_repository
 
         intent = {"intent": "step_navigation", "step_target": "prev"}
         result = asyncio.run(orch.handle_step_navigation(intent, "session-1", []))

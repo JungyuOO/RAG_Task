@@ -464,7 +464,7 @@ class PipelineOrchestrator(RagPipeline):
 
     async def handle_step_navigation(self, intent: dict, session_id: str, context_items: list) -> dict:
         step_target = intent.get("step_target", "next")
-        session_state = await self.services.session_store.topic_state(session_id)
+        session_state = self.session_repository.topic_state(session_id)
         procedure = session_state.get("procedure_state", {})
 
         current = procedure.get("current_step", 0)
