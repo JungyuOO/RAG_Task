@@ -7,11 +7,10 @@ from pathlib import Path
 
 from app.config import Settings
 from app.storage import CacheRepository, IndexRepository
-from app.rag.artifacts import extracted_markdown_path
 from app.rag.bge_embeddings import BGEOllamaEmbedder
 from app.rag.chunking import StructuredMarkdownChunker, TextChunker
 from app.rag.ingestion import DocumentIngestor
-from app.rag.utils import stable_hash
+from app.rag.utils import extracted_markdown_path, stable_hash
 
 logger = logging.getLogger("rag.startup")
 
