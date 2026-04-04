@@ -52,6 +52,25 @@ class ChatTurnDeps:
 
 
 class StreamingTurnSupport:
+    async def _stream_version_clarification(self, session_id, user_message, deps, available_versions):
+        versions_str = " / ".join(available_versions) if available_versions else "4.15 / 4.16 / 4.17 / 4.18 / 4.19 / 4.20 / 4.21"
+        clarification_msg = (
+            f"어떤 버전의 OpenShift Container Platform을 기준으로 답변할까요?\n\n"
+            f"지원 버전: **{versions_str}**\n\n"
+            f"버전을 명시하거나 화면 상단의 버전 선택 버튼을 사용해 주세요."
+        )
+        for char in clarification_msg:
+            yield {"type": "token", "content": char, "cached": False}
+            await asyncio.sleep(0.02)
+        final_payload = deps.answer_service.build_context_payload(
+            user_message.strip(), "clarification", 0.0, None, [], [], [], [],
+            preview_finalized=True,
+        )
+        yield {"type": "context", **deps.answer_service.public_context_payload(final_payload)}
+        resolved_topic_id = None
+        deps.store_assistant_turn(session_id, clarification_msg, final_payload, resolved_topic_id)
+        yield {"type": "done", "cached": False}
+
     async def _handle_terminal_policy_answers(self, **kwargs):
         deps = self.deps
         session_id = kwargs["session_id"]
@@ -191,6 +210,7 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
         allowed_source_paths: set[str] | None = None,
         append_user_turn: bool = True,
         version_tag: str | None = None,
+        available_versions: list[str] | None = None,
     ) -> AsyncIterator[dict]:
         deps = self.deps
 
@@ -259,6 +279,19 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
             error_message = "임베딩 모델이 아직 준비되지 않았습니다. 잠시 후 다시 시도해 주세요."
             yield {"type": "token", "content": error_message, "cached": False, "error": "embedding_model_unavailable"}
             yield {"type": "done", "cached": False}
+            return
+
+        target_versions_from_agent = state.get("query_interpretation", {}).get("target_versions", [])
+        use_retrieved_context_early = state.get("use_retrieved_context", False)
+        if (
+            version_tag is None
+            and not target_versions_from_agent
+            and use_retrieved_context_early
+        ):
+            async for event in self._stream_version_clarification(
+                session_id, user_message, deps, available_versions or []
+            ):
+                yield event
             return
 
         rewritten_query = state["rewritten_query"]

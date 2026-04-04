@@ -223,6 +223,18 @@ class PipelineRuntimeMixin:
             retrieval_min_score=self.settings.retrieval_min_score,
         )
 
+    def _get_available_versions(self) -> list[str]:
+        """data/corpus/pdfs/ 하위 ocp-X.Y 폴더에서 버전 목록 추출."""
+        source_dir = self.settings.rag_source_dir
+        versions = []
+        if source_dir.exists():
+            for folder in sorted(source_dir.iterdir()):
+                if folder.is_dir() and folder.name.startswith("ocp-"):
+                    version = folder.name.removeprefix("ocp-")
+                    if version:
+                        versions.append(version)
+        return versions or ["4.15", "4.16", "4.17", "4.18", "4.19", "4.20", "4.21"]
+
     async def stream_chat(
         self,
         session_id: str,
@@ -231,6 +243,7 @@ class PipelineRuntimeMixin:
         append_user_turn: bool = True,
         version_tag: str | None = None,
     ) -> AsyncIterator[dict]:
+        available_versions = self._get_available_versions()
         orchestrator = ChatTurnOrchestrator(self._build_chat_turn_deps())
         async for event in orchestrator.run(
             session_id=session_id,
@@ -238,6 +251,7 @@ class PipelineRuntimeMixin:
             allowed_source_paths=allowed_source_paths,
             append_user_turn=append_user_turn,
             version_tag=version_tag,
+            available_versions=available_versions,
         ):
             yield event
 
