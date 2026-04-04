@@ -3,24 +3,19 @@ from __future__ import annotations
 import math
 from collections import Counter
 
+from sentence_transformers import CrossEncoder
+
 from app.rag.utils import cosine_similarity, keyword_overlap_score, tokenize
 
 
 class HybridRetriever:
-    """dense(BGE-M3 코사인) + sparse(BM25) RRF 하이브리드 검색기.
-
-    외부 검색 라이브러리 없이 직접 구현. search_rrf()가 주 검색 경로이며
-    dense/sparse 랭크를 RRF로 병합한 뒤 _rerank()로 keyword overlap 보정,
-    BGEReranker가 최종 cross-encoder 재순위를 담당한다.
-    """
+    """Dense(BGE-M3 cosine) + sparse(BM25) RRF hybrid retriever."""
 
     def __init__(
         self,
         *,
         top_k: int,
         candidate_pool_size: int,
-        dense_weight: float,
-        sparse_weight: float,
         bm25_k1: float,
         bm25_b: float,
         rerank_base_weight: float,
@@ -28,53 +23,10 @@ class HybridRetriever:
     ) -> None:
         self.top_k = top_k
         self.candidate_pool_size = candidate_pool_size
-        self.dense_weight = dense_weight
-        self.sparse_weight = sparse_weight
         self.bm25_k1 = bm25_k1
         self.bm25_b = bm25_b
         self.rerank_base_weight = rerank_base_weight
         self.rerank_overlap_weight = rerank_overlap_weight
-
-    def search(self, query: str, query_vector: list[float], index_items: list[dict]) -> list[dict]:
-        """dense + sparse 가중합으로 index_items에서 상위 top_k개를 검색한다."""
-        query_tokens = tokenize(query)
-        doc_frequency = Counter()
-        doc_lengths: list[int] = []
-        for item in index_items:
-            tokens = item["chunk"]["tokens"]
-            doc_frequency.update(set(tokens))
-            doc_lengths.append(len(tokens))
-
-        avg_doc_length = sum(doc_lengths) / max(len(doc_lengths), 1)
-        total_docs = max(len(index_items), 1)
-
-        scored: list[dict] = []
-        for item in index_items:
-            chunk = item["chunk"]
-            candidate_tokens = chunk["tokens"]
-
-            dense_score = cosine_similarity(query_vector, item["vector"])
-            sparse_score = self._bm25(
-                query_tokens, candidate_tokens, doc_frequency, total_docs, avg_doc_length,
-            )
-
-            score = (
-                dense_score * self.dense_weight
-                + sparse_score * self.sparse_weight
-            )
-            scored.append(
-                {
-                    "score": score,
-                    "dense_score": dense_score,
-                    "sparse_score": sparse_score,
-                    "chunk": chunk,
-                }
-            )
-
-        scored.sort(key=lambda entry: entry["score"], reverse=True)
-        candidate_pool = scored[: self.candidate_pool_size]
-        reranked = self._rerank(query_tokens, candidate_pool)
-        return reranked[: self.top_k]
 
     def search_rrf(
         self,
@@ -82,19 +34,26 @@ class HybridRetriever:
         query_vector: list[float],
         index_items: list[dict],
         rrf_k: int = 60,
+        limit: int | None = None,
+        target_versions: list | None = None,
+        version_map: dict | None = None,
     ) -> list[dict]:
-        """Reciprocal Rank Fusion으로 dense + sparse 랭크를 결합한다.
+        """Fuse dense and sparse ranks with RRF, then apply overlap rerank.
 
-        RRF 공식: score = 1/(k + rank_dense) + 1/(k + rank_sparse)
-        상위 candidate_pool_size개를 추린 뒤 _rerank()로 keyword overlap 보정,
-        top_k를 반환한다.
+        limit이 지정되면 top_k 대신 해당 개수만큼 반환한다.
+        cross-encoder에 넓은 후보 풀을 넘길 때 사용.
+
+        target_versions가 지정되면 해당 버전 태그에 속하는 청크만 검색 대상에 포함한다.
         """
+        if target_versions and version_map:
+            target_ids = {vid for vid, vtag in version_map.items() if vtag in target_versions}
+            index_items = [item for item in index_items if item["chunk"].get("version_id") in target_ids]
+
         if not index_items:
             return []
 
         query_tokens = tokenize(query)
 
-        # BM25 통계
         doc_frequency = Counter()
         doc_lengths: list[int] = []
         for item in index_items:
@@ -104,35 +63,37 @@ class HybridRetriever:
         avg_doc_length = sum(doc_lengths) / max(len(doc_lengths), 1)
         total_docs = max(len(index_items), 1)
 
-        # 항목별 dense/sparse 점수 계산
         item_scores: list[tuple[int, float, float]] = []
         for idx, item in enumerate(index_items):
             dense_score = cosine_similarity(query_vector, item["vector"])
             sparse_score = self._bm25(
-                query_tokens, item["chunk"]["tokens"], doc_frequency, total_docs, avg_doc_length,
+                query_tokens,
+                item["chunk"]["tokens"],
+                doc_frequency,
+                total_docs,
+                avg_doc_length,
             )
             item_scores.append((idx, dense_score, sparse_score))
 
-        # dense 순위 (rank 1 = 가장 높은 코사인 유사도)
         dense_sorted = sorted(item_scores, key=lambda x: x[1], reverse=True)
-        dense_rank: dict[int, int] = {entry[0]: rank + 1 for rank, entry in enumerate(dense_sorted)}
+        dense_rank: dict[int, int] = {
+            entry[0]: rank + 1 for rank, entry in enumerate(dense_sorted)
+        }
 
-        # sparse 순위 (rank 1 = 가장 높은 BM25)
         sparse_sorted = sorted(item_scores, key=lambda x: x[2], reverse=True)
-        sparse_rank: dict[int, int] = {entry[0]: rank + 1 for rank, entry in enumerate(sparse_sorted)}
+        sparse_rank: dict[int, int] = {
+            entry[0]: rank + 1 for rank, entry in enumerate(sparse_sorted)
+        }
 
-        # RRF 점수 계산
         rrf_scored: list[dict] = []
         for idx, item in enumerate(index_items):
             chunk = item["chunk"]
             dense_score = item_scores[idx][1]
             sparse_score = item_scores[idx][2]
-
             rrf_score = (
                 1.0 / (rrf_k + dense_rank[idx])
                 + 1.0 / (rrf_k + sparse_rank[idx])
             )
-
             rrf_scored.append(
                 {
                     "score": rrf_score,
@@ -144,9 +105,9 @@ class HybridRetriever:
 
         rrf_scored.sort(key=lambda entry: entry["score"], reverse=True)
         candidates = rrf_scored[: self.candidate_pool_size]
-
         reranked = self._rerank(query_tokens, candidates)
-        return reranked[: self.top_k]
+        result_limit = limit if limit is not None else self.top_k
+        return reranked[: result_limit]
 
     def _bm25(
         self,
@@ -156,7 +117,7 @@ class HybridRetriever:
         total_docs: int,
         avg_doc_length: float,
     ) -> float:
-        """표준 BM25 스코어링."""
+        """Standard BM25 scoring."""
         if not query_tokens or not candidate_tokens:
             return 0.0
 
@@ -171,7 +132,9 @@ class HybridRetriever:
             df = doc_frequency.get(token, 0)
             idf = math.log((total_docs - df + 0.5) / (df + 0.5) + 1.0)
             tf_norm = (tf * (self.bm25_k1 + 1.0)) / (
-                tf + self.bm25_k1 * (1.0 - self.bm25_b + self.bm25_b * doc_length / max(avg_doc_length, 1.0))
+                tf
+                + self.bm25_k1
+                * (1.0 - self.bm25_b + self.bm25_b * doc_length / max(avg_doc_length, 1.0))
             )
             score += idf * tf_norm
 
@@ -179,7 +142,7 @@ class HybridRetriever:
         return score / max(max_possible, 1.0)
 
     def _rerank(self, query_tokens: list[str], candidates: list[dict]) -> list[dict]:
-        """RRF 점수 + keyword overlap으로 최종 점수를 재산정한다."""
+        """Combine RRF score with keyword overlap for a lightweight pre-rerank."""
         reranked = []
         for candidate in candidates:
             overlap = keyword_overlap_score(query_tokens, candidate["chunk"]["tokens"])
@@ -192,12 +155,17 @@ class HybridRetriever:
         return reranked
 
     def compute_retrieval_metrics(self, results: list[dict], min_score: float) -> dict:
-        """검색 결과의 품질 지표를 계산한다."""
+        """Compute retrieval quality summary metrics."""
         if not results:
             return {
-                "hit_count": 0, "total_count": 0, "hit_rate": 0.0,
-                "mean_score": 0.0, "top_score": 0.0, "score_gap": 0.0,
-                "score_spread": 0.0, "dense_sparse_correlation": 0.0,
+                "hit_count": 0,
+                "total_count": 0,
+                "hit_rate": 0.0,
+                "mean_score": 0.0,
+                "top_score": 0.0,
+                "score_gap": 0.0,
+                "score_spread": 0.0,
+                "dense_sparse_correlation": 0.0,
             }
         scores = [r["rerank_score"] for r in results]
         hits = [s for s in scores if s >= min_score]
@@ -210,7 +178,7 @@ class HybridRetriever:
         n = len(results)
         if n >= 2:
             d_sq_sum = sum((d - s) ** 2 for d, s in zip(dense_ranks, sparse_ranks))
-            rho = 1.0 - (6.0 * d_sq_sum) / (n * (n ** 2 - 1))
+            rho = 1.0 - (6.0 * d_sq_sum) / (n * (n**2 - 1))
         else:
             rho = 1.0
 
@@ -227,7 +195,7 @@ class HybridRetriever:
 
     @staticmethod
     def _rank_values(values: list[float]) -> list[float]:
-        """값 리스트에 대한 순위를 반환한다 (동점은 평균 순위)."""
+        """Return average ranks for a list of values, preserving ties."""
         indexed = sorted(enumerate(values), key=lambda x: -x[1])
         ranks = [0.0] * len(values)
         i = 0
@@ -240,3 +208,38 @@ class HybridRetriever:
                 ranks[indexed[k][0]] = avg_rank
             i = j
         return ranks
+
+
+class BGEReranker:
+    """BAAI/bge-reranker-v2-m3 cross-encoder 리랭커.
+
+    sentence-transformers CrossEncoder를 사용해 query-passage 쌍의 관련도를
+    직접 스코어링한다. 후보 목록을 받아 상위 top_k를 재순위하여 반환한다.
+    """
+
+    def __init__(
+        self,
+        model_name: str = "BAAI/bge-reranker-v2-m3",
+        top_k: int = 5,
+    ) -> None:
+        self.top_k = top_k
+        self._model = CrossEncoder(model_name)
+
+    def rerank(self, query: str, candidates: list[dict]) -> list[dict]:
+        """후보 청크 목록을 cross-encoder 점수로 재순위하여 top_k를 반환한다.
+
+        candidates는 {"chunk": {...}, "score": float, ...} 형태.
+        반환 결과의 "rerank_score"가 cross-encoder 점수로 덮어씌워진다.
+        """
+        if not candidates:
+            return []
+
+        pairs = [(query, c["chunk"]["text"]) for c in candidates]
+        scores = self._model.predict(pairs)
+
+        scored = [
+            {**c, "rerank_score": float(s)}
+            for c, s in zip(candidates, scores)
+        ]
+        scored.sort(key=lambda x: x["rerank_score"], reverse=True)
+        return scored[: self.top_k]
