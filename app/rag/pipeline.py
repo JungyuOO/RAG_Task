@@ -16,7 +16,7 @@ from app.rag.ingestion_pdf import DocumentIngestor
 from app.rag.llm import LlmClient
 from app.rag.memory import SessionStore
 from app.rag.pipeline_context_support import PipelineContextMixin
-from app.rag.pipeline_retrieval_support import PipelineRetrievalMixin
+from app.rag.pipeline_scoring import PipelineRetrievalMixin
 from app.rag.pipeline_runtime_support import PipelineRuntimeMixin
 from app.rag.prompting import PromptComposer
 from app.rag.retrieval import BGEReranker, HybridRetriever
