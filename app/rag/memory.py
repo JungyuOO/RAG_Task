@@ -7,8 +7,7 @@ import psycopg2
 import psycopg2.extras
 import psycopg2.pool
 
-from app.rag.memory_schema import initialize_session_store
-from app.rag.memory_topics import SessionStoreTopicsMixin
+from app.rag.memory_schema import initialize_session_store, SessionStoreTopicsMixin
 from app.rag.types import ChatTurn
 from app.rag.utils import normalize_text
 from app.session.state import (
@@ -21,6 +20,19 @@ from app.session.state import (
 )
 from app.session.store_sql import persist_summary
 
+_SESSION_SELECT = """
+    SELECT s.session_id, s.summary, s.summary_json, s.updated_at,
+           (SELECT content FROM session_turns WHERE session_id = s.session_id AND role = 'user' ORDER BY turn_id ASC LIMIT 1) AS first_user_message,
+           (SELECT content FROM session_turns WHERE session_id = s.session_id AND role = 'user' ORDER BY turn_id DESC LIMIT 1) AS last_user_message,
+           (SELECT created_at FROM session_turns WHERE session_id = s.session_id AND role = 'user' ORDER BY turn_id DESC LIMIT 1) AS last_user_at,
+           (SELECT COUNT(*) FROM session_turns WHERE session_id = s.session_id) AS turn_count
+    FROM sessions s
+"""
+
+
+def _row_to_turn(row) -> ChatTurn:
+    return ChatTurn(role=row["role"], content=row["content"], metadata=json.loads(row["metadata"] or "{}"))
+
 
 class SessionStoreSummaryMixin:
     def build_rewrite_context(self, session_id: str, user_message: str) -> dict | None:  # noqa: ARG002
@@ -29,7 +41,8 @@ class SessionStoreSummaryMixin:
         topic_state = self.topic_state(session_id)
         return build_rewrite_context_payload(recent, summary, topic_state)
 
-    def _recent_turns_for_refresh(self, session_id: str, limit: int = 10) -> list[ChatTurn]:
+    def recent_turns(self, session_id: str, limit: int | None = None) -> list[ChatTurn]:
+        effective_limit = limit if limit is not None else self.memory_window_turns
         with self._connection() as connection:
             with connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
                 cursor.execute(
@@ -42,20 +55,13 @@ class SessionStoreSummaryMixin:
                         LIMIT %s
                     ) sub ORDER BY turn_id ASC
                     """,
-                    (session_id, limit),
+                    (session_id, effective_limit),
                 )
                 rows = cursor.fetchall()
-        return [
-            ChatTurn(
-                role=row["role"],
-                content=row["content"],
-                metadata=json.loads(row["metadata"] or "{}"),
-            )
-            for row in rows
-        ]
+        return [_row_to_turn(row) for row in rows]
 
     def _refresh_summary(self, session_id: str) -> None:
-        turns = self._recent_turns_for_refresh(session_id, limit=10)
+        turns = self.recent_turns(session_id, limit=10)
         summary_json, topic_state, summary = build_summary_bundle(turns)
         with self._connection() as connection:
             with connection.cursor() as cursor:
@@ -153,27 +159,6 @@ class SessionStore(SessionStoreTopicsMixin, SessionStoreSummaryMixin):
                 deleted = cursor.rowcount > 0
         return deleted
 
-    def recent_turns(self, session_id: str) -> list[ChatTurn]:
-        with self._connection() as connection:
-            with connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
-                cursor.execute(
-                    """
-                    SELECT role, content, metadata FROM (
-                        SELECT role, content, metadata, turn_id
-                        FROM session_turns
-                        WHERE session_id = %s
-                        ORDER BY turn_id DESC
-                        LIMIT %s
-                    ) sub ORDER BY turn_id ASC
-                    """,
-                    (session_id, self.memory_window_turns),
-                )
-                rows = cursor.fetchall()
-        return [
-            ChatTurn(role=row["role"], content=row["content"], metadata=json.loads(row["metadata"] or "{}"))
-            for row in rows
-        ]
-
     def summary(self, session_id: str) -> str:
         with self._connection() as connection:
             with connection.cursor() as cursor:
@@ -248,7 +233,7 @@ class SessionStore(SessionStoreTopicsMixin, SessionStoreSummaryMixin):
                 row = cursor.fetchone()
         if not row:
             return None
-        return ChatTurn(role=row["role"], content=row["content"], metadata=json.loads(row["metadata"] or "{}"))
+        return _row_to_turn(row)
 
     def pending_user_message(self, session_id: str, owner_id: str | None = None) -> str | None:  # noqa: ARG002
         last_turn = self.last_turn(session_id)
@@ -269,56 +254,24 @@ class SessionStore(SessionStoreTopicsMixin, SessionStoreSummaryMixin):
                     (session_id,),
                 )
                 rows = cursor.fetchall()
-        return [
-            ChatTurn(role=row["role"], content=row["content"], metadata=json.loads(row["metadata"] or "{}"))
-            for row in rows
-        ]
+        return [_row_to_turn(row) for row in rows]
 
     def list_sessions(self, limit: int = 50, session_prefix: str | None = None, owner_id: str | None = None) -> list[dict]:
         with self._connection() as connection:
             with connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
                 if owner_id:
                     cursor.execute(
-                        """
-                        SELECT s.session_id, s.summary, s.summary_json, s.updated_at,
-                               (SELECT content FROM session_turns WHERE session_id = s.session_id AND role = 'user' ORDER BY turn_id ASC LIMIT 1) AS first_user_message,
-                               (SELECT content FROM session_turns WHERE session_id = s.session_id AND role = 'user' ORDER BY turn_id DESC LIMIT 1) AS last_user_message,
-                               (SELECT created_at FROM session_turns WHERE session_id = s.session_id AND role = 'user' ORDER BY turn_id DESC LIMIT 1) AS last_user_at,
-                               (SELECT COUNT(*) FROM session_turns WHERE session_id = s.session_id) AS turn_count
-                        FROM sessions s
-                        WHERE s.owner_id = %s
-                        ORDER BY s.updated_at DESC
-                        LIMIT %s
-                        """,
+                        _SESSION_SELECT + "WHERE s.owner_id = %s ORDER BY s.updated_at DESC LIMIT %s",
                         (owner_id, limit),
                     )
                 elif session_prefix:
                     cursor.execute(
-                        """
-                        SELECT s.session_id, s.summary, s.summary_json, s.updated_at,
-                               (SELECT content FROM session_turns WHERE session_id = s.session_id AND role = 'user' ORDER BY turn_id ASC LIMIT 1) AS first_user_message,
-                               (SELECT content FROM session_turns WHERE session_id = s.session_id AND role = 'user' ORDER BY turn_id DESC LIMIT 1) AS last_user_message,
-                               (SELECT created_at FROM session_turns WHERE session_id = s.session_id AND role = 'user' ORDER BY turn_id DESC LIMIT 1) AS last_user_at,
-                               (SELECT COUNT(*) FROM session_turns WHERE session_id = s.session_id) AS turn_count
-                        FROM sessions s
-                        WHERE s.session_id LIKE %s
-                        ORDER BY s.updated_at DESC
-                        LIMIT %s
-                        """,
+                        _SESSION_SELECT + "WHERE s.session_id LIKE %s ORDER BY s.updated_at DESC LIMIT %s",
                         (f"{session_prefix}%", limit),
                     )
                 else:
                     cursor.execute(
-                        """
-                        SELECT s.session_id, s.summary, s.summary_json, s.updated_at,
-                               (SELECT content FROM session_turns WHERE session_id = s.session_id AND role = 'user' ORDER BY turn_id ASC LIMIT 1) AS first_user_message,
-                               (SELECT content FROM session_turns WHERE session_id = s.session_id AND role = 'user' ORDER BY turn_id DESC LIMIT 1) AS last_user_message,
-                               (SELECT created_at FROM session_turns WHERE session_id = s.session_id AND role = 'user' ORDER BY turn_id DESC LIMIT 1) AS last_user_at,
-                               (SELECT COUNT(*) FROM session_turns WHERE session_id = s.session_id) AS turn_count
-                        FROM sessions s
-                        ORDER BY s.updated_at DESC
-                        LIMIT %s
-                        """,
+                        _SESSION_SELECT + "ORDER BY s.updated_at DESC LIMIT %s",
                         (limit,),
                     )
                 rows = cursor.fetchall()
