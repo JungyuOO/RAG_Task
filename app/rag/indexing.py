@@ -9,7 +9,7 @@ from app.config import Settings
 from app.storage import CacheRepository, IndexRepository
 from app.rag.bge_embeddings import BGEOllamaEmbedder
 from app.rag.chunking import StructuredMarkdownChunker, TextChunker
-from app.rag.ingestion import DocumentIngestor
+from app.rag.ingestion_pdf import DocumentIngestor
 from app.rag.utils import extracted_markdown_path, stable_hash
 
 logger = logging.getLogger("rag.startup")
