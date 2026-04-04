@@ -44,10 +44,19 @@ class HybridRetriever:
         cross-encoder에 넓은 후보 풀을 넘길 때 사용.
 
         target_versions가 지정되면 해당 버전 태그에 속하는 청크만 검색 대상에 포함한다.
+        version_map이 제공되면 version_id 기반으로 필터링하고, 그렇지 않으면
+        청크 metadata의 version_tag를 직접 비교한다.
         """
-        if target_versions and version_map:
-            target_ids = {vid for vid, vtag in version_map.items() if vtag in target_versions}
-            index_items = [item for item in index_items if item["chunk"].get("version_id") in target_ids]
+        if target_versions:
+            target_set = set(target_versions)
+            if version_map:
+                target_ids = {vid for vid, vtag in version_map.items() if vtag in target_set}
+                index_items = [item for item in index_items if item["chunk"].get("version_id") in target_ids]
+            else:
+                index_items = [
+                    item for item in index_items
+                    if item["chunk"].get("metadata", {}).get("version_tag") in target_set
+                ]
 
         if not index_items:
             return []

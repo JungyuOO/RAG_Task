@@ -12,6 +12,7 @@ from app.rag.chunking import TextChunker
 from app.rag.chunking_markdown import StructuredMarkdownChunker
 from app.rag.ingestion_pdf import DocumentIngestor
 from app.rag.utils import extracted_markdown_path, stable_hash
+from app.rag.version_manager import VersionManager
 
 logger = logging.getLogger("rag.startup")
 
@@ -34,6 +35,7 @@ class IndexingService:
         self.embedder = embedder
         self.index_repository = index_repository
         self.embedding_cache_repository = embedding_cache_repository
+        self.version_manager = VersionManager()
 
     def _encode_chunk(self, text: str) -> list[float]:
         return self.embedder.encode_passage(text)
@@ -41,6 +43,12 @@ class IndexingService:
     def rebuild_index(self, source_paths: list[Path], progress_callback=None) -> dict:
         documents, skipped = self.ingestor.ingest_paths(source_paths)
         chunks = self.chunk_documents(documents)
+
+        for chunk in chunks:
+            source_path = Path(chunk.source_path)
+            version_tag = self.version_manager.detect_version_from_path(source_path)
+            if version_tag:
+                chunk.metadata["version_tag"] = version_tag
 
         vectors: list[list[float]] = []
         total_chunks = len(chunks)
@@ -80,10 +88,13 @@ class IndexingService:
 
         loaders = [doc.metadata.get("loader") for doc in documents if doc.metadata.get("loader")]
         representative_loader = loaders[0] if loaders else None
+        version_tag = self.version_manager.detect_version_from_path(source_path)
         for chunk in chunks:
             chunk.metadata["chunking_strategy"] = strategy
             if representative_loader and "loader" not in chunk.metadata:
                 chunk.metadata["loader"] = representative_loader
+            if version_tag:
+                chunk.metadata["version_tag"] = version_tag
 
         total_chunks = len(chunks)
         vectors: list[list[float]] = []
