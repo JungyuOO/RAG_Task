@@ -267,11 +267,11 @@
       .composer-shell { grid-template-columns: 1fr; }
       .composer-tools, .composer-actions { justify-content: space-between; }
     }
-    .version-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 10px 2px 4px; }
-    .version-label { font-size: 12px; font-weight: 700; color: var(--muted); letter-spacing: 0.06em; margin-right: 2px; white-space: nowrap; }
-    .version-btn { padding: 5px 13px; font-size: 12px; font-weight: 700; border-radius: 999px; border: 1px solid var(--line-strong); background: #fff; color: var(--muted); cursor: pointer; transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease; box-shadow: none; }
+    .version-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 12px 22px; border-bottom: 1px solid var(--line); background: #f8fafc; border-radius: 0; }
+    .version-label { font-size: 11px; font-weight: 800; color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; margin-right: 4px; white-space: nowrap; }
+    .version-btn { padding: 4px 12px; font-size: 12px; font-weight: 700; border-radius: 999px; border: 1px solid var(--line-strong); background: #fff; color: var(--muted); cursor: pointer; transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease; box-shadow: none; }
     .version-btn:hover { background: #f0f4ff; border-color: #a8c2ff; color: var(--brand-deep); }
-    .version-btn.active { background: var(--brand); border-color: var(--brand); color: #fff; box-shadow: 0 4px 12px rgba(42, 87, 223, 0.2); }
+    .version-btn.active { background: var(--brand); border-color: var(--brand); color: #fff; box-shadow: 0 2px 8px rgba(42, 87, 223, 0.25); }
   </style>
 </head>
 <body>
@@ -330,21 +330,21 @@
                   <p class="surface-copy">선택한 세션 기준으로 문서 질의와 일반 질문을 처리하고, 관련 근거 페이지를 함께 확인할 수 있습니다.</p>
                 </div>
               </div>
+              <div id="version-selector" class="version-bar">
+                <span class="version-label">버전</span>
+                <button class="version-btn active" data-version="" type="button">전체</button>
+                <button class="version-btn" data-version="4.15" type="button">4.15</button>
+                <button class="version-btn" data-version="4.16" type="button">4.16</button>
+                <button class="version-btn" data-version="4.17" type="button">4.17</button>
+                <button class="version-btn" data-version="4.18" type="button">4.18</button>
+                <button class="version-btn" data-version="4.19" type="button">4.19</button>
+                <button class="version-btn" data-version="4.20" type="button">4.20</button>
+                <button class="version-btn" data-version="4.21" type="button">4.21</button>
+              </div>
               <div class="surface-body">
                 <div class="chat-shell">
                   <div id="chatLog" class="chat-log"></div>
                   <div class="composer">
-                    <div id="version-selector" class="version-bar">
-                      <span class="version-label">버전 선택:</span>
-                      <button class="version-btn active" data-version="" type="button">전체</button>
-                      <button class="version-btn" data-version="4.15" type="button">4.15</button>
-                      <button class="version-btn" data-version="4.16" type="button">4.16</button>
-                      <button class="version-btn" data-version="4.17" type="button">4.17</button>
-                      <button class="version-btn" data-version="4.18" type="button">4.18</button>
-                      <button class="version-btn" data-version="4.19" type="button">4.19</button>
-                      <button class="version-btn" data-version="4.20" type="button">4.20</button>
-                      <button class="version-btn" data-version="4.21" type="button">4.21</button>
-                    </div>
                     <div id="chatAttachmentList" class="attachment-strip"></div>
                     <div id="composerShell" class="composer-shell">
                       <div class="composer-tools">
