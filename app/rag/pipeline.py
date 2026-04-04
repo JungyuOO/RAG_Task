@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio  # noqa: F401
 import logging
 import re
 
@@ -420,8 +419,7 @@ class RagPipeline(PipelineContextMixin, PipelineRetrievalMixin, PipelineRuntimeM
         has_korean = any("\uAC00" <= ch <= "\uD7A3" or "\u1100" <= ch <= "\u11FF" or "\u3130" <= ch <= "\u318F" for ch in text)
         if has_korean:
             return None
-        japanese_chars = [ch for ch in text if ("\u3040" <= ch <= "\u309F") or ("\u30A0" <= ch <= "\u30FF")]
-        if japanese_chars:
+        if any(("\u3040" <= ch <= "\u309F") or ("\u30A0" <= ch <= "\u30FF") for ch in text):
             return "한국어로 질문해 주세요. 기술 키워드는 그대로 영어로 입력해도 됩니다."
         cjk_chars = [ch for ch in text if ("\u4E00" <= ch <= "\u9FFF") or ("\uF900" <= ch <= "\uFAFF")]
         if not cjk_chars:

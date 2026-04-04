@@ -3,8 +3,17 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from app.rag.resource_markers import RESOURCE_MARKERS
 from app.rag.utils import normalize_text, tokenize
+
+_KIND_RE = re.compile(r"(?im)^\s*kind:\s*([a-z0-9_-]+)\s*$")
+
+
+def _qi_str(qi: dict, key: str) -> str:
+    return str(qi.get(key, "") or "").casefold()
+
+
+def _qi_set(qi: dict, key: str) -> set[str]:
+    return {str(v).casefold() for v in qi.get(key, []) if v}
 
 
 class PipelineRetrievalMixin:
@@ -16,14 +25,14 @@ class PipelineRetrievalMixin:
         code_language = str(metadata.get("code_language", "")).casefold()
         code_subtype = str(metadata.get("code_subtype", "")).casefold()
         code_signals = {str(signal).casefold() for signal in metadata.get("code_signals", []) or []}
-        explicit_kind_match = re.search(r"(?im)^\s*kind:\s*([a-z0-9_-]+)\s*$", lowered_text)
+        explicit_kind_match = _KIND_RE.search(lowered_text)
         explicit_resource_kind = explicit_kind_match.group(1).casefold() if explicit_kind_match else ""
         query_tokens = {token for token in query_interpretation.get("normalized_keywords", tokenize(user_message)) if len(token) >= 2 and token not in {"yaml", "manifest", "code", "example", "sample", "demo"}}
         resources = self._resolve_requested_resource_kinds(query_interpretation)
-        actions = {str(value).casefold() for value in query_interpretation.get("actions", []) if value}
-        format_constraints = {str(value).casefold() for value in query_interpretation.get("format_constraints", []) if value}
-        response_shape = str(query_interpretation.get("response_shape", "") or "").casefold()
-        intent = str(query_interpretation.get("intent", "") or "").casefold()
+        actions = _qi_set(query_interpretation, "actions")
+        format_constraints = _qi_set(query_interpretation, "format_constraints")
+        response_shape = _qi_str(query_interpretation, "response_shape")
+        intent = _qi_str(query_interpretation, "intent")
 
         heading_score = self._heading_overlap_score(user_message, metadata)
         resource_score = action_score = format_score = shape_score = lexical_score = completeness_score = 0.0
@@ -128,11 +137,12 @@ class PipelineRetrievalMixin:
     def _compute_focus_multiplier(self, target_resource: str, all_requested_resources: set[str], lowered_text: str, section_focus_text: str, current_multiplier: float) -> float:
         if target_resource in section_focus_text.split():
             return max(current_multiplier, 0.95)
-        known_resources = set(RESOURCE_MARKERS.keys())
         target_count = lowered_text.count(target_resource)
+        if target_count == 0:
+            return current_multiplier
         sibling_count = 0
-        for resource in known_resources:
-            if resource != target_resource and resource not in all_requested_resources:
+        for resource in all_requested_resources:
+            if resource != target_resource:
                 sibling_count += lowered_text.count(resource)
         total_mentions = target_count + sibling_count
         if total_mentions == 0:
@@ -192,14 +202,12 @@ class PipelineRetrievalMixin:
 
     def _extract_explicit_resource_kind(self, item: dict) -> str:
         lowered_text = str(item["chunk"].get("text", "")).casefold()
-        explicit_kind_match = re.search(r"(?im)^\s*kind:\s*([a-z0-9_-]+)\s*$", lowered_text)
+        explicit_kind_match = _KIND_RE.search(lowered_text)
         return explicit_kind_match.group(1).casefold() if explicit_kind_match else ""
 
     def _should_expand_local_context(self, query_interpretation: dict | None) -> bool:
-        query_interpretation = query_interpretation or {}
-        intent = str(query_interpretation.get("intent", "") or "").casefold()
-        response_shape = str(query_interpretation.get("response_shape", "") or "").casefold()
-        return intent in {"yaml_example", "cli_example", "code_example", "table"} or response_shape in {"code", "table"}
+        qi = query_interpretation or {}
+        return _qi_str(qi, "intent") in {"yaml_example", "cli_example", "code_example", "table"} or _qi_str(qi, "response_shape") in {"code", "table"}
 
     def _expand_local_context_items(self, user_message: str, query_interpretation: dict | None, index_items: list[dict], ranked_items: list[dict]) -> list[dict]:
         if not ranked_items or not self._should_expand_local_context(query_interpretation):
@@ -246,9 +254,9 @@ class PipelineRetrievalMixin:
         topic_state = topic_state or {}
         if not index_items:
             return ranked_items
-        response_shape = str(query_interpretation.get("response_shape", "") or "").casefold()
-        intent = str(query_interpretation.get("intent", "") or "").casefold()
-        format_constraints = {str(value).casefold() for value in query_interpretation.get("format_constraints", []) if value}
+        response_shape = _qi_str(query_interpretation, "response_shape")
+        intent = _qi_str(query_interpretation, "intent")
+        format_constraints = _qi_set(query_interpretation, "format_constraints")
         normalized_user = normalize_text(user_message).lower()
         followup_markers = ("그거", "그건", "그 문서", "그 페이지", "그 yaml", "그 코드", "그 타입", "타입", "종류", "특징", "자세히", "더 설명", "설치", "과정", "구성", "차이", "비교", "다음", "계속", "that", "this", "those", "again", "next", "continue")
         text_followup_expansion = intent in {"explain", "compare"} and bool(topic_state.get("selected_sources")) and (any(marker in normalized_user for marker in followup_markers) or len(normalized_user) <= 28)
@@ -295,7 +303,7 @@ class PipelineRetrievalMixin:
     def _find_fallback_code_context_items(self, user_message: str, query_interpretation: dict | None, index_items: list[dict], topic_state: dict | None) -> list[dict]:
         query_interpretation = query_interpretation or {}
         topic_state = topic_state or {}
-        if str(query_interpretation.get("response_shape", "") or "").casefold() != "code":
+        if _qi_str(query_interpretation, "response_shape") != "code":
             return []
         selected_source_names = {str(source).casefold().strip() for source in topic_state.get("selected_sources", []) if source}
         candidate_pool: list[dict] = []
@@ -315,7 +323,7 @@ class PipelineRetrievalMixin:
         if not items:
             return items
         query_interpretation = query_interpretation or {}
-        resources = {str(value).casefold() for value in query_interpretation.get("resources", []) if value}
+        resources = _qi_set(query_interpretation, "resources")
         if resources:
             has_positive = any(item.get("resource_match_score", 0) > 0 for item in items)
             if has_positive:
@@ -332,8 +340,8 @@ class PipelineRetrievalMixin:
             return items
         qi = query_interpretation or {}
         resources = [str(value).casefold() for value in qi.get("resources", []) if value]
-        intent = str(qi.get("intent", "") or "").casefold()
-        response_shape = str(qi.get("response_shape", "") or "").casefold()
+        intent = _qi_str(qi, "intent")
+        response_shape = _qi_str(qi, "response_shape")
         if len(resources) != 1 or (intent != "explain" and response_shape != "text"):
             return items
         focused = [item for item in items if item.get("focus_multiplier", 1.0) >= 0.85]
@@ -344,8 +352,8 @@ class PipelineRetrievalMixin:
 
     def _resolve_answer_route(self, query_interpretation: dict | None) -> str:
         query_interpretation = query_interpretation or {}
-        intent = str(query_interpretation.get("intent", "") or "").casefold()
-        response_shape = str(query_interpretation.get("response_shape", "") or "").casefold()
+        intent = _qi_str(query_interpretation, "intent")
+        response_shape = _qi_str(query_interpretation, "response_shape")
         if intent in {"yaml_example", "cli_example", "code_example"} or response_shape == "code":
             return "extractive_code"
         if intent == "table" or response_shape == "table":
@@ -386,8 +394,8 @@ class PipelineRetrievalMixin:
         strong_resource_anchor = resource_match_score >= 0.9 or lexical_match_score >= 0.2 or has_structural_anchor
 
         if top_score < self.settings.retrieval_min_score or not retrieved:
-            lowered_shape = str(query_interpretation.get("response_shape", "") or "").casefold()
-            lowered_intent = str(query_interpretation.get("intent", "") or "").casefold()
+            lowered_shape = _qi_str(query_interpretation, "response_shape")
+            lowered_intent = _qi_str(query_interpretation, "intent")
             has_explicit_resources = bool(query_interpretation.get("resources"))
             relaxed_threshold = self.settings.retrieval_min_score
             if has_explicit_resources:
@@ -406,7 +414,7 @@ class PipelineRetrievalMixin:
             if top_score - second_score > 0.15 and top_score >= 0.08:
                 return True
 
-        resources = {str(value).casefold() for value in query_interpretation.get("resources", []) if value}
+        resources = _qi_set(query_interpretation, "resources")
         if resources and top_item:
             chunk_meta = top_item.get("chunk", {}).get("metadata", {})
             code_signals = {str(signal).casefold() for signal in chunk_meta.get("code_signals", []) or []}
