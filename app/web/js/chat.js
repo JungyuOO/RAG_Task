@@ -133,6 +133,12 @@ async function consumeChatStream(response, assistantState, pendingState) {
         setLibraryStatus("PDF 업로드 완료: " + (payload.uploaded_files || []).join(", "), "success", "Completed");
         await loadLibrary();
       }
+      if (payload.type === "status") {
+        if (statusBar) {
+          statusBar.show();
+          statusBar.addStage(payload.stage, payload.message);
+        }
+      }
       if (payload.type === "context") {
         currentContextPayload = payload;
         if (payload.preview_finalized) {
@@ -148,8 +154,17 @@ async function consumeChatStream(response, assistantState, pendingState) {
       if (payload.type === "done") {
         sawDone = true;
         attachSourceButton(assistantState.block, finalContextPayload || currentContextPayload);
+        // 인용 태그 클릭 연동 (citation.js가 로드된 경우)
+        if (typeof renderCitationTags === 'function' && assistantState.block) {
+          const el = assistantState.block.querySelector('.message-text') || assistantState.block;
+          if (el) {
+            el.innerHTML = renderCitationTags(el.textContent || assistantText);
+            bindCitationClicks(el);
+          }
+        }
         clearPendingChatState();
         setLibraryStatus((payload.cached ? "캐시 응답 완료 (" : "응답 완료 (") + assistantState.elapsedSeconds() + "초)", "success", "Ready");
+        if (statusBar) statusBar.complete();
         await loadSessions();
       }
     }
@@ -184,6 +199,7 @@ async function retryPendingChat(pendingState) {
           session_id: pendingState.session_id,
           message: pendingState.message,
           file_names: pendingState.file_names || [],
+          version_tag: pendingState.version_tag || null,
         }),
       });
       if (!response.ok) throw new Error(await extractErrorMessage(response));
@@ -206,6 +222,7 @@ async function sendMessage() {
     session_id: sessionId,
     message,
     file_names: pendingChatFiles.map((file) => file.name),
+    version_tag: selectedVersion,
     partial_response: "",
     created_at: Date.now(),
     updated_at: Date.now(),
@@ -237,7 +254,7 @@ async function sendMessage() {
       response = await fetch("/api/chat", {
         method: "POST",
         headers: buildOwnerHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({ session_id: sessionId, message }),
+        body: JSON.stringify({ session_id: sessionId, message, version_tag: selectedVersion }),
       });
     }
     if (!response.ok) throw new Error(await extractErrorMessage(response));

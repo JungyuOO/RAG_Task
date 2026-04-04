@@ -54,6 +54,13 @@ function bindEventListeners() {
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && pdfModal.classList.contains("open")) closePdf();
   });
+  document.querySelectorAll(".version-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".version-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      selectedVersion = btn.dataset.version || null;
+    });
+  });
 }
 
 async function initialize() {

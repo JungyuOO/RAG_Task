@@ -267,6 +267,11 @@
       .composer-shell { grid-template-columns: 1fr; }
       .composer-tools, .composer-actions { justify-content: space-between; }
     }
+    .version-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 10px 2px 4px; }
+    .version-label { font-size: 12px; font-weight: 700; color: var(--muted); letter-spacing: 0.06em; margin-right: 2px; white-space: nowrap; }
+    .version-btn { padding: 5px 13px; font-size: 12px; font-weight: 700; border-radius: 999px; border: 1px solid var(--line-strong); background: #fff; color: var(--muted); cursor: pointer; transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease; box-shadow: none; }
+    .version-btn:hover { background: #f0f4ff; border-color: #a8c2ff; color: var(--brand-deep); }
+    .version-btn.active { background: var(--brand); border-color: var(--brand); color: #fff; box-shadow: 0 4px 12px rgba(42, 87, 223, 0.2); }
   </style>
 </head>
 <body>
@@ -329,6 +334,17 @@
                 <div class="chat-shell">
                   <div id="chatLog" class="chat-log"></div>
                   <div class="composer">
+                    <div id="version-selector" class="version-bar">
+                      <span class="version-label">버전 선택:</span>
+                      <button class="version-btn active" data-version="" type="button">전체</button>
+                      <button class="version-btn" data-version="4.15" type="button">4.15</button>
+                      <button class="version-btn" data-version="4.16" type="button">4.16</button>
+                      <button class="version-btn" data-version="4.17" type="button">4.17</button>
+                      <button class="version-btn" data-version="4.18" type="button">4.18</button>
+                      <button class="version-btn" data-version="4.19" type="button">4.19</button>
+                      <button class="version-btn" data-version="4.20" type="button">4.20</button>
+                      <button class="version-btn" data-version="4.21" type="button">4.21</button>
+                    </div>
                     <div id="chatAttachmentList" class="attachment-strip"></div>
                     <div id="composerShell" class="composer-shell">
                       <div class="composer-tools">
@@ -449,11 +465,16 @@
       <iframe id="pdfViewer" class="pdf-frame" title="PDF Viewer"></iframe>
     </div>
   </div>
+  <div id="chunk-viewer" style="display:none;"></div>
+  <div id="status-bar-container" style="display:none;"></div>
   <script src="/static/js/shared.js"></script>
   <script src="/static/js/preview.js"></script>
   <script src="/static/js/session.js"></script>
   <script src="/static/js/library.js"></script>
   <script src="/static/js/chat.js"></script>
+  <script src="/static/js/status.js"></script>
   <script src="/static/js/app.js"></script>
+  <script src="/static/js/chunks.js"></script>
+  <script>initStatusBar();</script>
 </body>
 </html>
