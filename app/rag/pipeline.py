@@ -8,7 +8,8 @@ from app.llm import AnswerAgent, IntentAgent, JudgeAgent, RetrievalAgent
 from app.rag.answer import AnswerGenerator
 from app.rag.bge_embeddings import BGEOllamaEmbedder
 from app.rag.cache import JsonFileCache
-from app.rag.chunking import StructuredMarkdownChunker, TextChunker
+from app.rag.chunking import TextChunker
+from app.rag.chunking_markdown import StructuredMarkdownChunker
 from app.rag.context import TurnContextResolver
 from app.rag.index import VectorIndex
 from app.rag.indexing import IndexingService
