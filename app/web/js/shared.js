@@ -61,6 +61,7 @@ let previewAvailable = false;
 let previewOpen = false;
 let chatPinnedToBottom = true;
 let currentContextPayload = null;
+let selectedVersion = null; // null = 전체 (no version filter)
 
 function generateClientOwnerId() {
   if (window.crypto && typeof window.crypto.randomUUID === "function") {

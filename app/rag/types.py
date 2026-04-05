@@ -37,3 +37,19 @@ class ChatTurn:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass(slots=True)
+class TurnPolicyDecision:
+    turn_type: str
+    response_mode: str
+    use_retrieval: bool
+    use_memory_rewrite: bool
+    allow_preview: bool
+    allow_citations: bool
+    needs_clarification: bool = False
+    clarification_reason: str = ""
+    clarification_prompt: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)

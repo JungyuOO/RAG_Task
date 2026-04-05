@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.rag.policy import TurnPolicyDecision
+from app.rag.types import TurnPolicyDecision
 
 logger = logging.getLogger("rag.pipeline")
 
@@ -19,8 +19,8 @@ class RetrievalStateDeps:
     build_rewrite_context_from_topic: Any
     rewrite_query_with_llm: Any
     index_repository: Any
-    query_agent: Any
-    query_interpreter: Any
+    intent_agent: Any
+    retrieval_agent: Any
     expand_query_with_resource_aliases: Any
     expand_query_with_context: Any
     embedder: Any
@@ -48,9 +48,12 @@ class RetrievalStateBuilder:
         session_id: str,
         user_message: str,
         allowed_source_paths: set[str] | None = None,
+        *,
+        version_tag: str | None = None,
     ) -> dict:
         deps = self.deps
-        turn_context = deps.resolve_turn_context(session_id, user_message)
+        target_versions = [version_tag] if version_tag else None
+        turn_context = await deps.resolve_turn_context(session_id, user_message)
         resolution = turn_context["resolution"]
         resolved_topic = turn_context["resolved_topic"]
         topic_state = turn_context["topic_state"]
@@ -79,37 +82,42 @@ class RetrievalStateBuilder:
                 seen_sources.add(src)
                 all_sources.append(src)
 
-        query_result = await deps.query_agent.refine_query(
-            rewritten_query,
+        intent_result = await deps.intent_agent.classify(
+            user_message,
             context={
                 "active_topic": topic_state.get("active_topic"),
                 "selected_sources": topic_state.get("selected_sources", []),
+                "procedure_state": topic_state.get("procedure_state", {}),
             },
+        )
+        query_result = await deps.retrieval_agent.expand(
+            rewritten_query,
+            intent_result=intent_result,
             available_sources=all_sources,
         )
         refined_query = query_result["refined_query"]
         alternative_queries = query_result.get("alternative_queries", [])
         logger.info(
-            "[QueryAgent] 재작성=%r 검색질의=%r | 대안=%r | 키워드=%r",
+            "[RetrievalAgent] 재작성=%r 검색질의=%r | 대안=%r | 키워드=%r",
             rewritten_query, refined_query, alternative_queries, query_result.get("search_keywords", []),
         )
 
-        query_interpretation = deps.query_interpreter.interpret(
+        query_interpretation = deps.retrieval_agent.interpret(
             user_message,
             query_result=query_result,
             topic_state=topic_state,
         )
         logger.info(
             "[QueryInterpretation] intent=%s resources=%s actions=%s formats=%s shape=%s keywords=%s",
-            query_interpretation.intent,
-            query_interpretation.resources,
-            query_interpretation.actions,
-            query_interpretation.format_constraints,
-            query_interpretation.response_shape,
-            query_interpretation.normalized_keywords,
+            query_interpretation["intent"],
+            query_interpretation["resources"],
+            query_interpretation["actions"],
+            query_interpretation["format_constraints"],
+            query_interpretation["response_shape"],
+            query_interpretation["normalized_keywords"],
         )
 
-        aliased_query = deps.expand_query_with_resource_aliases(refined_query, query_interpretation.to_dict())
+        aliased_query = deps.expand_query_with_resource_aliases(refined_query, query_interpretation)
         expanded_query = deps.expand_query_with_context(aliased_query, topic_state)
         expanded_query = self._expand_short_resource_query(
             expanded_query,
@@ -118,11 +126,20 @@ class RetrievalStateBuilder:
         )
         query_vector = deps.embedder.encode(expanded_query)
         index_items = deps.retrieval_service.filter_index_items(index_items_all, allowed_source_paths)
-        retrieved = deps.retriever.search_rrf(expanded_query, query_vector, index_items, rrf_k=60)
 
-        query_interpretation_dict = query_interpretation.to_dict()
+        # 첫 RRF 호출에서 candidate_pool_size개(넓은 풀)를 받아둔다.
+        # top_k개는 selected_source_pass / alternative_queries 병합용,
+        # 전체 풀은 cross-encoder 입력으로 재사용하여 중복 호출을 제거한다.
+        base_rrf_pool = deps.retriever.search_rrf(
+            expanded_query, query_vector, index_items, rrf_k=60,
+            limit=deps.retriever.candidate_pool_size,
+            target_versions=target_versions,
+        )
+        retrieved = base_rrf_pool[: deps.retriever.top_k]
 
-        if not query_interpretation.resources and topic_state.get("last_explicit_resources"):
+        query_interpretation_dict = dict(query_interpretation)
+
+        if not query_interpretation["resources"] and topic_state.get("last_explicit_resources"):
             inherited = topic_state["last_explicit_resources"][:2]
             query_interpretation_dict["resources"] = inherited
             logger.info("[FollowupAnchor] inherited resources=%s", inherited)
@@ -132,8 +149,8 @@ class RetrievalStateBuilder:
             for source in topic_state.get("selected_sources", []) or []
             if source
         }
-        lowered_shape = str(query_interpretation.response_shape or "").casefold()
-        lowered_intent = str(query_interpretation.intent or "").casefold()
+        lowered_shape = str(query_interpretation["response_shape"] or "").casefold()
+        lowered_intent = str(query_interpretation["intent"] or "").casefold()
         should_run_selected_source_pass = (
             bool(selected_source_names)
             and (
@@ -154,6 +171,7 @@ class RetrievalStateBuilder:
                     query_vector,
                     selected_source_items,
                     rrf_k=60,
+                    target_versions=target_versions,
                 )
                 for item in source_retrieved:
                     cid = item["chunk"]["chunk_id"]
@@ -178,16 +196,14 @@ class RetrievalStateBuilder:
             alt_aliased = deps.expand_query_with_resource_aliases(alt_query, query_interpretation_dict)
             alt_expanded = deps.expand_query_with_context(alt_aliased, topic_state)
             alt_vector = deps.embedder.encode(alt_expanded)
-            alt_retrieved = deps.retriever.search_rrf(alt_expanded, alt_vector, index_items, rrf_k=60)
+            alt_retrieved = deps.retriever.search_rrf(alt_expanded, alt_vector, index_items, rrf_k=60, target_versions=target_versions)
             for item in alt_retrieved:
                 cid = item["chunk"]["chunk_id"]
                 if cid not in seen_chunk_ids:
                     seen_chunk_ids.add(cid)
                     merged_extras.append(item)
         if merged_extras:
-            combined = retrieved + merged_extras
-            combined.sort(key=lambda item: item.get("rerank_score", 0), reverse=True)
-            retrieved = combined[: deps.retriever.top_k]
+            retrieved = retrieved + merged_extras
 
         for index, item in enumerate(retrieved[:5]):
             chunk = item["chunk"]
@@ -202,7 +218,21 @@ class RetrievalStateBuilder:
             )
 
         if retrieved:
-            extended = deps.retriever.search_rrf(expanded_query, query_vector, index_items, rrf_k=60)
+            # 병합된 후보(selected_source_pass + alternative_queries)와
+            # 첫 호출에서 캐싱해둔 base_rrf_pool을 합쳐 cross-encoder에 넘긴다.
+            seen_ids: set[str] = set()
+            extended: list[dict] = []
+            for item in retrieved:
+                cid = item["chunk"]["chunk_id"]
+                if cid not in seen_ids:
+                    seen_ids.add(cid)
+                    extended.append(item)
+            for item in base_rrf_pool:
+                cid = item["chunk"]["chunk_id"]
+                if cid not in seen_ids:
+                    seen_ids.add(cid)
+                    extended.append(item)
+            extended.sort(key=lambda item: item.get("rerank_score", 0), reverse=True)
             extended = extended[:20]
             retrieved = deps.reranker.rerank(expanded_query, extended)
             retrieved = deps.metadata_aware_rerank(
@@ -256,7 +286,7 @@ class RetrievalStateBuilder:
             selected_context_items,
             query_interpretation_dict,
         )
-        if not selected_context_items and str(query_interpretation.response_shape or "").casefold() == "code":
+        if not selected_context_items and str(query_interpretation["response_shape"] or "").casefold() == "code":
             fallback_code_items = deps.find_fallback_code_context_items(
                 user_message,
                 query_interpretation_dict,
@@ -301,9 +331,9 @@ class RetrievalStateBuilder:
         query_interpretation: Any,
     ) -> str:
         """Expand very short resource queries to lift cross-encoder confidence."""
-        resources = list(query_interpretation.resources or [])
-        intent = str(query_interpretation.intent or "").casefold()
-        response_shape = str(query_interpretation.response_shape or "").casefold()
+        resources = list(query_interpretation["resources"] or [])
+        intent = str(query_interpretation["intent"] or "").casefold()
+        response_shape = str(query_interpretation["response_shape"] or "").casefold()
 
         if not resources or len(user_message.strip()) > 30:
             return expanded_query

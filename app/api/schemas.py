@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from pydantic import BaseModel, Field
 
 
 class ChatRequest(BaseModel):
     session_id: str = Field(..., min_length=1)
     message: str = Field(..., min_length=1)
+    version_tag: str | None = None
 
 
 class RetryChatRequest(BaseModel):
@@ -83,3 +86,21 @@ class TaskStatusResponse(BaseModel):
     error: str = ""
     created_at: str
     updated_at: str
+
+
+@dataclass(slots=True)
+class ChatTurnRequest:
+    session_id: str
+    message: str
+    allowed_source_paths: set[str] | None = None
+    append_user_turn: bool = True
+    version_tag: str | None = None
+
+
+@dataclass(slots=True)
+class RetryChatRequestModel:
+    session_id: str
+    message: str
+    owner_id: str | None = None
+    allowed_source_paths: set[str] | None = None
+    append_user_turn: bool = True

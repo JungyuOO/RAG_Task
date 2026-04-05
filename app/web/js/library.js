@@ -37,11 +37,32 @@ function _makeDocRow(doc) {
     "<td>" + escapeHtml(String(doc.extension || "").toUpperCase()) + "</td>" +
     '<td><div class="row-actions">' +
     '<button class="secondary mini-button preview-button" type="button">미리보기</button>' +
+    '<button class="secondary mini-button chunks-button" type="button">청크 보기</button>' +
     '<button class="secondary mini-button delete-button" type="button">삭제</button>' +
     "</div></td>";
   tr.querySelector(".preview-button").addEventListener("click", () => openPdf(doc.file_name));
+  tr.querySelector(".chunks-button").addEventListener("click", () => loadChunks(doc.file_name));
   tr.querySelector(".delete-button").addEventListener("click", () => deleteLibraryFile(doc.file_name));
   return tr;
+}
+
+function _extractVersion(doc) {
+  // source_path: "data/corpus/pdfs/ocp-4.15/..." → "4.15"
+  const sp = doc.source_path || doc.file_name || "";
+  const m = sp.match(/ocp-(\d+\.\d+)/);
+  return m ? m[1] : null;
+}
+
+function _makeVersionTable(docs) {
+  const wrap = document.createElement("div");
+  wrap.className = "library-table-wrap";
+  const table = document.createElement("table");
+  table.className = "library-table";
+  table.innerHTML = "<thead><tr><th>파일</th><th>상태</th><th>인덱스</th><th>형식</th><th>액션</th></tr></thead><tbody></tbody>";
+  const tbody = table.querySelector("tbody");
+  docs.forEach((doc) => tbody.appendChild(_makeDocRow(doc)));
+  wrap.appendChild(table);
+  return wrap;
 }
 
 function renderLibrary(documents) {
@@ -51,15 +72,53 @@ function renderLibrary(documents) {
     return;
   }
 
-  const wrap = document.createElement("div");
-  wrap.className = "library-table-wrap";
-  const table = document.createElement("table");
-  table.className = "library-table";
-  table.innerHTML = "<thead><tr><th>파일</th><th>상태</th><th>인덱스</th><th>형식</th><th>액션</th></tr></thead><tbody></tbody>";
-  const tbody = table.querySelector("tbody");
-  documents.forEach((doc) => tbody.appendChild(_makeDocRow(doc)));
-  wrap.appendChild(table);
-  libraryList.appendChild(wrap);
+  // 버전별로 그룹핑
+  const groups = {};
+  const noVersion = [];
+  documents.forEach((doc) => {
+    const v = _extractVersion(doc);
+    if (v) {
+      if (!groups[v]) groups[v] = [];
+      groups[v].push(doc);
+    } else {
+      noVersion.push(doc);
+    }
+  });
+
+  const sortedVersions = Object.keys(groups).sort((a, b) => {
+    const [ma, mi_a] = a.split(".").map(Number);
+    const [mb, mi_b] = b.split(".").map(Number);
+    return ma !== mb ? ma - mb : mi_a - mi_b;
+  });
+
+  // 버전 그룹이 있으면 섹션별로 렌더링
+  if (sortedVersions.length) {
+    sortedVersions.forEach((version) => {
+      const section = document.createElement("div");
+      section.style.cssText = "margin-bottom: 24px;";
+      const header = document.createElement("div");
+      header.style.cssText = "display:flex;align-items:center;gap:10px;margin-bottom:10px;";
+      header.innerHTML =
+        '<span style="font-size:13px;font-weight:800;color:#182538;">OCP ' + escapeHtml(version) + '</span>' +
+        '<span style="font-size:12px;color:#66758a;">' + groups[version].length + '개 문서</span>';
+      section.appendChild(header);
+      section.appendChild(_makeVersionTable(groups[version]));
+      libraryList.appendChild(section);
+    });
+    if (noVersion.length) {
+      const section = document.createElement("div");
+      section.style.cssText = "margin-bottom: 24px;";
+      const header = document.createElement("div");
+      header.style.cssText = "display:flex;align-items:center;gap:10px;margin-bottom:10px;";
+      header.innerHTML = '<span style="font-size:13px;font-weight:800;color:#182538;">기타</span>';
+      section.appendChild(header);
+      section.appendChild(_makeVersionTable(noVersion));
+      libraryList.appendChild(section);
+    }
+  } else {
+    // 버전 정보 없으면 기존 방식 (단일 테이블)
+    libraryList.appendChild(_makeVersionTable(documents));
+  }
 }
 
 function _renderUploadState(completedDocs, currentFile, pct, completedCount, totalFiles) {
