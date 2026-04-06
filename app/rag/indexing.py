@@ -5,12 +5,15 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
+import re
+
 from app.config import Settings
 from app.storage import CacheRepository, IndexRepository
 from app.rag.bge_embeddings import BGEOllamaEmbedder
 from app.rag.chunking import TextChunker
 from app.rag.chunking_markdown import StructuredMarkdownChunker
 from app.rag.ingestion_pdf import DocumentIngestor
+from app.rag.types import Document
 from app.rag.utils import extracted_markdown_path, stable_hash
 from app.rag.version_manager import VersionManager
 
@@ -75,6 +78,47 @@ class IndexingService:
             "indexed_chunks": len(chunks),
             "skipped_files": len(skipped),
         }
+
+    def index_markdown_file(self, source_path: Path, doc_type: str = "operation_manual") -> dict:
+        """마크다운 파일을 직접 인덱싱한다 (PDF 없이 텍스트만 사용).
+
+        고객사 운영 매뉴얼 등 PDF가 아닌 마크다운 문서를 RAG에 포함할 때 사용.
+        """
+        markdown_text = source_path.read_text(encoding="utf-8")
+        if not markdown_text.strip():
+            return {"indexed_chunks": 0, "indexed_pages": 0, "skipped": True}
+
+        doc_id = stable_hash(str(source_path))
+        document = Document(
+            doc_id=doc_id,
+            source_path=str(source_path),
+            page_number=1,
+            text=markdown_text,
+            metadata={"loader": "markdown", "doc_type": doc_type},
+        )
+        chunks = self.structured_chunker.split([document], markdown_text=markdown_text)
+
+        version_tag = self.version_manager.detect_version_from_path(source_path)
+        for chunk in chunks:
+            chunk.metadata["chunking_strategy"] = "structured_markdown"
+            chunk.metadata["doc_type"] = doc_type
+            if version_tag:
+                chunk.metadata["version_tag"] = version_tag
+
+        vectors: list[list[float]] = []
+        for chunk in chunks:
+            cache_key = stable_hash(chunk.text)
+            cached = self.embedding_cache_repository.get(cache_key)
+            if cached is None:
+                vector = self._encode_chunk(chunk.text)
+                self.embedding_cache_repository.set(cache_key, {"vector": vector})
+            else:
+                vector = cached["vector"]
+            vectors.append(vector)
+
+        self.index_repository.upsert_document(str(source_path), chunks, vectors)
+        logger.info("[IndexMarkdown] %s → %d chunks", source_path.name, len(chunks))
+        return {"indexed_chunks": len(chunks), "indexed_pages": 1, "skipped": False}
 
     def index_single_file(self, source_path: Path, progress_callback=None) -> dict:
         documents, _skipped = self.ingestor.ingest_paths([source_path], progress_callback=progress_callback)
