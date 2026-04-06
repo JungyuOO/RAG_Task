@@ -19,7 +19,8 @@ class LlmClient:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self._disabled_until = 0.0
+        self._stream_disabled_until = 0.0
+        self._generate_disabled_until = 0.0
         self._last_error = ""
         self._client: httpx.AsyncClient | None = None
 
@@ -43,13 +44,15 @@ class LlmClient:
 
     async def stream_chat(self, messages: list[dict]) -> AsyncIterator[str]:
         now = time.monotonic()
-        if now < self._disabled_until:
-            remaining = max(self._disabled_until - now, 0.0)
+        if now < self._stream_disabled_until:
+            remaining = max(self._stream_disabled_until - now, 0.0)
             raise RuntimeError(
                 f"LLM endpoint temporarily unavailable. Retrying after cooldown ({remaining:.1f}s remaining)."
             )
 
         headers = {"Content-Type": "application/json"}
+        if self.settings.cllm_api_key:
+            headers["Authorization"] = f"Bearer {self.settings.cllm_api_key}"
 
         payload = {
             "model": self.settings.cllm_model,
@@ -67,7 +70,7 @@ class LlmClient:
                     json=payload,
                 ) as response:
                     response.raise_for_status()
-                    self._disabled_until = 0.0
+                    self._stream_disabled_until = 0.0
                     self._last_error = ""
                     async for line in response.aiter_lines():
                         if not line or not line.startswith("data:"):
@@ -84,11 +87,11 @@ class LlmClient:
                             yield delta
         except TimeoutError as exc:
             self._last_error = str(exc) or "LLM total timeout exceeded."
-            self._disabled_until = time.monotonic() + max(self.settings.llm_timeout_cooldown_seconds, 0.0)
+            self._stream_disabled_until = time.monotonic() + max(self.settings.llm_timeout_cooldown_seconds, 0.0)
             raise RuntimeError("LLM total timeout exceeded.") from exc
         except (httpx.HTTPError, RuntimeError) as exc:
             self._last_error = str(exc)
-            self._disabled_until = time.monotonic() + max(self.settings.llm_failure_cooldown_seconds, 0.0)
+            self._stream_disabled_until = time.monotonic() + max(self.settings.llm_failure_cooldown_seconds, 0.0)
             raise
 
     @staticmethod
@@ -118,7 +121,7 @@ class LlmClient:
     async def generate(self, messages: list[dict], max_tokens: int | None = None) -> str:
         """비스트리밍 LLM 호출. 질의 재작성 등 짧은 생성 작업에 사용한다."""
         now = time.monotonic()
-        if now < self._disabled_until:
+        if now < self._generate_disabled_until:
             raise RuntimeError("LLM endpoint temporarily unavailable.")
 
         payload = {
@@ -131,14 +134,17 @@ class LlmClient:
         }
         try:
             async with asyncio.timeout(self.settings.llm_total_timeout_seconds):
+                gen_headers = {"Content-Type": "application/json"}
+                if self.settings.cllm_api_key:
+                    gen_headers["Authorization"] = f"Bearer {self.settings.cllm_api_key}"
                 response = await self._get_client().post(
                     f"{self.settings.cllm_base_url}/chat/completions",
-                    headers={"Content-Type": "application/json"},
+                    headers=gen_headers,
                     json=payload,
                 )
                 response.raise_for_status()
                 data = response.json()
-                self._disabled_until = 0.0
+                self._generate_disabled_until = 0.0
                 self._last_error = ""
                 message = data["choices"][0]["message"]
                 content = message.get("content") or ""
@@ -148,9 +154,9 @@ class LlmClient:
                 return content.strip()
         except TimeoutError as exc:
             self._last_error = str(exc) or "LLM timeout on generate."
-            self._disabled_until = time.monotonic() + max(self.settings.llm_timeout_cooldown_seconds, 0.0)
+            self._generate_disabled_until = time.monotonic() + max(self.settings.llm_timeout_cooldown_seconds, 0.0)
             raise RuntimeError("LLM timeout on generate.") from exc
         except (httpx.HTTPError, RuntimeError) as exc:
             self._last_error = str(exc)
-            self._disabled_until = time.monotonic() + max(self.settings.llm_failure_cooldown_seconds, 0.0)
+            self._generate_disabled_until = time.monotonic() + max(self.settings.llm_failure_cooldown_seconds, 0.0)
             raise
