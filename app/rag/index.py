@@ -104,7 +104,7 @@ class VectorIndex:
                             chunk.source_path,
                             chunk.text,
                             json.dumps(chunk.tokens, ensure_ascii=False),
-                            chunk.page_number,
+                            chunk.page_number or chunk.metadata.get("page_start"),
                             json.dumps(chunk.metadata, ensure_ascii=False),
                             json.dumps(vector, ensure_ascii=False),
                         ),
@@ -138,11 +138,19 @@ class VectorIndex:
                             chunk.source_path,
                             chunk.text,
                             json.dumps(chunk.tokens, ensure_ascii=False),
-                            chunk.page_number,
+                            chunk.page_number or chunk.metadata.get("page_start"),
                             json.dumps(chunk.metadata, ensure_ascii=False),
                             json.dumps(vector, ensure_ascii=False),
                         ),
                     )
+
+    def get_indexed_source_paths(self) -> set[str]:
+        """DB에 이미 인덱싱된 모든 source_path를 반환한다."""
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT source_path FROM documents")
+                rows = cursor.fetchall()
+        return {row[0] for row in rows}
 
     def delete_document(self, source_path: str) -> None:
         with self._connection() as connection:
