@@ -202,9 +202,27 @@ class PipelineContextMixin:
     def _expand_query_with_resource_aliases(self, query: str, query_interpretation: dict | None) -> str:
         query_interpretation = query_interpretation or {}
         lowered_query = query.casefold()
+        
+        # Only expand aliases for resources that were explicitly identified in keywords
+        # or were inherited (which we can infer if the resource name is in lowered_query or normalized_keywords)
+        normalized_keywords = {str(k).casefold() for k in query_interpretation.get("normalized_keywords", [])}
+        
         extra_tokens: list[str] = []
         for resource in query_interpretation.get("resources", []) or []:
             normalized = str(resource).casefold().strip()
+            
+            # Skip hallucinated resources that aren't in the query or keywords
+            is_explicit = normalized in lowered_query or normalized in normalized_keywords
+            # Check if any alias of this resource is in the query
+            has_alias_in_query = False
+            for alias in self.RESOURCE_KIND_ALIASES.get(normalized, {normalized}):
+                if alias in lowered_query or alias in normalized_keywords:
+                    has_alias_in_query = True
+                    break
+                    
+            if not is_explicit and not has_alias_in_query:
+                continue
+
             phrase_aliases = self.RESOURCE_QUERY_PHRASES.get(normalized, ())
             if any(phrase in lowered_query for phrase in phrase_aliases):
                 continue
@@ -307,6 +325,7 @@ class RagPipeline(PipelineContextMixin, PipelineRetrievalMixin, PipelineRuntimeM
             bm25_b=settings.bm25_b,
             rerank_base_weight=settings.rerank_base_weight,
             rerank_overlap_weight=settings.rerank_overlap_weight,
+            rerank_title_weight=settings.rerank_title_weight,
         )
         self.embedding_cache = JsonFileCache(
             settings.rag_cache_dir / "embeddings",

@@ -169,9 +169,9 @@ class PipelineRuntimeMixin:
             return False
         return True
 
-    async def _prepare_retrieval_state(self, session_id: str, user_message: str, allowed_source_paths: set[str] | None = None, *, version_tag: str | None = None) -> dict:
+    async def _prepare_retrieval_state(self, session_id: str, user_message: str, allowed_source_paths: set[str] | None = None, *, version_tag: str | None = None, turn_context: dict | None = None) -> dict:
         builder = RetrievalStateBuilder(self._build_retrieval_state_deps())
-        return await builder.run(session_id, user_message, allowed_source_paths, version_tag=version_tag)
+        return await builder.run(session_id, user_message, allowed_source_paths, version_tag=version_tag, turn_context=turn_context)
 
     async def inspect_retrieval(self, session_id: str, user_message: str, allowed_source_paths: set[str] | None = None) -> dict:
         state = await self._prepare_retrieval_state(session_id, user_message, allowed_source_paths)

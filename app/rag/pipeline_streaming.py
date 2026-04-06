@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
 from app.rag.bge_embeddings import EmbeddingModelUnavailableError
 from app.rag.types import TurnPolicyDecision
+
+_VERSION_PATTERN = re.compile(r"^\s*(\d+\.\d+)\s*$")
 
 STAGE_MESSAGES = {
     "analyzing_intent": "질문 의도 분석중...",
@@ -153,17 +156,17 @@ class StreamingTurnSupport:
             )
             if extractive_code_answer:
                 final_answer, _answer_citations, final_payload = deps.finalize_answer(
-                    extractive_code_answer,
-                    rewritten_query,
-                    use_retrieved_context,
-                    top_score,
-                    code_context_items,
-                    grounded_pages,
-                    preferred_preview_source,
-                    response_mode,
-                    policy_decision,
-                    query_interpretation,
-                    answer_route,
+                    answer=extractive_code_answer,
+                    rewritten_query=rewritten_query,
+                    use_retrieved_context=use_retrieved_context,
+                    top_score=top_score,
+                    selected_context_items=code_context_items,
+                    grounded_pages=grounded_pages,
+                    preferred_preview_source=preferred_preview_source,
+                    response_mode=response_mode,
+                    policy_decision=policy_decision,
+                    query_interpretation=query_interpretation,
+                    answer_route=answer_route,
                 )
                 final_payload["last_example_anchor"] = deps.answer_service.build_example_anchor(
                     code_context_items,
@@ -181,17 +184,17 @@ class StreamingTurnSupport:
             extractive_table_answer = deps.answer_service.build_extractive_table_answer(table_context_items)
             if extractive_table_answer:
                 final_answer, _answer_citations, final_payload = deps.finalize_answer(
-                    extractive_table_answer,
-                    rewritten_query,
-                    use_retrieved_context,
-                    top_score,
-                    table_context_items,
-                    grounded_pages,
-                    preferred_preview_source,
-                    response_mode,
-                    policy_decision,
-                    query_interpretation,
-                    answer_route,
+                    answer=extractive_table_answer,
+                    rewritten_query=rewritten_query,
+                    use_retrieved_context=use_retrieved_context,
+                    top_score=top_score,
+                    selected_context_items=table_context_items,
+                    grounded_pages=grounded_pages,
+                    preferred_preview_source=preferred_preview_source,
+                    response_mode=response_mode,
+                    policy_decision=policy_decision,
+                    query_interpretation=query_interpretation,
+                    answer_route=answer_route,
                 )
                 return _emit(final_answer, final_payload)
             return _no_extractive_answer()
@@ -203,6 +206,41 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
     def __init__(self, deps: ChatTurnDeps) -> None:
         self.deps = deps
 
+    def _detect_version_selection(self, session_id: str, user_message: str, version_tag: str | None) -> tuple[str | None, str | None]:
+        """이전 턴이 버전 clarification이고 현재 메시지가 버전 번호이면 (원래 질문, 버전) 반환."""
+        if version_tag is not None:
+            return None, None
+        match = _VERSION_PATTERN.match(user_message.strip())
+        if not match:
+            return None, None
+        selected_version = match.group(1)
+        recent = self.deps.session_repository.recent_turns(session_id)
+        if len(recent) < 2:
+            return None, None
+        last_assistant = None
+        original_user_msg = None
+        for i in range(len(recent) - 1, -1, -1):
+            turn = recent[i]
+            if turn.role == "assistant" and last_assistant is None:
+                last_assistant = turn
+            elif turn.role == "user" and last_assistant is not None:
+                original_user_msg = turn.content
+                break
+        if last_assistant is None:
+            return None, None
+        meta = last_assistant.metadata if isinstance(last_assistant.metadata, dict) else {}
+        is_clarification = (
+            meta.get("mode") == "clarification"
+            or meta.get("response_mode") == "clarification"
+            or "어떤 버전의 OpenShift" in (last_assistant.content or "")
+            or "어떤 버전의 openshift" in (last_assistant.content or "").lower()
+        )
+        if not is_clarification:
+            return None, None
+        if original_user_msg:
+            return original_user_msg, selected_version
+        return None, None
+
     async def run(
         self,
         session_id: str,
@@ -213,6 +251,22 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
         available_versions: list[str] | None = None,
     ) -> AsyncIterator[dict]:
         deps = self.deps
+
+        # 버전 선택 응답 감지: 이전 턴이 버전 clarification이고 "4.15" 등의 버전 번호가 입력된 경우
+        original_query, selected_version = self._detect_version_selection(session_id, user_message, version_tag)
+        if original_query and selected_version:
+            if append_user_turn:
+                deps.session_repository.add_turn(session_id, "user", user_message)
+            async for event in self.run(
+                session_id=session_id,
+                user_message=original_query,
+                allowed_source_paths=allowed_source_paths,
+                append_user_turn=False,
+                version_tag=selected_version,
+                available_versions=available_versions,
+            ):
+                yield event
+            return
 
         lang_notice = deps.detect_non_korean_query(user_message)
         if lang_notice:
@@ -274,7 +328,7 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
         yield {"type": "status", "stage": "searching_documents", "message": STAGE_MESSAGES["searching_documents"]}
         try:
             if state is None:
-                state = await deps.prepare_retrieval_state(session_id, user_message, allowed_source_paths, version_tag=version_tag)
+                state = await deps.prepare_retrieval_state(session_id, user_message, allowed_source_paths, version_tag=version_tag, turn_context=turn_context)
         except EmbeddingModelUnavailableError:
             error_message = "임베딩 모델이 아직 준비되지 않았습니다. 잠시 후 다시 시도해 주세요."
             yield {"type": "token", "content": error_message, "cached": False, "error": "embedding_model_unavailable"}
@@ -288,6 +342,8 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
             and not target_versions_from_agent
             and use_retrieved_context_early
         ):
+            if append_user_turn:
+                deps.session_repository.add_turn(session_id, "user", user_message)
             async for event in self._stream_version_clarification(
                 session_id, user_message, deps, available_versions or []
             ):
@@ -362,23 +418,22 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
                 chunk = token + " "
                 streamed += chunk
                 yield {"type": "token", "content": chunk, "cached": True}
+            raw_cached = streamed.strip()
             final_answer, _answer_citations, final_payload = deps.finalize_answer(
-                streamed.strip(),
-                rewritten_query,
-                use_retrieved_context,
-                top_score,
-                selected_context_items,
-                grounded_pages,
-                preferred_preview_source,
-                response_mode,
-                policy_decision,
-                query_interpretation,
-                answer_route,
+                answer=raw_cached,
+                rewritten_query=rewritten_query,
+                use_retrieved_context=use_retrieved_context,
+                top_score=top_score,
+                selected_context_items=selected_context_items,
+                grounded_pages=grounded_pages,
+                preferred_preview_source=preferred_preview_source,
+                response_mode=response_mode,
+                policy_decision=policy_decision,
+                query_interpretation=query_interpretation,
+                answer_route=answer_route,
             )
-            if final_answer != streamed.strip():
-                suffix = final_answer[len(streamed.strip()):]
-                if suffix:
-                    yield {"type": "token", "content": suffix, "cached": True}
+            if final_answer != raw_cached:
+                yield {"type": "replace_answer", "content": final_answer}
             yield {"type": "context", **deps.answer_service.public_context_payload(final_payload)}
             deps.store_assistant_turn(session_id, final_answer, final_payload, resolved_topic_id)
             yield {"type": "done", "cached": True}
@@ -484,23 +539,22 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
             parts = [fallback]
             yield {"type": "token", "content": fallback, "cached": False, "error": str(exc)}
 
+        raw_answer = "".join(parts).strip()
         final_answer, _answer_citations, final_payload = deps.finalize_answer(
-            "".join(parts).strip(),
-            rewritten_query,
-            use_retrieved_context,
-            top_score,
-            selected_context_items,
-            grounded_pages,
-            preferred_preview_source,
-            response_mode,
-            policy_decision,
-            query_interpretation,
-            answer_route,
+            answer=raw_answer,
+            rewritten_query=rewritten_query,
+            use_retrieved_context=use_retrieved_context,
+            top_score=top_score,
+            selected_context_items=selected_context_items,
+            grounded_pages=grounded_pages,
+            preferred_preview_source=preferred_preview_source,
+            response_mode=response_mode,
+            policy_decision=policy_decision,
+            query_interpretation=query_interpretation,
+            answer_route=answer_route,
         )
-        if final_answer != "".join(parts).strip():
-            suffix = final_answer[len("".join(parts).strip()):]
-            if suffix:
-                yield {"type": "token", "content": suffix, "cached": False}
+        if final_answer != raw_answer:
+            yield {"type": "replace_answer", "content": final_answer}
         yield {"type": "context", **deps.answer_service.public_context_payload(final_payload)}
         deps.store_assistant_turn(session_id, final_answer, final_payload, resolved_topic_id)
         deps.answer_cache_repository.set(cache_key, {"answer": final_answer})
