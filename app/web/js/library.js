@@ -1,10 +1,109 @@
 const reindexBtn = document.getElementById("reindexBtn");
 const refreshLibraryBtn = document.getElementById("refreshLibraryBtn");
 const uploadProgressArea = document.getElementById("uploadProgressArea");
+const libFilterBar = document.getElementById("libFilterBar");
 
 let _startupIndexingFile = "";
 let _startupPollTimer = null;
 let _isReindexSubmitting = false;
+let _libFilterVersion = null; // null = 전체
+
+function _buildFilterBar(sortedVersions) {
+  if (!libFilterBar) return;
+  if (!sortedVersions.length) {
+    libFilterBar.style.display = "none";
+    libFilterBar.innerHTML = "";
+    return;
+  }
+
+  libFilterBar.style.display = "flex";
+  libFilterBar.innerHTML = "";
+
+  const allVersions = [null, ...sortedVersions];
+  allVersions.forEach((v) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "lib-filter-btn" + (v === _libFilterVersion ? " active" : "");
+    btn.textContent = v ? v : "전체";
+    btn.addEventListener("click", () => {
+      _libFilterVersion = v;
+      _buildFilterBar(sortedVersions);
+      _applyFilter(_lastLibraryDocuments);
+    });
+    libFilterBar.appendChild(btn);
+  });
+}
+
+let _lastLibraryDocuments = [];
+
+function _applyFilter(documents) {
+  libraryList.innerHTML = "";
+
+  const filtered = _libFilterVersion
+    ? documents.filter((doc) => _extractVersion(doc) === _libFilterVersion)
+    : documents;
+
+  if (!filtered.length) {
+    libraryList.innerHTML = '<div class="empty">해당 버전의 PDF가 없습니다.</div>';
+    return;
+  }
+
+  // 필터 적용 후 그룹핑은 기존 renderLibrary 로직 재사용
+  _renderGrouped(filtered);
+}
+
+function _renderGrouped(documents) {
+  libraryList.innerHTML = "";
+  if (!documents.length) {
+    libraryList.innerHTML = '<div class="empty">업로드된 PDF가 없습니다. 아래 영역에 파일을 올려 주세요.</div>';
+    return;
+  }
+
+  const groups = {};
+  const noVersion = [];
+  documents.forEach((doc) => {
+    const v = _extractVersion(doc);
+    if (v) {
+      if (!groups[v]) groups[v] = [];
+      groups[v].push(doc);
+    } else {
+      noVersion.push(doc);
+    }
+  });
+
+  const sortedVersions = Object.keys(groups).sort((a, b) => {
+    const [ma, mi_a] = a.split(".").map(Number);
+    const [mb, mi_b] = b.split(".").map(Number);
+    return ma !== mb ? ma - mb : mi_a - mi_b;
+  });
+
+  if (sortedVersions.length) {
+    sortedVersions.forEach((version) => {
+      const section = document.createElement("div");
+      section.style.cssText = "margin-bottom: 24px;";
+      const header = document.createElement("div");
+      header.style.cssText = "display:flex;align-items:center;gap:10px;margin-bottom:10px;";
+      header.innerHTML =
+        '<span style="font-size:13px;font-weight:800;color:#182538;">OCP ' + escapeHtml(version) + '</span>' +
+        '<span style="font-size:12px;color:#66758a;">' + groups[version].length + '개 문서</span>';
+      section.appendChild(header);
+      section.appendChild(_makeVersionTable(groups[version]));
+      libraryList.appendChild(section);
+    });
+    if (noVersion.length) {
+      const section = document.createElement("div");
+      section.style.cssText = "margin-bottom: 24px;";
+      const header = document.createElement("div");
+      header.style.cssText = "display:flex;align-items:center;gap:10px;margin-bottom:10px;";
+      header.innerHTML = '<span style="font-size:13px;font-weight:800;color:#182538;">기타</span>';
+      section.appendChild(header);
+      section.appendChild(_makeVersionTable(noVersion));
+      libraryList.appendChild(section);
+    }
+  } else {
+    libraryList.appendChild(_makeVersionTable(documents));
+  }
+}
 
 function updateLibraryStats(data) {
   const documents = data.indexed_documents || [];
@@ -66,59 +165,35 @@ function _makeVersionTable(docs) {
 }
 
 function renderLibrary(documents) {
-  libraryList.innerHTML = "";
+  _lastLibraryDocuments = documents;
+
   if (!documents.length) {
+    if (libFilterBar) { libFilterBar.style.display = "none"; libFilterBar.innerHTML = ""; }
     libraryList.innerHTML = '<div class="empty">업로드된 PDF가 없습니다. 아래 영역에 파일을 올려 주세요.</div>';
     return;
   }
 
-  // 버전별로 그룹핑
+  // 버전 목록 수집 → 필터 탭 빌드
   const groups = {};
-  const noVersion = [];
   documents.forEach((doc) => {
     const v = _extractVersion(doc);
-    if (v) {
-      if (!groups[v]) groups[v] = [];
-      groups[v].push(doc);
-    } else {
-      noVersion.push(doc);
-    }
+    if (v) { if (!groups[v]) groups[v] = []; groups[v].push(doc); }
   });
-
   const sortedVersions = Object.keys(groups).sort((a, b) => {
     const [ma, mi_a] = a.split(".").map(Number);
     const [mb, mi_b] = b.split(".").map(Number);
     return ma !== mb ? ma - mb : mi_a - mi_b;
   });
 
-  // 버전 그룹이 있으면 섹션별로 렌더링
-  if (sortedVersions.length) {
-    sortedVersions.forEach((version) => {
-      const section = document.createElement("div");
-      section.style.cssText = "margin-bottom: 24px;";
-      const header = document.createElement("div");
-      header.style.cssText = "display:flex;align-items:center;gap:10px;margin-bottom:10px;";
-      header.innerHTML =
-        '<span style="font-size:13px;font-weight:800;color:#182538;">OCP ' + escapeHtml(version) + '</span>' +
-        '<span style="font-size:12px;color:#66758a;">' + groups[version].length + '개 문서</span>';
-      section.appendChild(header);
-      section.appendChild(_makeVersionTable(groups[version]));
-      libraryList.appendChild(section);
-    });
-    if (noVersion.length) {
-      const section = document.createElement("div");
-      section.style.cssText = "margin-bottom: 24px;";
-      const header = document.createElement("div");
-      header.style.cssText = "display:flex;align-items:center;gap:10px;margin-bottom:10px;";
-      header.innerHTML = '<span style="font-size:13px;font-weight:800;color:#182538;">기타</span>';
-      section.appendChild(header);
-      section.appendChild(_makeVersionTable(noVersion));
-      libraryList.appendChild(section);
-    }
-  } else {
-    // 버전 정보 없으면 기존 방식 (단일 테이블)
-    libraryList.appendChild(_makeVersionTable(documents));
+  _buildFilterBar(sortedVersions);
+
+  // 현재 필터가 더 이상 존재하지 않는 버전이면 초기화
+  if (_libFilterVersion && !sortedVersions.includes(_libFilterVersion)) {
+    _libFilterVersion = null;
+    _buildFilterBar(sortedVersions);
   }
+
+  _applyFilter(documents);
 }
 
 function _renderUploadState(completedDocs, currentFile, pct, completedCount, totalFiles) {

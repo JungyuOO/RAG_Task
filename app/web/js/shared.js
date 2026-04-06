@@ -1,3 +1,11 @@
+function escapeHtml(text) {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 const navButtons = Array.from(document.querySelectorAll(".nav-button"));
 const chatLayout = document.querySelector(".chat-layout");
 const previewPanel = document.querySelector(".preview-main");
@@ -300,8 +308,14 @@ function renderAssistantText(body, value, options = {}) {
 
     const block = document.createElement("div");
     block.className = "assistant-text-block";
-    block.textContent = textLines.join("\n").trim();
-    if (block.textContent) {
+    const rawText = textLines.join("\n").trim();
+    if (rawText) {
+      if (typeof renderCitationTags === "function") {
+        block.innerHTML = renderCitationTags(escapeHtml(rawText));
+        if (typeof bindCitationClicks === "function") bindCitationClicks(block);
+      } else {
+        block.textContent = rawText;
+      }
       fragment.appendChild(block);
     }
   }

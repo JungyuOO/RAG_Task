@@ -20,6 +20,7 @@ class HybridRetriever:
         bm25_b: float,
         rerank_base_weight: float,
         rerank_overlap_weight: float,
+        rerank_title_weight: float = 0.15,
     ) -> None:
         self.top_k = top_k
         self.candidate_pool_size = candidate_pool_size
@@ -27,6 +28,7 @@ class HybridRetriever:
         self.bm25_b = bm25_b
         self.rerank_base_weight = rerank_base_weight
         self.rerank_overlap_weight = rerank_overlap_weight
+        self.rerank_title_weight = rerank_title_weight
 
     def search_rrf(
         self,
@@ -37,11 +39,16 @@ class HybridRetriever:
         limit: int | None = None,
         target_versions: list | None = None,
         version_map: dict | None = None,
+        keyword_query: str | None = None,
     ) -> list[dict]:
         """Fuse dense and sparse ranks with RRF, then apply overlap rerank.
 
         limit이 지정되면 top_k 대신 해당 개수만큼 반환한다.
         cross-encoder에 넓은 후보 풀을 넘길 때 사용.
+
+        keyword_query가 지정되면 BM25 및 keyword-overlap 계산에 이 쿼리를 사용한다.
+        확장된 query는 dense 검색에만 사용되고, BM25에는 핵심 키워드만 포함된
+        짧은 쿼리를 사용하여 토큰 희석을 방지한다.
 
         target_versions가 지정되면 해당 버전 태그에 속하는 청크만 검색 대상에 포함한다.
         version_map이 제공되면 version_id 기반으로 필터링하고, 그렇지 않으면
@@ -61,7 +68,7 @@ class HybridRetriever:
         if not index_items:
             return []
 
-        query_tokens = tokenize(query)
+        query_tokens = tokenize(keyword_query if keyword_query else query)
 
         doc_frequency = Counter()
         doc_lengths: list[int] = []
@@ -151,15 +158,23 @@ class HybridRetriever:
         return score / max(max_possible, 1.0)
 
     def _rerank(self, query_tokens: list[str], candidates: list[dict]) -> list[dict]:
-        """Combine RRF score with keyword overlap for a lightweight pre-rerank."""
+        """Combine RRF score with keyword overlap and section title match for a lightweight pre-rerank."""
         reranked = []
         for candidate in candidates:
             overlap = keyword_overlap_score(query_tokens, candidate["chunk"]["tokens"])
+
+            # Section title boosting: query keywords matched against section heading
+            metadata = candidate["chunk"].get("metadata") or {}
+            section_title = str(metadata.get("section_title") or "").lower()
+            title_tokens = tokenize(section_title) if section_title else []
+            title_overlap = keyword_overlap_score(query_tokens, title_tokens) if title_tokens else 0.0
+
             final_score = (
                 candidate["score"] * self.rerank_base_weight
                 + overlap * self.rerank_overlap_weight
+                + title_overlap * self.rerank_title_weight
             )
-            reranked.append({**candidate, "rerank_score": final_score})
+            reranked.append({**candidate, "rerank_score": final_score, "title_score": title_overlap})
         reranked.sort(key=lambda entry: entry["rerank_score"], reverse=True)
         return reranked
 

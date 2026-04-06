@@ -37,13 +37,31 @@ def unscoped_session_id(owner_id: str, session_id: str) -> str:
 
 
 def resolve_library_pdf(settings, file_name: str) -> Path:
-    target_path = (settings.rag_source_dir / file_name).resolve()
     root_path = settings.rag_source_dir.resolve()
-    if root_path not in target_path.parents and target_path != root_path:
+    base_name = Path(file_name).name
+    if base_name != file_name or not base_name:
         raise HTTPException(status_code=400, detail="Invalid file path.")
-    if not target_path.exists() or not target_path.is_file() or target_path.suffix.lower() != ".pdf":
-        raise HTTPException(status_code=404, detail="PDF file not found.")
-    return target_path
+
+    # 최상위 경로 우선, 없으면 하위 폴더(ocp-x.y/…) 재귀 탐색
+    direct = (settings.rag_source_dir / base_name).resolve()
+    candidates: list[Path] = []
+    if direct.exists() and direct.is_file():
+        candidates.append(direct)
+    else:
+        candidates.extend(
+            path for path in settings.rag_source_dir.rglob(base_name)
+            if path.is_file()
+        )
+
+    for target_path in candidates:
+        resolved = target_path.resolve()
+        if root_path not in resolved.parents and resolved != root_path:
+            continue
+        if resolved.suffix.lower() != ".pdf":
+            continue
+        return resolved
+
+    raise HTTPException(status_code=404, detail="PDF file not found.")
 
 
 async def save_library_uploads(settings, files: list[UploadFile]) -> list[str]:
