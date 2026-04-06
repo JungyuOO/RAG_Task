@@ -151,6 +151,11 @@ async function consumeChatStream(response, assistantState, pendingState) {
         assistantState.setText(assistantText);
         updatePendingChatState({ partial_response: assistantText });
       }
+      if (payload.type === "replace_answer") {
+        assistantText = payload.content;
+        assistantState.setText(assistantText);
+        updatePendingChatState({ partial_response: assistantText });
+      }
       if (payload.type === "done") {
         sawDone = true;
         attachSourceButton(assistantState.block, finalContextPayload || currentContextPayload);

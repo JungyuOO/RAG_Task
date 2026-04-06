@@ -267,11 +267,23 @@
       .composer-shell { grid-template-columns: 1fr; }
       .composer-tools, .composer-actions { justify-content: space-between; }
     }
-    .version-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 12px 22px; border-bottom: 1px solid var(--line); background: #f8fafc; border-radius: 0; }
-    .version-label { font-size: 11px; font-weight: 800; color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; margin-right: 4px; white-space: nowrap; }
-    .version-btn { padding: 4px 12px; font-size: 12px; font-weight: 700; border-radius: 999px; border: 1px solid var(--line-strong); background: #fff; color: var(--muted); cursor: pointer; transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease; box-shadow: none; }
-    .version-btn:hover { background: #f0f4ff; border-color: #a8c2ff; color: var(--brand-deep); }
-    .version-btn.active { background: var(--brand); border-color: var(--brand); color: #fff; box-shadow: 0 2px 8px rgba(42, 87, 223, 0.25); }
+    .version-bar { display: flex; align-items: center; gap: 10px; padding: 4px 22px; border-bottom: 1px solid var(--line); background: #f8fafc; height: 40px; flex:none;}
+    .version-label { font-size: 11px; font-weight: 800; color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; }
+    .version-dropdown { position: relative; display: inline-block; }
+    .version-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; font-size: 13px; font-weight: 700; border-radius: 10px; border: 1px solid var(--line-strong); background: #fff; color: var(--ink); cursor: pointer; transition: background 0.14s ease, border-color 0.14s ease; box-shadow: none; white-space: nowrap; }
+    .version-toggle:hover { background: #f0f4ff; border-color: #a8c2ff; color: var(--brand-deep); }
+    .version-toggle.active { background: var(--brand); border-color: var(--brand); color: #fff; }
+    .version-toggle-caret { font-size: 10px; line-height: 1; transition: transform 0.18s ease; display: inline-block; }
+    .version-dropdown.open .version-toggle-caret { transform: rotate(180deg); }
+    .version-menu { display: none; position: absolute; top: calc(100% + 6px); left: 0; z-index: 60; background: #fff; border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12); padding: 6px; min-width: 120px; }
+    .version-dropdown.open .version-menu { display: block; }
+    .version-menu-item { display: block; width: 100%; padding: 8px 12px; font-size: 13px; font-weight: 700; border-radius: 8px; border: 1px solid transparent; background: transparent; color: var(--muted); cursor: pointer; text-align: left; transition: background 0.12s ease, color 0.12s ease; }
+    .version-menu-item:hover { background: #f0f4ff; color: var(--brand-deep); }
+    .version-menu-item.active { background: #edf4ff; color: var(--brand); border-color: #bfd3fb; }
+    .lib-filter-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 10px 0 14px; }
+    .lib-filter-btn { padding: 5px 14px; font-size: 12px; font-weight: 700; border-radius: 999px; border: 1px solid var(--line-strong); background: #fff; color: var(--muted); cursor: pointer; transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease; }
+    .lib-filter-btn:hover { background: #f0f4ff; border-color: #a8c2ff; color: var(--brand-deep); }
+    .lib-filter-btn.active { background: var(--brand); border-color: var(--brand); color: #fff; }
   </style>
 </head>
 <body>
@@ -332,14 +344,22 @@
               </div>
               <div id="version-selector" class="version-bar">
                 <span class="version-label">버전</span>
-                <button class="version-btn active" data-version="" type="button">전체</button>
-                <button class="version-btn" data-version="4.15" type="button">4.15</button>
-                <button class="version-btn" data-version="4.16" type="button">4.16</button>
-                <button class="version-btn" data-version="4.17" type="button">4.17</button>
-                <button class="version-btn" data-version="4.18" type="button">4.18</button>
-                <button class="version-btn" data-version="4.19" type="button">4.19</button>
-                <button class="version-btn" data-version="4.20" type="button">4.20</button>
-                <button class="version-btn" data-version="4.21" type="button">4.21</button>
+                <div id="versionDropdown" class="version-dropdown">
+                  <button id="versionToggle" class="version-toggle" type="button" aria-haspopup="listbox" aria-expanded="false">
+                    <span id="versionToggleLabel">전체</span>
+                    <span class="version-toggle-caret" aria-hidden="true">▾</span>
+                  </button>
+                  <div id="versionMenu" class="version-menu" role="listbox">
+                    <button class="version-menu-item active" data-version="" type="button" role="option">전체</button>
+                    <button class="version-menu-item" data-version="4.15" type="button" role="option">4.15</button>
+                    <button class="version-menu-item" data-version="4.16" type="button" role="option">4.16</button>
+                    <button class="version-menu-item" data-version="4.17" type="button" role="option">4.17</button>
+                    <button class="version-menu-item" data-version="4.18" type="button" role="option">4.18</button>
+                    <button class="version-menu-item" data-version="4.19" type="button" role="option">4.19</button>
+                    <button class="version-menu-item" data-version="4.20" type="button" role="option">4.20</button>
+                    <button class="version-menu-item" data-version="4.21" type="button" role="option">4.21</button>
+                  </div>
+                </div>
               </div>
               <div class="surface-body">
                 <div class="chat-shell">
@@ -444,7 +464,8 @@
                   </div>
                 </div>
                 <div id="uploadProgressArea"></div>
-                <div id="libraryList" class="library-list" style="margin-top: 12px;"></div>
+                <div id="libFilterBar" class="lib-filter-bar" style="display:none;"></div>
+                <div id="libraryList" class="library-list" style="margin-top: 4px;"></div>
               </div>
             </div>
           </div>
@@ -465,9 +486,26 @@
       <iframe id="pdfViewer" class="pdf-frame" title="PDF Viewer"></iframe>
     </div>
   </div>
-  <div id="chunk-viewer" style="display:none;"></div>
+  <div id="chunk-viewer" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:9999;background:rgba(0,0,0,0.45);padding:40px;overflow-y:auto;">
+    <div style="max-width:900px;margin:0 auto;background:#fff;border-radius:16px;box-shadow:0 8px 40px rgba(0,0,0,0.2);overflow:hidden;"></div>
+  </div>
+  <style>
+    .chunk-viewer-header { display:flex; justify-content:space-between; align-items:center; padding:18px 24px; background:#f7f9fc; border-bottom:1px solid var(--line); }
+    .chunk-viewer-header h3 { font-size:15px; font-weight:800; margin:0; }
+    .chunk-viewer-header button { padding:6px 16px; border-radius:8px; border:1px solid var(--line-strong); background:#fff; cursor:pointer; font-size:13px; font-weight:600; }
+    .chunk-list { padding:12px 24px; display:flex; flex-direction:column; gap:10px; max-height:60vh; overflow-y:auto; }
+    .chunk-item { border:1px solid var(--line); border-radius:10px; padding:12px 16px; background:#fafcff; }
+    .chunk-header { display:flex; gap:12px; align-items:center; font-size:11px; color:var(--muted); font-weight:700; margin-bottom:6px; }
+    .chunk-id { max-width:120px; overflow:hidden; text-overflow:ellipsis; }
+    .chunk-page { color:var(--brand); }
+    .chunk-text { font-size:13px; line-height:1.6; color:var(--ink); white-space:pre-wrap; word-break:break-word; }
+    .chunk-pagination { display:flex; justify-content:center; align-items:center; gap:12px; padding:14px 24px; border-top:1px solid var(--line); }
+    .chunk-pagination button { padding:6px 16px; border-radius:8px; border:1px solid var(--line-strong); background:#fff; cursor:pointer; font-size:13px; }
+    .chunk-pagination span { font-size:13px; color:var(--muted); font-weight:600; }
+  </style>
   <div id="status-bar-container" style="display:none;"></div>
   <script src="/static/js/shared.js"></script>
+  <script src="/static/js/citation.js"></script>
   <script src="/static/js/preview.js"></script>
   <script src="/static/js/session.js"></script>
   <script src="/static/js/library.js"></script>
