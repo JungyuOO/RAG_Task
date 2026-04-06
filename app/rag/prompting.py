@@ -219,6 +219,30 @@ class PromptComposer:
 
         return system_prompt
 
+    def _build_older_turns_digest(self, session_id: str, topic_id: str | None, skip_recent: int) -> str:
+        """recent_turns 이전 턴들을 한 문단으로 압축한 다이제스트를 반환한다.
+
+        skip_recent 개의 최근 턴은 이미 recent_turns에 포함되므로 제외한다.
+        """
+        if topic_id:
+            all_turns = self.session_repository.recent_topic_turns(session_id, topic_id)
+        else:
+            all_turns = self.session_repository.recent_turns(session_id)
+
+        older = all_turns[:-skip_recent] if skip_recent and len(all_turns) > skip_recent else []
+        if not older:
+            return ""
+
+        lines: list[str] = []
+        for turn in older:
+            role = getattr(turn, "role", turn.get("role", "")) if hasattr(turn, "get") else turn.role
+            content_raw = getattr(turn, "content", turn.get("content", "")) if hasattr(turn, "get") else turn.content
+            content = str(content_raw)[:120].replace("\n", " ")
+            label = "User" if role == "user" else "Assistant"
+            lines.append(f"- [{label}] {content}")
+
+        return "\n".join(lines)
+
     def build_llm_messages(
         self,
         session_id: str,
@@ -235,24 +259,36 @@ class PromptComposer:
         system_prompt = self.build_system_prompt(code_example_request, query_interpretation=query_interpretation)
         summary = self.session_repository.summary(session_id)
         prompt_memory = self.build_prompt_memory_snapshot(session_id, topic_id=topic_id)
+        prompt_recent_turns = max(int(self.settings.llm_prompt_recent_turns), 1)
         recent_turns = (
             self.build_prompt_recent_turns_clean(session_id, topic_id=topic_id)
             if is_new_topic
             else self.build_prompt_recent_turns(session_id, topic_id=topic_id)
         )
+
+        # recent_turns 이전에 더 오래된 턴이 있으면 다이제스트로 삽입
+        older_digest = self._build_older_turns_digest(session_id, topic_id, skip_recent=prompt_recent_turns)
+
         context_text = self.build_prompt_context_text(context_blocks)
+
+        session_context_parts = [
+            f"Conversation summary:\n{summary or 'No summary yet.'}",
+        ]
+        if older_digest:
+            session_context_parts.append(f"Earlier conversation digest:\n{older_digest}")
+        session_context_parts += [
+            f"Session memory:\n{json.dumps(prompt_memory, ensure_ascii=False)}",
+            f"Retrieval mode: {response_mode}",
+            f"Turn policy: {json.dumps(turn_policy, ensure_ascii=False)}",
+            f"Top retrieval score: {top_score:.4f}",
+            f"Retrieved context:\n{context_text}",
+        ]
+
         return [
             {"role": "system", "content": system_prompt},
             {
                 "role": "system",
-                "content": (
-                    f"Conversation summary:\n{summary or 'No summary yet.'}\n\n"
-                    f"Session memory:\n{json.dumps(prompt_memory, ensure_ascii=False)}\n\n"
-                    f"Retrieval mode: {response_mode}\n"
-                    f"Turn policy: {json.dumps(turn_policy, ensure_ascii=False)}\n"
-                    f"Top retrieval score: {top_score:.4f}\n\n"
-                    f"Retrieved context:\n{context_text}"
-                ),
+                "content": "\n\n".join(session_context_parts),
             },
             *recent_turns,
             {"role": "user", "content": user_message},
