@@ -12,6 +12,8 @@ class EmbeddingModelUnavailableError(RuntimeError):
 class BGEOllamaEmbedder:
     """Ollama-backed BGE embedding client."""
 
+    _QUERY_CACHE_MAX = 256
+
     def __init__(
         self,
         base_url: str = "http://localhost:11434",
@@ -22,9 +24,18 @@ class BGEOllamaEmbedder:
         self.model = model
         self.timeout = timeout
         self.dim = 1024
+        # In-memory LRU cache for query vectors (process lifetime, ~256 entries)
+        self._query_cache: dict[str, list[float]] = {}
 
     def encode(self, text: str) -> list[float]:
-        return self.encode_batch([text])[0]
+        cached = self._query_cache.get(text)
+        if cached is not None:
+            return cached
+        result = self.encode_batch([text])[0]
+        if len(self._query_cache) >= self._QUERY_CACHE_MAX:
+            self._query_cache.pop(next(iter(self._query_cache)))
+        self._query_cache[text] = result
+        return result
 
     def encode_passage(self, text: str) -> list[float]:
         return self.encode(text)
