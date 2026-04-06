@@ -39,3 +39,6 @@ class IndexRepository:
 
     def list_documents(self) -> list[dict]:
         return self.backend.list_documents()
+    
+    def get_indexed_source_paths(self) -> set[str]:
+        return self.backend.get_indexed_source_paths()
