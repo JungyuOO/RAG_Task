@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.rag.types import TurnPolicyDecision
+from app.rag.utils import tokenize
 
 logger = logging.getLogger("rag.pipeline")
 
@@ -50,10 +51,13 @@ class RetrievalStateBuilder:
         allowed_source_paths: set[str] | None = None,
         *,
         version_tag: str | None = None,
+        turn_context: dict | None = None,
     ) -> dict:
         deps = self.deps
         target_versions = [version_tag] if version_tag else None
-        turn_context = await deps.resolve_turn_context(session_id, user_message)
+        # turn_context가 이미 계산된 경우 재사용 (중복 LLM 호출 방지)
+        if turn_context is None:
+            turn_context = await deps.resolve_turn_context(session_id, user_message)
         resolution = turn_context["resolution"]
         resolved_topic = turn_context["resolved_topic"]
         topic_state = turn_context["topic_state"]
@@ -82,7 +86,8 @@ class RetrievalStateBuilder:
                 seen_sources.add(src)
                 all_sources.append(src)
 
-        intent_result = await deps.intent_agent.classify(
+        # turn_context에서 이미 계산된 intent_result 재사용 (중복 LLM 호출 제거)
+        intent_result = turn_context.get("intent_result") or await deps.intent_agent.classify(
             user_message,
             context={
                 "active_topic": topic_state.get("active_topic"),
@@ -98,8 +103,8 @@ class RetrievalStateBuilder:
         refined_query = query_result["refined_query"]
         alternative_queries = query_result.get("alternative_queries", [])
         logger.info(
-            "[RetrievalAgent] 재작성=%r 검색질의=%r | 대안=%r | 키워드=%r",
-            rewritten_query, refined_query, alternative_queries, query_result.get("search_keywords", []),
+            "[RetrievalAgent] 재작성=%r 검색질의=%r | 대안=%r | 번역키워드=%r",
+            rewritten_query, refined_query, alternative_queries, query_result.get("translated_keywords", []),
         )
 
         query_interpretation = deps.retrieval_agent.interpret(
@@ -127,13 +132,27 @@ class RetrievalStateBuilder:
         query_vector = deps.embedder.encode(expanded_query)
         index_items = deps.retrieval_service.filter_index_items(index_items_all, allowed_source_paths)
 
+        # BM25는 영어 문서에 대해 Lexical Exact Match를 수행하므로,
+        # 한국어가 섞인 rewritten_query 대신 RetrievalAgent가 영어로 번역한 refined_query를 사용한다.
+        # 이렇게 해야 한국어 토큰이 BM25에서 0점을 받는 문제를 방지할 수 있다.
+        bm25_keyword_query = self._build_bm25_keyword_query(refined_query)
+
+        logger.info(
+            "[BM25] keyword_query=%r (tokens=%d vs expanded=%d)",
+            bm25_keyword_query[:80],
+            len(tokenize(bm25_keyword_query)),
+            len(tokenize(expanded_query)),
+        )
+
         # 첫 RRF 호출에서 candidate_pool_size개(넓은 풀)를 받아둔다.
         # top_k개는 selected_source_pass / alternative_queries 병합용,
         # 전체 풀은 cross-encoder 입력으로 재사용하여 중복 호출을 제거한다.
+        rrf_k = getattr(deps.settings, "rrf_k", 30)
         base_rrf_pool = deps.retriever.search_rrf(
-            expanded_query, query_vector, index_items, rrf_k=60,
+            expanded_query, query_vector, index_items, rrf_k=rrf_k,
             limit=deps.retriever.candidate_pool_size,
             target_versions=target_versions,
+            keyword_query=bm25_keyword_query,
         )
         retrieved = base_rrf_pool[: deps.retriever.top_k]
 
@@ -170,8 +189,9 @@ class RetrievalStateBuilder:
                     expanded_query,
                     query_vector,
                     selected_source_items,
-                    rrf_k=60,
+                    rrf_k=rrf_k,
                     target_versions=target_versions,
+                    keyword_query=bm25_keyword_query,
                 )
                 for item in source_retrieved:
                     cid = item["chunk"]["chunk_id"]
@@ -196,7 +216,8 @@ class RetrievalStateBuilder:
             alt_aliased = deps.expand_query_with_resource_aliases(alt_query, query_interpretation_dict)
             alt_expanded = deps.expand_query_with_context(alt_aliased, topic_state)
             alt_vector = deps.embedder.encode(alt_expanded)
-            alt_retrieved = deps.retriever.search_rrf(alt_expanded, alt_vector, index_items, rrf_k=60, target_versions=target_versions)
+            alt_bm25_kw = self._build_bm25_keyword_query(alt_query)
+            alt_retrieved = deps.retriever.search_rrf(alt_expanded, alt_vector, index_items, rrf_k=rrf_k, target_versions=target_versions, keyword_query=alt_bm25_kw)
             for item in alt_retrieved:
                 cid = item["chunk"]["chunk_id"]
                 if cid not in seen_chunk_ids:
@@ -330,25 +351,76 @@ class RetrievalStateBuilder:
         user_message: str,
         query_interpretation: Any,
     ) -> str:
-        """Expand very short resource queries to lift cross-encoder confidence."""
+        """Explain/what-is 인텐트 쿼리를 개념 검색에 적합하게 확장한다.
+
+        resources가 없더라도 normalized_keywords를 활용하며, 쿼리 길이 제한을
+        제거하여 한국어 긴 질문도 확장 대상에 포함한다.
+        """
         resources = list(query_interpretation["resources"] or [])
         intent = str(query_interpretation["intent"] or "").casefold()
         response_shape = str(query_interpretation["response_shape"] or "").casefold()
+        normalized_keywords = list(query_interpretation.get("normalized_keywords") or [])
 
-        if not resources or len(user_message.strip()) > 30:
+        is_explain_intent = intent == "explain" or response_shape == "text"
+        if not is_explain_intent:
             return expanded_query
 
-        if intent not in ("explain", "") and response_shape != "text":
+        # 이미 충분히 긴 확장 쿼리는 더 늘리지 않는다
+        if len(expanded_query.split()) > 25:
             return expanded_query
 
-        resource_str = " ".join(resources)
-        suffix_parts = [f"{resource_str} 개념 역할 특징 설명"]
-        if intent == "explain" or response_shape == "text":
-            suffix_parts.append("동작 원리 구성 요소")
+        # resources 우선, 없으면 normalized_keywords로 fallback
+        user_lower = user_message.casefold()
+        candidates = [r for r in resources if r.casefold() in user_lower]
+        if not candidates:
+            candidates = [kw for kw in normalized_keywords if len(kw) > 2 and kw.isascii()][:2]
+        if not candidates:
+            return expanded_query
 
-        suffix = " ".join(suffix_parts)
-        if suffix.strip() and suffix.strip() not in expanded_query:
+        resource_str = " ".join(candidates[:2])
+        suffix = f"{resource_str} definition concept what is overview explanation"
+        if suffix.strip() not in expanded_query:
             expanded_query = f"{expanded_query} {suffix}"
-            logger.info("[QueryExpansion] short query expanded: %r", expanded_query)
-
+            logger.info("[QueryExpansion] explain-intent expanded: %r", expanded_query[:120])
         return expanded_query
+
+    # BM25 filler words to strip — generic verbs, question words, articles, etc.
+    _BM25_STOPWORDS: set[str] = {
+        # English question/filler
+        "what", "is", "are", "how", "does", "do", "the", "a", "an", "in", "of",
+        "and", "or", "to", "for", "with", "its", "it", "this", "that", "on",
+        "by", "from", "about", "between", "can", "be", "has", "have",
+        # Generic action/filler verbs
+        "explain", "describe", "show", "tell", "discuss", "detail",
+        "provide", "list", "give", "understand", "define",
+        # Generic nouns that dilute specificity
+        "concept", "concepts", "overview", "benefits", "benefit",
+        "management", "resource", "resources", "works", "work",
+        "features", "feature", "role", "roles",
+        # Korean filler (after tokenize strips suffixes)
+        "뭐야", "무엇", "어떻게", "왜", "설명", "개념", "역할", "특징",
+        "동작", "원리", "구성", "요소", "방법", "차이", "비교",
+    }
+
+    @classmethod
+    def _build_bm25_keyword_query(cls, query: str) -> str:
+        """Strip filler/stopwords from a query to keep only core terms for BM25.
+
+        Example:
+          'What is time slicing in OpenShift Container Platform and Kubernetes?
+           Explain the concept, how it works, and its benefits for resource management.'
+        → 'time slicing openshift container platform kubernetes'
+        """
+        tokens = tokenize(query)
+        kept = [t for t in tokens if t not in cls._BM25_STOPWORDS]
+        if not kept:
+            return query
+        # De-duplicate while preserving order
+        seen: set[str] = set()
+        unique: list[str] = []
+        for t in kept:
+            if t not in seen:
+                seen.add(t)
+                unique.append(t)
+        return " ".join(unique)
+
