@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
+import time
 from pathlib import Path
 
 from app.config import Settings
+
+_logger = logging.getLogger("rag.startup")
 from app.rag.ingestion_pdf_extract import PdfExtractionSupport, PdfMergeSupport
 from app.rag.types import Document
 from app.rag.utils import normalize_text, stable_hash
@@ -24,18 +28,28 @@ class PdfExtractor(PdfExtractionSupport, PdfMergeSupport):
         documents: list[Document] = []
         markdown_sections: list[dict[str, str | int]] = []
 
+        t0 = time.perf_counter()
         with fitz.open(path) as pdf:
             is_slide = self._is_slide_pdf(pdf)
             footer_pattern = self._detect_footer_pattern(pdf) if not is_slide else None
             total_pages = len(pdf)
+            t_open = time.perf_counter()
+            _logger.info("[Timing][PDF:%s] 파일 열기+분석: %.2fs, 총 %d 페이지 (슬라이드=%s)",
+                         path.name, t_open - t0, total_pages, is_slide)
 
+            slow_pages: list[tuple[int, float]] = []
             for index, page in enumerate(pdf, start=1):
+                tp = time.perf_counter()
                 if is_slide:
                     structured_markdown = self._extract_slide_page(page)
                     loader = "pdf_slide"
                 else:
                     structured_markdown = self._extract_structured_page(page, footer_pattern)
                     loader = "pdf_text"
+                page_elapsed = time.perf_counter() - tp
+
+                if page_elapsed > 1.0:
+                    slow_pages.append((index, page_elapsed))
 
                 text = normalize_text(structured_markdown)
                 if not text:
@@ -61,8 +75,19 @@ class PdfExtractor(PdfExtractionSupport, PdfMergeSupport):
                 if progress_callback:
                     progress_callback("extract", index, total_pages)
 
+        t_pages = time.perf_counter()
+        _logger.info("[Timing][PDF:%s] 페이지 추출 완료: %.2fs (페이지당 평균 %.3fs)",
+                     path.name, t_pages - t_open,
+                     (t_pages - t_open) / max(total_pages, 1))
+        if slow_pages:
+            top = sorted(slow_pages, key=lambda x: x[1], reverse=True)[:5]
+            _logger.warning("[Timing][PDF:%s] 느린 페이지 top5: %s",
+                            path.name, [(f"p{p}", f"{e:.2f}s") for p, e in top])
+
         self._merge_cross_page_tables(documents, markdown_sections)
         self._merge_cross_page_yaml_blocks(documents, markdown_sections)
+        t_merge = time.perf_counter()
+        _logger.info("[Timing][PDF:%s] 테이블/YAML 병합: %.2fs", path.name, t_merge - t_pages)
         return documents, markdown_sections
 
     def export_markdown(self, path: Path, documents: list[Document], markdown_sections: list[dict[str, str | int]]) -> None:
