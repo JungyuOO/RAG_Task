@@ -98,26 +98,32 @@ class StructuredMarkdownChunker(StructuredMarkdownChunkerSupport):
         if not current_blocks:
             return False
 
-        current_kinds = {block.kind for block in current_blocks}
-        structured_kinds = {"heading", "list", "table", "code"}
-
         if next_block.kind == "heading":
             return True
+
         if next_block.kind == "table" and current_blocks[-1].kind == "paragraph":
             if len(current_blocks[-1].text) <= 150:
                 return False
+
         if next_block.kind == current_blocks[-1].kind:
             return False
-        if next_block.kind in structured_kinds and current_kinds - {next_block.kind}:
+
+        # 코드 블록은 따로 유지
+        if next_block.kind == "code":
             return True
-        if next_block.kind == "paragraph" and current_kinds & structured_kinds:
-            return True
+
+        # heading/code만 강하게 경계로 두고
+        # list/table/paragraph 전환은 chunk_size 초과 시 자연스럽게 끊기게 둠
         return False
 
     def _blocks_from_markdown(self, markdown_text: str) -> list[MarkdownBlock]:
         text = _normalize_markdown_text(markdown_text)
         if not text:
             return []
+
+        # "## Page N" 헤더가 없는 경우 (예: 고객사 메뉴얼 .md 파일) 일반 마크다운으로 파싱
+        if not re.search(r"(?m)^## Page \d+", text):
+            return self._parse_markdown_blocks(text, page_number=1)
 
         sections = re.split(r"(?m)^## Page (\d+)\n", text)
         if len(sections) <= 1:
