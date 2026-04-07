@@ -57,26 +57,33 @@ def resolve_library_pdf(settings, file_name: str) -> Path:
         resolved = target_path.resolve()
         if root_path not in resolved.parents and resolved != root_path:
             continue
-        if resolved.suffix.lower() != ".pdf":
+        if resolved.suffix.lower() not in {".pdf", ".md"}:
             continue
         return resolved
 
-    raise HTTPException(status_code=404, detail="PDF file not found.")
+    raise HTTPException(status_code=404, detail="File not found.")
 
 
 async def save_library_uploads(settings, files: list[UploadFile]) -> list[str]:
     if not files:
-        raise HTTPException(status_code=400, detail="No PDF files were uploaded.")
+        raise HTTPException(status_code=400, detail="No files were uploaded.")
 
     uploaded_files: list[str] = []
     for file in files:
         suffix = Path(file.filename or "").suffix.lower()
-        if suffix != ".pdf":
-            raise HTTPException(status_code=400, detail="Only PDF files are allowed.")
-        target_path = settings.rag_source_dir / file.filename
+        if suffix not in {".pdf", ".md"}:
+            raise HTTPException(status_code=400, detail="Only PDF and Markdown files are allowed.")
+        # MD 파일은 generated/ 하위에 저장 (고객사 메뉴얼 분류 유지)
+        if suffix == ".md":
+            target_dir = settings.rag_source_dir / "generated"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target_path = target_dir / Path(file.filename).name
+            uploaded_files.append(str(Path("generated") / Path(file.filename).name))
+        else:
+            target_path = settings.rag_source_dir / file.filename
+            uploaded_files.append(file.filename)
         contents = await file.read()
         target_path.write_bytes(contents)
-        uploaded_files.append(file.filename)
     return uploaded_files
 
 
