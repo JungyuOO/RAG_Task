@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
+import time
 from collections import defaultdict
 from pathlib import Path
 
 from app.config import Settings
 
+logger = logging.getLogger("rag.retrieval_service")
 
 class RetrievalService:
     """검색 결과를 페이지 기반 그라운딩, 출처 집계, context 아이템 선택으로 가공하는 서비스.
@@ -51,7 +54,9 @@ class RetrievalService:
         ]
 
     def aggregate_page_grounding(self, context_items: list[dict]) -> list[dict]:
+        t_total = time.perf_counter()
         page_scores: dict[tuple[str, int], dict] = {}
+
         for item in context_items:
             chunk = item["chunk"]
             score = float(item["rerank_score"])
@@ -86,6 +91,13 @@ class RetrievalService:
                 -item["page_number"],
             ),
             reverse=True,
+        )
+
+        logger.info(
+            "[Timing][RetrievalService.aggregate_page_grounding] total=%.3fs context_items=%d grounded_pages=%d",
+            time.perf_counter() - t_total,
+            len(context_items),
+            len(grounded_pages),
         )
         return [
             {
@@ -215,12 +227,28 @@ class RetrievalService:
         ordered_context_items: list[dict],
         grounded_pages: list[dict],
     ) -> list[dict]:
+        t_total = time.perf_counter()
+
         if not ordered_context_items or not grounded_pages:
+            logger.info(
+                "[Timing][RetrievalService.select_context_items_by_grounded_pages] total=%.3fs short_circuit ordered=%d grounded=%d",
+                time.perf_counter() - t_total,
+                len(ordered_context_items),
+                len(grounded_pages),
+            )
             return ordered_context_items
 
         selected_page_limit = max(int(self.settings.grounded_page_top_n), 1)
         selected_chunk_limit = max(int(self.settings.grounded_chunk_top_n), 1)
         preferred_preview_source = self.select_grounded_preview_source(grounded_pages)
+
+        logger.info(
+            "[Timing][RetrievalService.select_context_items_by_grounded_pages] setup=%.3fs selected_page_limit=%d selected_chunk_limit=%d preferred_preview_source=%s",
+            time.perf_counter() - t_total,
+            selected_page_limit,
+            selected_chunk_limit,
+            preferred_preview_source,
+        )
 
         # 소스 다양성 보장: 각 소스에서 best-ranked 페이지 1개를 먼저 확보하고,
         # 남은 슬롯을 점수 순으로 채운다. RBAC처럼 한 문서가 상위 페이지를 독점해도
@@ -304,6 +332,11 @@ class RetrievalService:
             )
 
         if not prioritized_items:
+            logger.info(
+                "[Timing][RetrievalService.select_context_items_by_grounded_pages] total=%.3fs fallback_ordered_items=%d",
+                time.perf_counter() - t_total,
+                min(len(ordered_context_items), selected_chunk_limit),
+            )
             return ordered_context_items[:selected_chunk_limit]
 
         prioritized_items.sort(
@@ -327,7 +360,15 @@ class RetrievalService:
         fill_items = [item for item in prioritized_items if id(item) not in diversity_ids]
 
         merged = diversity_items + fill_items
-        return merged[:selected_chunk_limit]
+        selected_items = merged[:selected_chunk_limit]
+
+        logger.info(
+            "[Timing][RetrievalService.select_context_items_by_grounded_pages] total=%.3fs selected_chunks=%d grounded_pages=%d",
+            time.perf_counter() - t_total,
+            len(selected_items),
+            len(grounded_pages),
+        )
+        return selected_items
 
     def filter_index_items(
         self,

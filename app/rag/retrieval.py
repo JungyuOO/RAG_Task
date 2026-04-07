@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import math
+import logging
+import time
 from collections import Counter
 
 from sentence_transformers import CrossEncoder
 
 from app.rag.utils import cosine_similarity, keyword_overlap_score, tokenize
 
+logger = logging.getLogger("rag.retrieval")
 
 class HybridRetriever:
     """Dense(BGE-M3 cosine) + sparse(BM25) RRF hybrid retriever."""
@@ -54,6 +57,8 @@ class HybridRetriever:
         version_map이 제공되면 version_id 기반으로 필터링하고, 그렇지 않으면
         청크 metadata의 version_tag를 직접 비교한다.
         """
+        t_version = time.perf_counter()
+        original_count = len(index_items)
         if target_versions:
             target_set = set(target_versions)
             if version_map:
@@ -64,12 +69,24 @@ class HybridRetriever:
                     item for item in index_items
                     if item["chunk"].get("metadata", {}).get("version_tag") in target_set
                 ]
-
+        logger.info(
+            "[Timing][HybridRetriever.search_rrf] version_filtering=%.3fs before=%d after=%d target_versions=%s",
+            time.perf_counter() - t_version,
+            original_count,
+            len(index_items),
+            target_versions,
+        )
         if not index_items:
+            logger.info("[Timing][HybridRetriever.search_rrf] total=%.3fs empty_after_filter", time.perf_counter() - t_total)
             return []
-
+        t_tokenize = time.perf_counter()
         query_tokens = tokenize(keyword_query if keyword_query else query)
-
+        logger.info(
+            "[Timing][HybridRetriever.search_rrf] tokenize=%.3fs query_tokens=%d",
+            time.perf_counter() - t_tokenize,
+            len(query_tokens),
+        )
+        t_df = time.perf_counter()
         doc_frequency = Counter()
         doc_lengths: list[int] = []
         for item in index_items:
@@ -78,7 +95,14 @@ class HybridRetriever:
             doc_lengths.append(len(tokens))
         avg_doc_length = sum(doc_lengths) / max(len(doc_lengths), 1)
         total_docs = max(len(index_items), 1)
+        logger.info(
+            "[Timing][HybridRetriever.search_rrf] corpus_stats=%.3fs total_docs=%d avg_doc_length=%.2f",
+            time.perf_counter() - t_df,
+            total_docs,
+            avg_doc_length,
 
+        )
+        t_score = time.perf_counter()
         item_scores: list[tuple[int, float, float]] = []
         for idx, item in enumerate(index_items):
             dense_score = cosine_similarity(query_vector, item["vector"])
@@ -90,7 +114,12 @@ class HybridRetriever:
                 avg_doc_length,
             )
             item_scores.append((idx, dense_score, sparse_score))
-
+        logger.info(
+            "[Timing][HybridRetriever.search_rrf] dense_sparse_scoring=%.3fs items=%d",
+            time.perf_counter() - t_score,
+            len(index_items),
+        )
+        t_sort = time.perf_counter()
         dense_sorted = sorted(item_scores, key=lambda x: x[1], reverse=True)
         dense_rank: dict[int, int] = {
             entry[0]: rank + 1 for rank, entry in enumerate(dense_sorted)
@@ -100,7 +129,9 @@ class HybridRetriever:
         sparse_rank: dict[int, int] = {
             entry[0]: rank + 1 for rank, entry in enumerate(sparse_sorted)
         }
+        logger.info("[Timing][HybridRetriever.search_rrf] ranking_sort=%.3fs", time.perf_counter() - t_sort)
 
+        t_rrf = time.perf_counter()
         rrf_scored: list[dict] = []
         for idx, item in enumerate(index_items):
             chunk = item["chunk"]
@@ -121,8 +152,23 @@ class HybridRetriever:
 
         rrf_scored.sort(key=lambda entry: entry["score"], reverse=True)
         candidates = rrf_scored[: self.candidate_pool_size]
+        logger.info(
+            "[Timing][HybridRetriever.search_rrf] rrf_build=%.3fs candidates=%d",
+            time.perf_counter() - t_rrf,
+            len(candidates),
+        )
+        t_rerank = time.perf_counter()
         reranked = self._rerank(query_tokens, candidates)
+        logger.info(
+            "[Timing][HybridRetriever.search_rrf] lightweight_rerank=%.3fs",
+            time.perf_counter() - t_rerank,
+        )
         result_limit = limit if limit is not None else self.top_k
+        logger.info(
+            "[Timing][HybridRetriever.search_rrf] total=%.3fs result_limit=%d",
+            time.perf_counter() - t_total,
+            result_limit,
+        )
         return reranked[: result_limit]
 
     def _bm25(
@@ -250,20 +296,39 @@ class BGEReranker:
         self._model = CrossEncoder(model_name)
 
     def rerank(self, query: str, candidates: list[dict]) -> list[dict]:
-        """후보 청크 목록을 cross-encoder 점수로 재순위하여 top_k를 반환한다.
-
-        candidates는 {"chunk": {...}, "score": float, ...} 형태.
-        반환 결과의 "rerank_score"가 cross-encoder 점수로 덮어씌워진다.
-        """
+        t_total = time.perf_counter()
         if not candidates:
+            logger.info("[Timing][BGEReranker.rerank] total=%.3fs empty_candidates", time.perf_counter() - t_total)
             return []
 
+        t_pairs = time.perf_counter()
         pairs = [(query, c["chunk"]["text"]) for c in candidates]
-        scores = self._model.predict(pairs)
+        logger.info(
+            "[Timing][BGEReranker.rerank] pair_build=%.3fs candidates=%d",
+            time.perf_counter() - t_pairs,
+            len(pairs),
+        )
 
-        scored = [
-            {**c, "rerank_score": float(s)}
-            for c, s in zip(candidates, scores)
-        ]
-        scored.sort(key=lambda x: x["rerank_score"], reverse=True)
-        return scored[: self.top_k]
+        t_predict = time.perf_counter()
+        scores = self._model.predict(pairs)
+        logger.info(
+            "[Timing][BGEReranker.rerank] cross_encoder_predict=%.3fs candidates=%d",
+            time.perf_counter() - t_predict,
+            len(pairs),
+        )
+
+        t_merge = time.perf_counter()
+        reranked = []
+        for candidate, score in zip(candidates, scores, strict=False):
+            reranked.append({**candidate, "rerank_score": float(score)})
+        reranked.sort(key=lambda x: x["rerank_score"], reverse=True)
+        logger.info(
+            "[Timing][BGEReranker.rerank] merge_sort=%.3fs",
+            time.perf_counter() - t_merge,
+        )
+        logger.info(
+            "[Timing][BGEReranker.rerank] total=%.3fs top_k=%d",
+            time.perf_counter() - t_total,
+            self.top_k,
+        )
+        return reranked[: self.top_k]
