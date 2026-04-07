@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import re
+import logging
+import time
+
+logger = logging.getLogger("rag.answer")
 
 from app.rag.answer_citation import AnswerCitationMixin
 from app.rag.answer_format import AnswerFormatMixin
@@ -123,8 +127,12 @@ class AnswerGenerator(AnswerFormatMixin, AnswerCitationMixin, InlineCitationMixi
         retrieval_min_score: float,  # noqa: ARG002
         doc_type: str = "",
     ) -> tuple[str, list[dict], dict]:
+        t_total = time.perf_counter()
+
         answer = self.strip_code_blocks_for_non_code_route(answer, answer_route)
         answer = self.sanitize_answer(answer, use_retrieved_context)
+
+        t_citation = time.perf_counter()
         if use_retrieved_context and policy_decision.allow_citations and not self.should_suppress_citations(answer):
             answer = self.inject_inline_citations(answer, selected_context_items)
         answer_citations = (
@@ -132,18 +140,38 @@ class AnswerGenerator(AnswerFormatMixin, AnswerCitationMixin, InlineCitationMixi
             if policy_decision.allow_citations
             else []
         )
+        logger.info(
+            "[Timing][Answer.finalize_answer] citation_phase=%.3fs citations=%d selected_context_items=%d grounded_pages=%d",
+            time.perf_counter() - t_citation,
+            len(answer_citations),
+            len(selected_context_items),
+            len(grounded_pages),
+        )
         final_answer = self.ensure_answer_source_line(answer, answer_citations, use_retrieved_context)
 
         show_preview = policy_decision.allow_preview and use_retrieved_context and bool(answer_citations or grounded_pages)
         if show_preview:
+            t_preview = time.perf_counter()
             final_source, final_preview_pages = self.build_answer_aligned_preview_pages(
                 answer_citations,
                 selected_context_items,
                 preferred_preview_source,
                 grounded_pages,
             )
+            logger.info(
+                "[Timing][Answer.finalize_answer] preview_phase=%.3fs preview_pages=%d source=%s",
+                time.perf_counter() - t_preview,
+                len(final_preview_pages),
+                final_source,
+            )
         else:
             final_source, final_preview_pages = None, []
+
+        logger.info(
+            "[Timing][Answer.finalize_answer] total=%.3fs answer_chars=%d",
+            time.perf_counter() - t_total,
+            len(final_answer),
+        )
 
         final_payload = self.build_context_payload(
             rewritten_query,
