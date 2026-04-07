@@ -149,6 +149,10 @@ class StructuredMarkdownChunkerSupport:
                     sections.append("\n".join(current_lines).strip())
                     current_lines = []
                 continue
+            # 헤딩 라인 앞에서 강제로 섹션 분리 (빈 줄 없이 헤딩이 붙어있어도 경계 생성)
+            if not in_code_block and line.lstrip().startswith("#") and current_lines:
+                sections.append("\n".join(current_lines).strip())
+                current_lines = []
             current_lines.append(line)
 
         if current_lines:

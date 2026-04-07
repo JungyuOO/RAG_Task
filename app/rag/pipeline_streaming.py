@@ -366,6 +366,25 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
         query_interpretation = state.get("query_interpretation", {})
         resolved_topic_id = state.get("resolved_topic_id")
         doc_type = state.get("doc_type", "")
+        no_doc_type_docs = state.get("no_doc_type_docs", False)
+
+        # 요청한 doc_type에 해당하는 인덱싱 문서가 없으면 안내 메시지로 조기 종료
+        if no_doc_type_docs:
+            doc_label = "자사 운영 메뉴얼" if doc_type == "operation_manual" else f"'{doc_type}' 문서"
+            msg = (
+                f"현재 {doc_label}이 자료실에 인덱싱되어 있지 않아 해당 문서 기반으로 답변드리기 어렵습니다. "
+                f"자료실에 메뉴얼 문서를 업로드하고 인덱싱을 완료한 후 다시 질문해 주세요."
+            )
+            if append_user_turn:
+                deps.session_repository.add_turn(session_id, "user", user_message)
+            deps.session_repository.add_turn(session_id, "assistant", msg)
+            context_payload = deps.answer_service.build_context_payload(
+                user_message, "general", 0.0, None, [], [], [], [], preview_finalized=True,
+            )
+            yield {"type": "context", **deps.answer_service.public_context_payload(context_payload)}
+            yield {"type": "token", "content": msg, "cached": False}
+            yield {"type": "done"}
+            return
 
         policy_decision = (
             TurnPolicyDecision(**turn_policy)

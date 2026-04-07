@@ -1,6 +1,6 @@
 # ---- builder: 의존성 설치 전용 스테이지 ----
 # TODO: 빌드 안정화 시 패치 버전으로 고정 권장 (예: python:3.13.3-slim)
-FROM python:3.13-slim AS builder
+FROM python:3.13.12-slim AS builder
 
 WORKDIR /build
 
@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # ---- runtime: 실행 전용 스테이지 ----
 # TODO: 빌드 안정화 시 패치 버전으로 고정 권장 (예: python:3.13.3-slim)
-FROM python:3.13-slim AS runtime
+FROM python:3.13.12-slim AS runtime
 
 # builder에서 설치한 패키지만 복사 (빌드 도구 미포함)
 COPY --from=builder /install /usr/local

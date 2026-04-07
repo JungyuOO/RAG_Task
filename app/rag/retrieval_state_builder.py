@@ -139,6 +139,9 @@ class RetrievalStateBuilder:
         query_vector = deps.embedder.encode(expanded_query)
         index_items = deps.retrieval_service.filter_index_items(index_items_all, allowed_source_paths, doc_type=doc_type)
 
+        # doc_type 필터 적용 후 청크가 0개인 경우 — 해당 문서가 아직 인덱싱되지 않은 것
+        no_doc_type_docs = bool(doc_type) and len(index_items) == 0 and len(index_items_all) > 0
+
         # BM25는 영어 문서에 대해 Lexical Exact Match를 수행하므로,
         # 한국어가 섞인 rewritten_query 대신 RetrievalAgent가 영어로 번역한 refined_query를 사용한다.
         # 이렇게 해야 한국어 토큰이 BM25에서 0점을 받는 문제를 방지할 수 있다.
@@ -351,6 +354,7 @@ class RetrievalStateBuilder:
             "resolved_topic_id": resolution.topic_id,
             "query_interpretation": query_interpretation_dict,
             "doc_type": doc_type or "",
+            "no_doc_type_docs": no_doc_type_docs,
         }
 
     @staticmethod
