@@ -25,10 +25,10 @@ class Settings(BaseSettings):
     cllm_model: str
     cllm_api_key: str = ""
     llm_connect_timeout_seconds: float = 10.0
-    llm_read_timeout_seconds: float = 30.0
+    llm_read_timeout_seconds: float = 120.0
     llm_write_timeout_seconds: float = 10.0
     llm_pool_timeout_seconds: float = 10.0
-    llm_total_timeout_seconds: float = 90.0
+    llm_total_timeout_seconds: float = 180.0
     llm_timeout_cooldown_seconds: float = 3.0
     llm_failure_cooldown_seconds: float = 5.0
     llm_stream_temperature: float = 0.1
