@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from app.rag.index import VectorIndex
 from app.rag.types import Chunk
 
@@ -14,9 +16,33 @@ class IndexRepository:
     ``save()``, ``upsert_document()``, ``delete_document()`` 호출 시 캐시를 무효화한다.
     """
 
-    def __init__(self, backend: VectorIndex) -> None:
+    def __init__(self, backend: VectorIndex, rag_source_dir: Path | None = None) -> None:
         self.backend = backend
+        self.rag_source_dir = rag_source_dir
         self._cache: list[dict] | None = None
+
+    def _normalize_source_path(self, stored: str) -> str:
+        """로컬↔Docker 환경 간 절대경로 불일치를 상대경로 기반으로 보정한다.
+
+        로컬 Windows에서 인덱싱한 경로(C:\\Users\\...\\pdfs\\ocp-4.15\\file.pdf)가
+        Docker Linux 환경(/app/data/corpus/pdfs/ocp-4.15/file.pdf)에서도
+        올바르게 조회될 수 있도록 rag_source_dir 기준 상대경로를 추출해 재구성한다.
+        """
+        if self.rag_source_dir is None:
+            return stored
+
+        src_dir = str(self.rag_source_dir)
+        # 같은 환경이면 그대로 반환
+        if stored.startswith(src_dir):
+            return stored
+
+        # 다른 환경의 절대경로 → 공통 앵커(pdfs/, corpus/pdfs/)로 상대경로 추출
+        normalized = stored.replace("\\", "/")
+        for anchor in ("pdfs/", "corpus/pdfs/", "source/"):
+            if anchor in normalized:
+                rel = normalized.split(anchor, 1)[-1]
+                return str(self.rag_source_dir / rel)
+        return stored
 
     def save(self, chunks: list[Chunk], vectors: list[list[float]]) -> None:
         self.backend.save(chunks, vectors)
@@ -25,7 +51,13 @@ class IndexRepository:
     def load(self) -> list[dict]:
         if self._cache is not None:
             return self._cache
-        self._cache = self.backend.load()
+        raw = self.backend.load()
+        if self.rag_source_dir is not None:
+            for item in raw:
+                item["chunk"]["source_path"] = self._normalize_source_path(
+                    item["chunk"]["source_path"]
+                )
+        self._cache = raw
         return self._cache
 
 
