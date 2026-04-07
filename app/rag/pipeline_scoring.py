@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
+
+logger = logging.getLogger("rag.pipeline")
 
 from app.rag.utils import normalize_text, tokenize
 
@@ -382,51 +385,133 @@ class PipelineRetrievalMixin:
 
     def _should_use_retrieved_context(self, policy, retrieved: list[dict], top_score: float, query_interpretation: dict | None = None) -> bool:
         query_interpretation = query_interpretation or {}
-        top_item = retrieved[0] if retrieved else {}
+        if not retrieved:
+            logger.info("[RetrievalGate] no retrieved items -> use_context=False")
+            return False
+        
+        top_item = retrieved[0]
+        lowered_intent = _qi_str(query_interpretation, "intent")
+        lowered_shape = _qi_str(query_interpretation, "response_shape")
+        
         lexical_signal = float(top_item.get("sparse_score", 0.0)) + float(top_item.get("title_score", 0.0)) + float(top_item.get("title_match_bonus", 0.0)) + float(top_item.get("compact_match_bonus", 0.0))
         resource_match_score = float(top_item.get("resource_match_score", 0.0))
         lexical_match_score = float(top_item.get("lexical_match_score", 0.0))
+        
         query_tokens = {token for token in query_interpretation.get("normalized_keywords", []) if len(token) >= 2 and token not in {"pdf", "설명", "explain"}}
-        metadata = top_item.get("chunk", {}).get("metadata", {}) if top_item else {}
+        metadata = top_item.get("chunk", {}).get("metadata", {}) or {}
         structure_text = " ".join([str(metadata.get("section_title", "") or ""), str(metadata.get("section_path", "") or ""), " ".join(str(value) for value in metadata.get("parent_headings", []) or [])])
         structure_tokens = set(tokenize(structure_text))
         has_structural_anchor = bool(query_tokens and query_tokens & structure_tokens)
         strong_resource_anchor = resource_match_score >= 0.9 or lexical_match_score >= 0.2 or has_structural_anchor
 
-        if top_score < self.settings.retrieval_min_score or not retrieved:
-            lowered_shape = _qi_str(query_interpretation, "response_shape")
-            lowered_intent = _qi_str(query_interpretation, "intent")
-            has_explicit_resources = bool(query_interpretation.get("resources"))
+        decision = True
+
+        if (
+            policy.turn_type in {"document_query", "document_followup"}
+            and lowered_intent == "explain"
+            and lowered_shape in {"", "text"}
+        ):
+            if top_score >= 0.08 and (lexical_signal > 0.0 or has_structural_anchor or strong_resource_anchor):
+                decision = True
+                logger.info(
+                    "[RetrievalGate] turn_type=%s intent=%s shape=%s top_score=%.4f lexical=%.4f structural=%s strong_anchor=%s use_context=%s",
+                    policy.turn_type,
+                    lowered_intent,
+                    lowered_shape,
+                    top_score,
+                    lexical_signal,
+                    has_structural_anchor,
+                    strong_resource_anchor,
+                    decision,
+                )
+                return decision
+            if top_score >= 0.12:
+                decision = True
+                logger.info(
+                    "[RetrievalGate] turn_type=%s intent=%s shape=%s top_score=%.4f lexical=%.4f structural=%s strong_anchor=%s use_context=%s",
+                    policy.turn_type,
+                    lowered_intent,
+                    lowered_shape,
+                    top_score,
+                    lexical_signal,
+                    has_structural_anchor,
+                    strong_resource_anchor,
+                    decision,
+                )
+                return decision
+
+        if top_score < self.settings.retrieval_min_score:
             relaxed_threshold = self.settings.retrieval_min_score
-            if has_explicit_resources:
+            if query_interpretation.get("resources"):
                 relaxed_threshold = min(relaxed_threshold, max(self.settings.retrieval_retry_min_score, 0.10))
             if lowered_shape in {"code", "table", "procedure", "comparison"} or lowered_intent in {"yaml_example", "cli_example", "code_example", "table", "compare", "procedure_followup", "explain"}:
                 relaxed_threshold = min(self.settings.retrieval_min_score, max(self.settings.retrieval_retry_min_score, 0.15))
-            if policy.turn_type in {"document_query", "document_followup"} and lowered_intent == "explain" and (lexical_signal >= 0.06 or has_structural_anchor):
-                relaxed_threshold = min(relaxed_threshold, max(self.settings.retrieval_retry_min_score, 0.08 if has_explicit_resources else 0.12))
-            if policy.turn_type in {"document_query", "document_followup"} and lowered_intent == "explain" and has_explicit_resources and strong_resource_anchor:
-                relaxed_threshold = min(relaxed_threshold, max(self.settings.retrieval_retry_min_score * 0.8, 0.04))
-            if top_score < relaxed_threshold or not retrieved:
-                return False
-
+            if (
+                policy.turn_type in {"document_query", "document_followup"}
+                and lowered_intent == "explain"
+                and (lexical_signal >= 0.06 or has_structural_anchor)
+            ):
+                relaxed_threshold = min(relaxed_threshold, max(self.settings.retrieval_retry_min_score, 0.08))
+            if top_score < relaxed_threshold:
+                decision = False
+                logger.info(
+                    "[RetrievalGate] turn_type=%s intent=%s shape=%s top_score=%.4f relaxed_threshold=%.4f lexical=%.4f structural=%s strong_anchor=%s use_context=%s",
+                    policy.turn_type,
+                    lowered_intent,
+                    lowered_shape,
+                    top_score,
+                    relaxed_threshold,
+                    lexical_signal,
+                    has_structural_anchor,
+                    strong_resource_anchor,
+                    decision,
+                )
+                return decision
+            
         if len(retrieved) >= 2:
             second_score = float(retrieved[1].get("rerank_score", 0.0))
             if top_score - second_score > 0.15 and top_score >= 0.08:
-                return True
-
-        resources = _qi_set(query_interpretation, "resources")
-        if resources and top_item:
-            chunk_meta = top_item.get("chunk", {}).get("metadata", {})
-            code_signals = {str(signal).casefold() for signal in chunk_meta.get("code_signals", []) or []}
-            chunk_text = str(top_item.get("chunk", {}).get("text", "")).casefold()
-            explicit_kind = ""
-            kind_match = re.search(r"(?im)^\s*kind:\s*([a-z0-9_-]+)", chunk_text)
-            if kind_match:
-                explicit_kind = kind_match.group(1).casefold()
-            for resource in resources:
-                if resource == explicit_kind or resource in code_signals:
-                    return True
-
-        if policy.turn_type == "document_query" and top_score < 0.2 and lexical_signal <= 0.0 and not strong_resource_anchor:
-            return False
-        return True
+                decision = True
+                logger.info(
+                    "[RetrievalGate] turn_type=%s intent=%s shape=%s top_score=%.4f second_score=%.4f score_gap=%.4f use_context=%s",
+                    policy.turn_type,
+                    lowered_intent,
+                    lowered_shape,
+                    top_score,
+                    second_score,
+                    top_score - second_score,
+                    decision,
+                )
+                return decision
+        if (
+            policy.turn_type == "document_query"
+            and lowered_intent != "explain"
+            and top_score < 0.2
+            and lexical_signal <= 0.0
+            and not strong_resource_anchor
+        ):
+            decision = False
+            logger.info(
+                "[RetrievalGate] turn_type=%s intent=%s shape=%s top_score=%.4f lexical=%.4f structural=%s strong_anchor=%s use_context=%s",
+                policy.turn_type,
+                lowered_intent,
+                lowered_shape,
+                top_score,
+                lexical_signal,
+                has_structural_anchor,
+                strong_resource_anchor,
+                decision,
+            )   
+            return decision
+        logger.info(
+            "[RetrievalGate] turn_type=%s intent=%s shape=%s top_score=%.4f lexical=%.4f structural=%s strong_anchor=%s use_context=%s",
+            policy.turn_type,
+            lowered_intent,
+            lowered_shape,
+            top_score,
+            lexical_signal,
+            has_structural_anchor,
+            strong_resource_anchor,
+            decision,
+        )
+        return decision
