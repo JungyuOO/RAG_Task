@@ -339,7 +339,7 @@ class RagPipeline(PipelineContextMixin, PipelineRetrievalMixin, PipelineRuntimeM
         )
         self.session_store = SessionStore(dsn=settings.db_dsn, memory_window_turns=settings.memory_window_turns)
         self.llm = LlmClient(settings)
-        self.index_repository = IndexRepository(self.index)
+        self.index_repository = IndexRepository(self.index, rag_source_dir=settings.rag_source_dir)
         self.embedding_cache_repository = CacheRepository(self.embedding_cache)
         self.answer_cache_repository = CacheRepository(self.answer_cache)
         self.session_repository = SessionRepository(self.session_store)
