@@ -333,17 +333,32 @@ class RetrievalService:
         self,
         index_items: list[dict],
         allowed_source_paths: set[str] | None,
+        doc_type: str | None = None,
     ) -> list[dict]:
-        if not allowed_source_paths:
-            return index_items
+        items = index_items
 
-        normalized_allowed = set()
-        for path in allowed_source_paths:
-            normalized_allowed.add(str(Path(path)))
-            normalized_allowed.add(str(Path(path).resolve()))
-        return [
-            item
-            for item in index_items
-            if str(Path(item["chunk"]["source_path"])) in normalized_allowed
-            or str(Path(item["chunk"]["source_path"]).resolve()) in normalized_allowed
-        ]
+        if allowed_source_paths:
+            normalized_allowed = set()
+            for path in allowed_source_paths:
+                normalized_allowed.add(str(Path(path)))
+                normalized_allowed.add(str(Path(path).resolve()))
+            items = [
+                item
+                for item in items
+                if str(Path(item["chunk"]["source_path"])) in normalized_allowed
+                or str(Path(item["chunk"]["source_path"]).resolve()) in normalized_allowed
+            ]
+
+        if doc_type and doc_type != "auto":
+            if doc_type == "operation_manual":
+                items = [
+                    item for item in items
+                    if (item["chunk"].get("metadata") or {}).get("doc_type") == "operation_manual"
+                ]
+            elif doc_type == "official":
+                items = [
+                    item for item in items
+                    if (item["chunk"].get("metadata") or {}).get("doc_type") != "operation_manual"
+                ]
+
+        return items
