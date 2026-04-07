@@ -348,23 +348,43 @@ class IndexingService:
             for path in self.settings.rag_source_dir.rglob("*")
             if path.is_file() and path.suffix.lower() in self._LIBRARY_EXTS
         ]
-        indexed_by_path = {document["source_path"]: document for document in self.index_repository.list_documents()}
+        all_docs = self.index_repository.list_documents()
+
+        # 절대경로 → document 맵 (1차 조회)
+        indexed_by_path = {doc["source_path"]: doc for doc in all_docs}
+
+        # 상대 suffix (rag_source_dir 기준) → document 맵 (환경 간 경로 불일치 fallback)
+        # 예: "ocp-4.15/file.pdf" → doc
+        indexed_by_rel: dict[str, dict] = {}
+        for doc in all_docs:
+            stored = doc["source_path"].replace("\\", "/")
+            src_dir = str(self.settings.rag_source_dir).replace("\\", "/")
+            # source_dir 기준 상대경로 추출 (다른 환경의 절대경로도 처리)
+            for sep in (src_dir + "/", "pdfs/", "corpus/pdfs/"):
+                if sep in stored:
+                    rel = stored.split(sep, 1)[-1]
+                    indexed_by_rel[rel] = doc
+                    break
 
         generated_dir = self.settings.rag_source_dir / "generated"
 
         indexed_documents = []
         for path in sorted(source_files):
-            aggregated = indexed_by_path.get(
-                str(path),
-                {
+            # 1차: 절대경로 일치
+            aggregated = indexed_by_path.get(str(path))
+            # 2차: 상대경로 일치 (로컬↔Docker 경로 불일치 대응)
+            if aggregated is None:
+                rel_key = str(path.relative_to(self.settings.rag_source_dir)).replace("\\", "/")
+                aggregated = indexed_by_rel.get(rel_key)
+            if aggregated is None:
+                aggregated = {
                     "file_name": path.name,
                     "source_path": str(path),
                     "extension": path.suffix.lower(),
                     "indexed_pages": 0,
                     "indexed_chunks": 0,
                     "loaders": [],
-                },
-            )
+                }
             # generated/ 하위 파일은 고객사 메뉴얼
             is_manual = str(path).startswith(str(generated_dir))
             indexed_documents.append(
