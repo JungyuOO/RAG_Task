@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 
 from app.config import Settings
 from app.llm import AnswerAgent, IntentAgent, JudgeAgent, RetrievalAgent
 from app.rag.answer import AnswerGenerator
+from app.rag.bge_embedding_server import BGETEIEmbedder
 from app.rag.bge_embeddings import BGEOllamaEmbedder
 from app.rag.cache import JsonFileCache
 from app.rag.chunking import TextChunker
@@ -31,22 +33,67 @@ logger = logging.getLogger("rag.pipeline")
 
 class PipelineContextMixin:
     async def _resolve_turn_context(self, session_id: str, user_message: str) -> dict:
+        t_total = time.perf_counter()
+
+        t_repo = time.perf_counter()
         recent_turns = self.session_repository.recent_turns(session_id)
         structured_summary = self.session_repository.structured_summary(session_id)
         session_topic_state = self.session_repository.topic_state(session_id)
         session_topics = self.session_repository.list_topics(session_id)
+        logger.info(
+            "[Timing][TurnContext] repo_reads=%.3fs recent_turns=%d topics=%d",
+            time.perf_counter() - t_repo,
+            len(recent_turns),
+            len(session_topics),
+        )
+        detected_version = self._extract_version_from_text(user_message)
+        last_assistant_text = ""
+        if recent_turns:
+            last_turn = recent_turns[-1]
+            if str(last_turn.get("role")) == "assistant":
+                last_assistant_text = str(last_turn.get("content") or "")
+
+        awaiting_version_clarification = (
+            "어떤 버전의 openshift container platform을 기준으로 답변할까요?" in last_assistant_text.lower()
+            or "지원 버전:" in last_assistant_text.lower()
+        )
+
+        if detected_version and awaiting_version_clarification:
+            logger.info(
+                "[VersionClarification] detected_version=%s user_message=%r",
+                detected_version,
+                user_message,
+            )
+            session_topic_state = {
+                **session_topic_state,
+                "selected_versions": [detected_version],
+                "pending_version_clarification": False,
+            }
+
         current_topic_id = str(session_topic_state.get("last_active_topic_id") or "")
         resolver = getattr(self, "turn_context_resolver", TurnContextResolver())
+
+        t_resolver = time.perf_counter()
         resolution = resolver.resolve(
             user_message=user_message,
             session_topics=session_topics,
             recent_turns=recent_turns,
             current_topic_id=current_topic_id or None,
         )
+        logger.info(
+            "[Timing][TurnContext] resolver=%.3fs resolution_type=%s topic_id=%s needs_clarification=%s",
+            time.perf_counter() - t_resolver,
+            getattr(resolution, "resolution_type", None),
+            getattr(resolution, "topic_id", None),
+            getattr(resolution, "needs_clarification", None),
+        )
+
         resolved_topic = self.session_repository.get_topic(resolution.topic_id) if resolution.topic_id else None
         resolved_topic_state = self._topic_to_topic_state(resolved_topic)
         topic_state = resolved_topic_state or session_topic_state
         scoped_recent_turns = self.session_repository.recent_topic_turns(session_id, resolution.topic_id) if resolution.topic_id else recent_turns
+
+        t_intent = time.perf_counter()
         intent_result = await self.intent_agent.classify(
             user_message,
             context={
@@ -57,7 +104,18 @@ class PipelineContextMixin:
                 "summary_topic": structured_summary.get("topic", ""),
             },
         )
-        policy = self._policy_from_intent(intent_result, resolution.resolution_type, bool(topic_state.get("active_topic") or topic_state.get("selected_sources")))
+        logger.info(
+            "[Timing][TurnContext] intent_classify=%.3fs intent=%s",
+            time.perf_counter() - t_intent,
+            intent_result.get("intent"),
+        )
+
+        policy = self._policy_from_intent(
+            intent_result,
+            resolution.resolution_type,
+            bool(topic_state.get("active_topic") or topic_state.get("selected_sources")),
+        )
+
         if resolution.needs_clarification and resolution.clarification_prompt:
             policy = TurnPolicyDecision(
                 turn_type="clarification",
@@ -70,6 +128,14 @@ class PipelineContextMixin:
                 clarification_reason="resolver_ambiguous_topic",
                 clarification_prompt=resolution.clarification_prompt,
             )
+
+        logger.info(
+            "[Timing][TurnContext] total=%.3fs policy_turn_type=%s response_mode=%s",
+            time.perf_counter() - t_total,
+            policy.turn_type,
+            policy.response_mode,
+        )
+
         return {
             "recent_turns": recent_turns,
             "structured_summary": structured_summary,
@@ -82,7 +148,13 @@ class PipelineContextMixin:
             "policy": policy,
             "intent_result": intent_result,
         }
-
+    
+    def _extract_version_from_text(self, text: str) -> str | None:
+        if not text:
+            return None
+        match = re.search(r"\b(4\.(?:15|16|17|18|19|20|21))\b", text)
+        return match.group(1) if match else None
+    
     def _policy_from_intent(self, intent_result: dict, resolution_type: str, has_prior_context: bool) -> TurnPolicyDecision:
         intent = str(intent_result.get("intent", "general") or "general").casefold()
         if intent == "greeting":
@@ -311,11 +383,18 @@ class RagPipeline(PipelineContextMixin, PipelineRetrievalMixin, PipelineRuntimeM
             chunk_size=settings.structured_chunk_size,
             overlap=settings.structured_chunk_overlap,
         )
-        self.embedder = BGEOllamaEmbedder(
+        if settings.embedding_backend == "tei":
+            self.embedder = BGETEIEmbedder(
+                base_url=settings.tei_base_url,
+                model=settings.tei_embedding_model,
+                timeout=settings.tei_timeout,
+            )
+        else:
+            self.embedder = BGEOllamaEmbedder(
             base_url=settings.ollama_base_url,
             model=settings.ollama_embedding_model,
             timeout=settings.ollama_timeout,
-        )
+            )
         settings.vector_dim = self.embedder.dim
         self.index = VectorIndex(settings.db_dsn)
         self.retriever = HybridRetriever(
@@ -465,16 +544,84 @@ class PipelineOrchestrator(RagPipeline):
         return await self.intent_agent.classify(user_message, context)
 
     async def expand_query(self, user_message: str, intent_result: dict, available_sources: list) -> dict:
-        return await self.retrieval_agent.expand(user_message, intent_result, available_sources)
+        t0 = time.perf_counter()
+        result = await self.retrieval_agent.expand(user_message, intent_result, available_sources)
+        logger.info(
+            "[Timing][ExpandQuery] total=%.3fs intent=%s rewritten=%r search_query=%r",
+            time.perf_counter() - t0,
+            intent_result.get("intent"),
+            result.get("rewritten_question") or result.get("rewritten_query"),
+            result.get("search_query"),
+        )
+        return result
 
     async def process_turn(self, session_id: str, user_message: str, allowed_sources: list | None = None) -> dict:
+        t_total = time.perf_counter()
+        logger.info("[Timing][ProcessTurn] start session_id=%s user_message=%r", session_id, user_message[:120])
+
+        t_ctx = time.perf_counter()
         context = await self._resolve_turn_context(session_id, user_message)
+        logger.info(
+            "[Timing][ProcessTurn] resolve_turn_context=%.3fs policy=%s",
+            time.perf_counter() - t_ctx,
+            context["policy"].turn_type,
+        )
+        detected_version = self._extract_version_from_text(user_message)
+
+        if detected_version and context["policy"].turn_type == "clarification":
+            prior_user_turn = ""
+            for turn in reversed(context.get("recent_turns", [])):
+                if str(turn.get("role")) == "user":
+                    content = str(turn.get("content") or "")
+                    if content.strip() != user_message.strip():
+                        prior_user_turn = content
+                        break
+
+            if prior_user_turn:
+                merged_user_message = f"{prior_user_turn} (OpenShift Container Platform {detected_version} 기준)"
+                logger.info(
+                    "[VersionClarification] merge previous_question=%r current_reply=%r merged=%r",
+                    prior_user_turn,
+                    user_message,
+                    merged_user_message,
+                )
+                user_message = merged_user_message
+                t_ctx_merged = time.perf_counter()
+                context = await self._resolve_turn_context(session_id, user_message)
+                logger.info(
+                    "[Timing][ProcessTurn] resolve_turn_context_after_merge=%.3fs policy=%s",
+                    time.perf_counter() - t_ctx_merged,
+                    context["policy"].turn_type,
+                )
+
+        t_intent = time.perf_counter()
         intent = await self.classify_intent(user_message, context)
+        logger.info(
+            "[Timing][ProcessTurn] classify_intent=%.3fs intent=%s",
+            time.perf_counter() - t_intent,
+            intent.get("intent"),
+        )
+
         if intent.get("intent") == "greeting":
+            logger.info("[Timing][ProcessTurn] total=%.3fs mode=conversational", time.perf_counter() - t_total)
             return {"intent": intent, "retrieval": None, "mode": "conversational"}
+
         if intent.get("intent") in {"rag", "clarification"}:
+            t_expand = time.perf_counter()
             expanded = await self.expand_query(user_message, intent, allowed_sources or [])
+            logger.info(
+                "[Timing][ProcessTurn] expand_query=%.3fs has_retrieval=%s",
+                time.perf_counter() - t_expand,
+                expanded is not None,
+            )
+            logger.info("[Timing][ProcessTurn] total=%.3fs mode=grounded", time.perf_counter() - t_total)
             return {"intent": intent, "retrieval": expanded, "mode": "grounded"}
+
+        logger.info(
+            "[Timing][ProcessTurn] total=%.3fs mode=%s",
+            time.perf_counter() - t_total,
+            intent.get("intent", "general"),
+        )
         return {"intent": intent, "retrieval": None, "mode": intent.get("intent", "general")}
 
     async def check_procedure(self, user_message: str, context_items: list) -> dict:
