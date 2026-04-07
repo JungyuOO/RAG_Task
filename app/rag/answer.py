@@ -121,6 +121,7 @@ class AnswerGenerator(AnswerFormatMixin, AnswerCitationMixin, InlineCitationMixi
         query_interpretation: dict | None,
         answer_route: str,
         retrieval_min_score: float,  # noqa: ARG002
+        doc_type: str = "",
     ) -> tuple[str, list[dict], dict]:
         answer = self.strip_code_blocks_for_non_code_route(answer, answer_route)
         answer = self.sanitize_answer(answer, use_retrieved_context)
@@ -157,6 +158,8 @@ class AnswerGenerator(AnswerFormatMixin, AnswerCitationMixin, InlineCitationMixi
         )
         final_payload["query_interpretation"] = query_interpretation or {}
         final_payload["answer_route"] = answer_route
+        if doc_type:
+            final_payload["doc_type"] = doc_type
 
         if answer_route == "extractive_code":
             final_payload["last_example_anchor"] = self.build_example_anchor(selected_context_items, query_interpretation)

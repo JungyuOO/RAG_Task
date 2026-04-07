@@ -42,6 +42,7 @@ class LibraryDocument(BaseModel):
     indexed_pages: int
     indexed_chunks: int
     loaders: list[str]
+    doc_type: str = "official"
 
 
 class StartupIndexingStatus(BaseModel):

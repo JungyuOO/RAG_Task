@@ -34,6 +34,7 @@ DEFAULT_TOPIC_STATE = {
     "last_grounded_section_paths": [],
     "last_example_source_pages": [],
     "last_example_anchor": {},
+    "last_doc_type": "",
     "procedure_state": {},
 }
 
@@ -58,6 +59,7 @@ DEFAULT_TOPIC_THREAD_SUMMARY = {
     "last_grounded_section_paths": [],
     "last_example_source_pages": [],
     "last_example_anchor": {},
+    "last_doc_type": "",
     "turn_count": 0,
 }
 
@@ -191,6 +193,7 @@ def build_topic_state(turns: list[ChatTurn]) -> dict:
     last_grounded_section_paths: list[str] = []
     last_example_source_pages: list[int] = []
     last_example_anchor: dict = {}
+    last_doc_type = ""
 
     for turn in recent_turns:
         metadata = turn.metadata or {}
@@ -210,6 +213,9 @@ def build_topic_state(turns: list[ChatTurn]) -> dict:
                 last_explicit_resource = last_explicit_resources[0]
             last_intent = str(query_interpretation.get("intent") or last_intent)
             last_response_shape = str(query_interpretation.get("response_shape") or last_response_shape)
+            turn_doc_type = str(metadata.get("doc_type") or "")
+            if turn_doc_type:
+                last_doc_type = turn_doc_type
             last_answer_route = str(metadata.get("answer_route") or last_answer_route)
             formats = [
                 normalize_text(str(value)).lower()
@@ -307,6 +313,7 @@ def build_topic_state(turns: list[ChatTurn]) -> dict:
         "last_grounded_section_paths": last_grounded_section_paths[:4],
         "last_example_source_pages": last_example_source_pages[:6],
         "last_example_anchor": last_example_anchor,
+        "last_doc_type": last_doc_type,
         "procedure_state": procedure_state,
     }
 
@@ -360,6 +367,7 @@ def build_topic_thread_summary(topic_label: str, turns: list[ChatTurn]) -> dict:
         "last_grounded_section_paths": topic_state.get("last_grounded_section_paths", [])[:4],
         "last_example_source_pages": topic_state.get("last_example_source_pages", [])[:6],
         "last_example_anchor": topic_state.get("last_example_anchor", {}),
+        "last_doc_type": topic_state.get("last_doc_type", ""),
         "turn_count": len(turns),
     }
 
@@ -451,4 +459,5 @@ def build_rewrite_context_payload(recent: list[ChatTurn], summary: dict, topic_s
         "last_response_intent": last_response_intent,
         "last_explicit_resources": [str(value) for value in topic_state.get("last_explicit_resources", []) if value][:4],
         "last_code_resource_kind": str(topic_state.get("last_code_resource_kind") or ""),
+        "last_doc_type": str(topic_state.get("last_doc_type") or ""),
     }

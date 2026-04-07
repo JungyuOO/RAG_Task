@@ -95,6 +95,13 @@ class RetrievalStateBuilder:
                 "procedure_state": topic_state.get("procedure_state", {}),
             },
         )
+
+        # doc_type: intent에서 감지된 값 우선, 없으면 이전 턴에서 유지된 값
+        doc_type = intent_result.get("doc_type") or topic_state.get("last_doc_type") or None
+        if doc_type:
+            logger.info("[DocType] doc_type=%s (from=%s)", doc_type,
+                        "intent" if intent_result.get("doc_type") else "topic_state")
+
         query_result = await deps.retrieval_agent.expand(
             rewritten_query,
             intent_result=intent_result,
@@ -130,7 +137,7 @@ class RetrievalStateBuilder:
             query_interpretation,
         )
         query_vector = deps.embedder.encode(expanded_query)
-        index_items = deps.retrieval_service.filter_index_items(index_items_all, allowed_source_paths)
+        index_items = deps.retrieval_service.filter_index_items(index_items_all, allowed_source_paths, doc_type=doc_type)
 
         # BM25는 영어 문서에 대해 Lexical Exact Match를 수행하므로,
         # 한국어가 섞인 rewritten_query 대신 RetrievalAgent가 영어로 번역한 refined_query를 사용한다.
@@ -343,6 +350,7 @@ class RetrievalStateBuilder:
             "turn_resolution": resolution.to_dict(),
             "resolved_topic_id": resolution.topic_id,
             "query_interpretation": query_interpretation_dict,
+            "doc_type": doc_type or "",
         }
 
     @staticmethod

@@ -122,6 +122,7 @@ class StreamingTurnSupport:
         policy_decision = kwargs["policy_decision"]
         query_interpretation = kwargs["query_interpretation"]
         answer_route = kwargs["answer_route"]
+        doc_type = kwargs.get("doc_type", "")
         resolved_topic_id = kwargs["resolved_topic_id"]
         cache_key = kwargs["cache_key"]
 
@@ -167,6 +168,7 @@ class StreamingTurnSupport:
                     policy_decision=policy_decision,
                     query_interpretation=query_interpretation,
                     answer_route=answer_route,
+                    doc_type=doc_type,
                 )
                 final_payload["last_example_anchor"] = deps.answer_service.build_example_anchor(
                     code_context_items,
@@ -195,6 +197,7 @@ class StreamingTurnSupport:
                     policy_decision=policy_decision,
                     query_interpretation=query_interpretation,
                     answer_route=answer_route,
+                    doc_type=doc_type,
                 )
                 return _emit(final_answer, final_payload)
             return _no_extractive_answer()
@@ -362,6 +365,7 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
         turn_policy = state.get("turn_policy", {})
         query_interpretation = state.get("query_interpretation", {})
         resolved_topic_id = state.get("resolved_topic_id")
+        doc_type = state.get("doc_type", "")
 
         policy_decision = (
             TurnPolicyDecision(**turn_policy)
@@ -431,6 +435,7 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
                 policy_decision=policy_decision,
                 query_interpretation=query_interpretation,
                 answer_route=answer_route,
+                doc_type=doc_type,
             )
             if final_answer != raw_cached:
                 yield {"type": "replace_answer", "content": final_answer}
@@ -502,6 +507,7 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
             answer_route=answer_route,
             resolved_topic_id=resolved_topic_id,
             cache_key=cache_key,
+            doc_type=doc_type,
         )
         if extractive_events is not None:
             async for event in extractive_events:
@@ -552,6 +558,7 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
             policy_decision=policy_decision,
             query_interpretation=query_interpretation,
             answer_route=answer_route,
+            doc_type=doc_type,
         )
         if final_answer != raw_answer:
             yield {"type": "replace_answer", "content": final_answer}

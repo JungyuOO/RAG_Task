@@ -8,13 +8,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 ENV_FILE = BASE_DIR / ".env"
+ENV_LOCAL_FILE = BASE_DIR / ".env.local"  # 로컬 실행 시 오버라이드 (Docker hostname → localhost)
 
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables and .env."""
 
     model_config = SettingsConfigDict(
-        env_file=ENV_FILE,
+        env_file=(ENV_FILE, ENV_LOCAL_FILE),  # .env.local이 있으면 덮어씀
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -52,7 +53,7 @@ class Settings(BaseSettings):
     chunk_size: int = 512
     chunk_overlap: int = 50
     structured_chunk_size: int = 512
-    structured_chunk_overlap: int = 50
+    structured_chunk_overlap: int = 20
     chunking_strategy: str = "auto"
     vector_dim: int = 1024
     retrieval_top_k: int = 3
