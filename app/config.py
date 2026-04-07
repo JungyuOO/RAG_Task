@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     rag_extract_dir: Path
     save_extracted_markdown: bool = True
 
+    embedding_backend: str = "ollama"
+
+    tei_base_url: str = ""
+    tei_embedding_model: str = "bge-m3"
+    tei_timeout: float = 120.0
+
     # Ollama settings for BGE-M3 embeddings.
     ollama_base_url: str = "http://localhost:11434"
     ollama_embedding_model: str = "bge-m3"
