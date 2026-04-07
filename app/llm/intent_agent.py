@@ -19,6 +19,19 @@ INTENT_SYSTEM_PROMPT = """
 - step_navigation
 - unsupported_language
 
+## doc_type 판별
+
+사용자가 특정 문서 유형을 지정하는 경우 `doc_type` 필드를 함께 반환하세요.
+
+- "operation_manual": 자사/회사/내부/운영 매뉴얼을 지칭하는 경우
+  예: "자사 메뉴얼 기준으로", "우리 매뉴얼에서", "운영 매뉴얼로 바꿔줘", "회사 문서 기반으로", "내부 가이드에서"
+- "official": 공식 문서/OCP 문서를 명시적으로 지칭하는 경우
+  예: "공식 문서 기준으로", "OCP 문서에서", "레드햇 공식 문서로"
+- null 또는 생략: 특정 문서 유형을 지정하지 않은 경우
+
+이전 대화 맥락에서 다루던 주제를 다른 문서 유형으로 전환하는 요청도 감지하세요.
+예: "아까 그거 우리 매뉴얼 기준으로 다시 알려줘" → intent: rag, doc_type: operation_manual
+
 응답은 항상 JSON 객체로만 반환하세요.
 """
 
@@ -59,6 +72,13 @@ class IntentAgent(BaseAgent):
                 keywords = normalize_query_keywords(search_query)
             result["search_query"] = search_query
             result["keywords"] = keywords[:8]
+
+        # doc_type 정규화: 유효한 값만 통과
+        raw_doc_type = result.get("doc_type")
+        if raw_doc_type and str(raw_doc_type).strip().lower() in {"operation_manual", "official"}:
+            result["doc_type"] = str(raw_doc_type).strip().lower()
+        else:
+            result["doc_type"] = None
         return result
 
     def _normalize_phonetic_terms(self, text: str) -> str:
