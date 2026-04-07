@@ -8,9 +8,9 @@ let _startupPollTimer = null;
 let _isReindexSubmitting = false;
 let _libFilterVersion = null; // null = 전체
 
-function _buildFilterBar(sortedVersions) {
+function _buildFilterBar(sortedVersions, hasManuals) {
   if (!libFilterBar) return;
-  if (!sortedVersions.length) {
+  if (!sortedVersions.length && !hasManuals) {
     libFilterBar.style.display = "none";
     libFilterBar.innerHTML = "";
     return;
@@ -19,15 +19,24 @@ function _buildFilterBar(sortedVersions) {
   libFilterBar.style.display = "flex";
   libFilterBar.innerHTML = "";
 
-  const allVersions = [null, ...sortedVersions];
-  allVersions.forEach((v) => {
+  // 전체 → 고객사 메뉴얼 → 버전 순서
+  const tabs = [null];
+  if (hasManuals) tabs.push("__manual__");
+  tabs.push(...sortedVersions);
+
+  tabs.forEach((v) => {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "lib-filter-btn" + (v === _libFilterVersion ? " active" : "");
-    btn.textContent = v ? v : "전체";
+    if (v === "__manual__") {
+      btn.textContent = "고객사 메뉴얼";
+      btn.style.cssText = "font-weight:700;";
+    } else {
+      btn.textContent = v ? v : "전체";
+    }
     btn.addEventListener("click", () => {
       _libFilterVersion = v;
-      _buildFilterBar(sortedVersions);
+      _buildFilterBar(sortedVersions, hasManuals);
       _applyFilter(_lastLibraryDocuments);
     });
     libFilterBar.appendChild(btn);
@@ -39,16 +48,20 @@ let _lastLibraryDocuments = [];
 function _applyFilter(documents) {
   libraryList.innerHTML = "";
 
-  const filtered = _libFilterVersion
-    ? documents.filter((doc) => _extractVersion(doc) === _libFilterVersion)
-    : documents;
+  let filtered;
+  if (_libFilterVersion === "__manual__") {
+    filtered = documents.filter((doc) => _isManualDoc(doc));
+  } else if (_libFilterVersion) {
+    filtered = documents.filter((doc) => _extractVersion(doc) === _libFilterVersion && !_isManualDoc(doc));
+  } else {
+    filtered = documents;
+  }
 
   if (!filtered.length) {
-    libraryList.innerHTML = '<div class="empty">해당 버전의 PDF가 없습니다.</div>';
+    libraryList.innerHTML = '<div class="empty">해당 카테고리의 문서가 없습니다.</div>';
     return;
   }
 
-  // 필터 적용 후 그룹핑은 기존 renderLibrary 로직 재사용
   _renderGrouped(filtered);
 }
 
@@ -59,15 +72,20 @@ function _renderGrouped(documents) {
     return;
   }
 
+  const manualDocs = [];
   const groups = {};
   const noVersion = [];
   documents.forEach((doc) => {
-    const v = _extractVersion(doc);
-    if (v) {
-      if (!groups[v]) groups[v] = [];
-      groups[v].push(doc);
+    if (_isManualDoc(doc)) {
+      manualDocs.push(doc);
     } else {
-      noVersion.push(doc);
+      const v = _extractVersion(doc);
+      if (v) {
+        if (!groups[v]) groups[v] = [];
+        groups[v].push(doc);
+      } else {
+        noVersion.push(doc);
+      }
     }
   });
 
@@ -76,6 +94,20 @@ function _renderGrouped(documents) {
     const [mb, mi_b] = b.split(".").map(Number);
     return ma !== mb ? ma - mb : mi_a - mi_b;
   });
+
+  // 고객사 메뉴얼 섹션 (항상 최상단)
+  if (manualDocs.length) {
+    const section = document.createElement("div");
+    section.style.cssText = "margin-bottom: 24px;";
+    const header = document.createElement("div");
+    header.style.cssText = "display:flex;align-items:center;gap:10px;margin-bottom:10px;";
+    header.innerHTML =
+      '<span style="font-size:13px;font-weight:800;color:#2a57df;">고객사 메뉴얼</span>' +
+      '<span style="font-size:12px;color:#66758a;">' + manualDocs.length + '개 문서</span>';
+    section.appendChild(header);
+    section.appendChild(_makeVersionTable(manualDocs));
+    libraryList.appendChild(section);
+  }
 
   if (sortedVersions.length) {
     sortedVersions.forEach((version) => {
@@ -100,7 +132,7 @@ function _renderGrouped(documents) {
       section.appendChild(_makeVersionTable(noVersion));
       libraryList.appendChild(section);
     }
-  } else {
+  } else if (!manualDocs.length) {
     libraryList.appendChild(_makeVersionTable(documents));
   }
 }
@@ -152,6 +184,12 @@ function _extractVersion(doc) {
   return m ? m[1] : null;
 }
 
+function _isManualDoc(doc) {
+  return (doc.doc_type === "operation_manual") ||
+    (doc.source_path || "").includes("/generated/") ||
+    (doc.source_path || "").includes("\\generated\\");
+}
+
 function _makeVersionTable(docs) {
   const wrap = document.createElement("div");
   wrap.className = "library-table-wrap";
@@ -173,11 +211,16 @@ function renderLibrary(documents) {
     return;
   }
 
-  // 버전 목록 수집 → 필터 탭 빌드
+  // 버전 목록 + 고객사 메뉴얼 존재 여부 수집 → 필터 탭 빌드
   const groups = {};
+  let hasManuals = false;
   documents.forEach((doc) => {
-    const v = _extractVersion(doc);
-    if (v) { if (!groups[v]) groups[v] = []; groups[v].push(doc); }
+    if (_isManualDoc(doc)) {
+      hasManuals = true;
+    } else {
+      const v = _extractVersion(doc);
+      if (v) { if (!groups[v]) groups[v] = []; groups[v].push(doc); }
+    }
   });
   const sortedVersions = Object.keys(groups).sort((a, b) => {
     const [ma, mi_a] = a.split(".").map(Number);
@@ -185,12 +228,12 @@ function renderLibrary(documents) {
     return ma !== mb ? ma - mb : mi_a - mi_b;
   });
 
-  _buildFilterBar(sortedVersions);
+  _buildFilterBar(sortedVersions, hasManuals);
 
   // 현재 필터가 더 이상 존재하지 않는 버전이면 초기화
-  if (_libFilterVersion && !sortedVersions.includes(_libFilterVersion)) {
+  if (_libFilterVersion && _libFilterVersion !== "__manual__" && !sortedVersions.includes(_libFilterVersion)) {
     _libFilterVersion = null;
-    _buildFilterBar(sortedVersions);
+    _buildFilterBar(sortedVersions, hasManuals);
   }
 
   _applyFilter(documents);
