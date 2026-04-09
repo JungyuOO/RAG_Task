@@ -69,6 +69,13 @@
     .toolbar { display: flex; flex-wrap: wrap; gap: 10px; }
     .primary { background: var(--brand); color: #fff; box-shadow: 0 12px 24px rgba(31, 79, 214, 0.16); }
     .secondary { background: #fff; color: var(--brand-deep); border-color: var(--line-strong); }
+    .library-upload-trigger { transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease; }
+    .library-upload-trigger:hover {
+      background: var(--brand);
+      border-color: var(--brand);
+      color: #fff;
+      box-shadow: 0 12px 24px rgba(31, 79, 214, 0.16);
+    }
     .mini-button { padding: 7px 10px; font-size: 12px; border-radius: 8px; box-shadow: none; }
     .chat-layout { display: grid; grid-template-columns: minmax(0, 1fr) 0fr; gap: 0; align-items: stretch; transition: grid-template-columns 0.28s ease, gap 0.28s ease; }
     .chat-layout.preview-open { grid-template-columns: minmax(0, 1.02fr) minmax(32vw, 0.98fr); gap: clamp(16px, 1.4vw, 24px); }
@@ -89,6 +96,25 @@
     .message.user .message-body { background: #136dec; color: #fff; border-color: transparent; border-top-right-radius: 8px; }
     .message.assistant .message-body { border-top-left-radius: 8px; }
     .message.assistant .message-body { white-space: normal; }
+    .source-ref-inline {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 0;
+      margin: 0 2px 0 0;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      color: var(--brand-deep);
+      font-size: inherit;
+      font-weight: 700;
+      line-height: inherit;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      box-shadow: none;
+    }
+    .source-ref-inline:hover { color: var(--brand); }
+    .citation-tag { cursor: pointer; color: var(--brand-deep); font-weight: 700; }
     .assistant-heading { margin-top: 14px; font-weight: 800; letter-spacing: -0.02em; color: #0f172a; }
     .assistant-heading.level-1 { font-size: 20px; }
     .assistant-heading.level-2 { font-size: 17px; }
@@ -131,6 +157,18 @@
     .attachment-remove { border: 0; background: transparent; color: var(--muted); padding: 0; width: auto; min-width: 16px; border-radius: 0; box-shadow: none; }
     .attachment-remove:hover { color: var(--danger); }
     .hidden-input { display: none; }
+    #status-bar-container { position: sticky; bottom: 14px; margin-top: 12px; z-index: 30; }
+    .status-bar-shell { border: 1px solid #cfe0ff; border-radius: 16px; background: rgba(255,255,255,0.96); box-shadow: 0 14px 28px rgba(19, 39, 76, 0.12); overflow: hidden; }
+    .status-header { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 0; background: #eef4ff; color: var(--brand-deep); font-weight: 800; text-align: left; box-shadow: none; border-radius: 0; }
+    .status-current { font-size: 13px; line-height: 1.5; }
+    .status-toggle { font-size: 12px; color: var(--muted); white-space: nowrap; }
+    .status-details { padding: 10px 12px 12px; background: #fff; }
+    .status-stage { display: flex; align-items: center; gap: 10px; padding: 8px 4px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .status-stage + .status-stage { border-top: 1px solid #eef2f7; }
+    .status-stage.active { color: var(--brand-deep); font-weight: 700; }
+    .status-stage.done { color: var(--ok); }
+    .status-icon { flex: 0 0 auto; min-width: 28px; font-size: 11px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
+    .status-text { min-width: 0; word-break: break-word; }
     .library-list { display: flex; flex-direction: column; gap: 10px; }
     .status-panel {
       margin-top: 16px;
@@ -284,6 +322,43 @@
     .lib-filter-btn { padding: 5px 14px; font-size: 12px; font-weight: 700; border-radius: 999px; border: 1px solid var(--line-strong); background: #fff; color: var(--muted); cursor: pointer; transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease; }
     .lib-filter-btn:hover { background: #f0f4ff; border-color: #a8c2ff; color: var(--brand-deep); }
     .lib-filter-btn.active { background: var(--brand); border-color: var(--brand); color: #fff; }
+    .lib-scope-bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px; }
+    .lib-scope-btn { padding:8px 14px; border-radius:999px; border:1px solid var(--line-strong); background:#fff; color:var(--muted); font-size:12px; font-weight:800; }
+    .lib-scope-btn.active { background:#edf4ff; border-color:#bfd3fb; color:var(--brand-deep); }
+    .library-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
+    .library-toolbar-group { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    .library-toolbar-label { font-size:12px; font-weight:800; color:var(--muted); }
+    .library-version-dropdown { position:relative; display:inline-block; }
+    .library-version-toggle { display:inline-flex; align-items:center; gap:6px; padding:8px 14px; border-radius:999px; border:1px solid var(--line-strong); background:#fff; color:var(--ink); font-size:12px; font-weight:800; box-shadow:none; }
+    .library-version-dropdown.open .library-version-toggle { border-color:#bfd3fb; background:#edf4ff; color:var(--brand-deep); }
+    .library-version-caret { font-size:10px; line-height:1; transition:transform 0.18s ease; }
+    .library-version-dropdown.open .library-version-caret { transform:rotate(180deg); }
+    .library-version-menu { display:none; position:absolute; top:calc(100% + 8px); left:0; min-width:180px; padding:8px; border:1px solid var(--line-strong); border-radius:14px; background:#fff; box-shadow:0 12px 28px rgba(15, 23, 42, 0.12); z-index:45; }
+    .library-version-dropdown.open .library-version-menu { display:block; }
+    .library-version-menu-item { display:block; width:100%; padding:9px 12px; border:1px solid transparent; border-radius:10px; background:transparent; color:var(--muted); font-size:13px; font-weight:700; text-align:left; box-shadow:none; }
+    .library-version-menu-item:hover { background:#f3f7ff; color:var(--brand-deep); }
+    .library-version-menu-item.active { background:#edf4ff; color:var(--brand-deep); border-color:#d7e4ff; }
+    .library-upload-modal { position:fixed; inset:0; display:none; align-items:center; justify-content:center; padding:24px; background:rgba(10, 18, 35, 0.52); z-index:120; }
+    .library-upload-modal.open { display:flex; }
+    .library-upload-card { width:min(760px, 100%); border:1px solid var(--line); border-radius:22px; background:#fff; box-shadow:0 30px 80px rgba(8, 18, 40, 0.28); padding:22px; }
+    .library-upload-modal-head { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:18px; }
+    .library-upload-title { font-size:15px; font-weight:800; margin-bottom:10px; }
+    .library-upload-copy { color:var(--muted); font-size:12px; line-height:1.6; margin:0; }
+    .library-upload-grid { display:grid; grid-template-columns: 1fr auto; gap:10px; align-items:end; margin-bottom:10px; }
+    .library-upload-field label { display:block; font-size:11px; font-weight:800; letter-spacing:0.08em; text-transform:uppercase; color:#64748b; margin-bottom:6px; }
+    .library-upload-field.hidden { display:none; }
+    .library-upload-actions { display:flex; gap:8px; align-items:center; justify-content:flex-end; }
+    .library-upload-selection { margin-bottom:12px; color:var(--muted); font-size:12px; line-height:1.6; }
+    .library-doc-section + .library-doc-section { margin-top:24px; }
+    .library-section-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
+    .library-section-actions { display:flex; gap:8px; align-items:center; }
+    @media (max-width: 760px) {
+      .library-upload-grid { grid-template-columns:1fr; }
+      .library-upload-actions { justify-content:stretch; }
+      .library-upload-actions button { flex:1 1 0; }
+      .library-upload-modal { padding:16px; }
+      .library-upload-card { padding:18px; }
+    }
   </style>
 </head>
 <body>
@@ -411,32 +486,6 @@
 
         <section id="screen-library" class="screen">
           <div class="library-layout">
-            <div class="stats-grid">
-              <div class="stat-card">
-                <div class="stat-head">
-                  <span class="stat-label">Total Files</span>
-                  <span>문서</span>
-                </div>
-                <div id="totalFilesStat" class="stat-value">0</div>
-                <div class="stat-foot">현재 자료실에 등록된 전체 PDF 수</div>
-              </div>
-              <div class="stat-card">
-                <div class="stat-head">
-                  <span class="stat-label">Indexed</span>
-                  <span>완료</span>
-                </div>
-                <div id="indexedFilesStat" class="stat-value">0</div>
-                <div class="stat-foot">인덱스에 반영된 문서 기준</div>
-              </div>
-              <div class="stat-card">
-                <div class="stat-head">
-                  <span class="stat-label">Chunks</span>
-                  <span>청크</span>
-                </div>
-                <div id="indexedChunksStat" class="stat-value">0</div>
-                <div class="stat-foot">검색 가능한 전체 청크 수</div>
-              </div>
-            </div>
             <div class="surface">
               <div class="library-card-top">
                 <div>
@@ -444,18 +493,14 @@
                   <div class="library-card-copy">자료실 문서 목록을 조회하고 미리보기, 삭제, 재인덱싱 작업을 수행합니다.</div>
                 </div>
                 <div class="library-actions">
+                  <button id="libraryUploadTriggerBtn" class="secondary library-upload-trigger" type="button" hidden>문서 업로드</button>
                   <button id="refreshLibraryBtn" class="secondary" type="button">문서 목록 새로고침</button>
                   <button id="reindexBtn" class="secondary" type="button">전체 재인덱싱</button>
                 </div>
               </div>
               <div class="surface-body">
-                <label for="fileInput" id="uploadDropzone" class="upload-box">
-                  <input id="fileInput" class="upload-hidden" type="file" accept=".pdf,application/pdf" multiple />
-                  <div class="upload-icon">↑</div>
-                  <div class="upload-title">여기를 클릭하거나 파일을 끌어다 놓으세요</div>
-                  <div class="upload-copy">PDF 업로드 즉시 OCR, 청킹, 임베딩, 인덱싱까지 서버에서 처리합니다.</div>
-                </label>
-
+                <div id="libraryScopeBar" class="lib-scope-bar"></div>
+                <div id="libraryToolbar" class="library-toolbar"></div>
                 <div id="libraryStatusPanel" class="status-panel" data-tone="loading">
                   <div class="status-indicator" aria-hidden="true"></div>
                   <div class="status-copy">
@@ -464,7 +509,6 @@
                   </div>
                 </div>
                 <div id="uploadProgressArea"></div>
-                <div id="libFilterBar" class="lib-filter-bar" style="display:none;"></div>
                 <div id="libraryList" class="library-list" style="margin-top: 4px;"></div>
               </div>
             </div>
@@ -472,6 +516,41 @@
         </section>
       </div>
     </main>
+  </div>
+
+  <div id="libraryUploadModal" class="library-upload-modal" aria-hidden="true">
+    <div class="library-upload-card">
+      <div class="library-upload-modal-head">
+        <div>
+          <div id="libraryUploadTitle" class="library-upload-title">문서 업로드</div>
+          <p id="libraryUploadCopy" class="library-upload-copy">선택한 위치로 문서를 업로드합니다.</p>
+        </div>
+        <button id="libraryUploadCancelBtn" class="secondary mini-button" type="button">닫기</button>
+      </div>
+      <div class="library-upload-grid">
+        <div id="libraryUploadVersionField" class="library-upload-field">
+          <label>버전</label>
+          <div id="libraryUploadVersionDropdown" class="library-version-dropdown">
+            <button id="libraryUploadVersionToggle" class="library-version-toggle" type="button" aria-haspopup="listbox" aria-expanded="false">
+              <span id="libraryUploadVersionLabel">버전 선택</span>
+              <span class="library-version-caret" aria-hidden="true">▾</span>
+            </button>
+            <div id="libraryUploadVersionMenu" class="library-version-menu" role="listbox"></div>
+          </div>
+        </div>
+        <div class="library-upload-actions">
+          <button id="libraryUploadChooseBtn" class="secondary" type="button">파일 선택</button>
+          <button id="libraryUploadSubmitBtn" class="primary" type="button">업로드</button>
+        </div>
+      </div>
+      <div id="libraryUploadSelection" class="library-upload-selection">선택된 파일이 없습니다.</div>
+      <label for="fileInput" id="uploadDropzone" class="upload-box">
+        <input id="fileInput" class="upload-hidden" type="file" accept=".pdf,.md,application/pdf,text/markdown" multiple />
+        <div class="upload-icon">↑</div>
+        <div class="upload-title">여기를 클릭하거나 파일을 끌어다 놓으세요</div>
+        <div class="upload-copy">선택한 대상 위치로 업로드합니다.</div>
+      </label>
+    </div>
   </div>
 
   <div id="pdfModal" class="pdf-modal" aria-hidden="true">
@@ -499,6 +578,11 @@
     .chunk-id { max-width:120px; overflow:hidden; text-overflow:ellipsis; }
     .chunk-page { color:var(--brand); }
     .chunk-text { font-size:13px; line-height:1.6; color:var(--ink); white-space:pre-wrap; word-break:break-word; }
+    .chunk-loading-shell { padding:28px 24px 32px; display:flex; flex-direction:column; gap:14px; }
+    .chunk-loading-copy { font-size:14px; font-weight:700; color:var(--ink); }
+    .chunk-loading-progress { width:100%; height:10px; border-radius:999px; background:#e4ebf5; overflow:hidden; }
+    .chunk-loading-progress-bar { height:100%; border-radius:999px; background:linear-gradient(90deg, #2a57df 0%, #4c86ff 100%); transition:width 0.18s ease; }
+    .chunk-loading-meta { font-size:12px; color:var(--muted); font-weight:700; }
     .chunk-pagination { display:flex; justify-content:center; align-items:center; gap:12px; padding:14px 24px; border-top:1px solid var(--line); }
     .chunk-pagination button { padding:6px 16px; border-radius:8px; border:1px solid var(--line-strong); background:#fff; cursor:pointer; font-size:13px; }
     .chunk-pagination span { font-size:13px; color:var(--muted); font-weight:600; }

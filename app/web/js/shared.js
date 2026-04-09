@@ -35,9 +35,6 @@ const sendBtn = document.getElementById("sendBtn");
 const attachPdfBtn = document.getElementById("attachPdfBtn");
 const clearInputBtn = document.getElementById("clearInputBtn");
 const closePreviewBtn = document.getElementById("closePreviewBtn");
-const totalFilesStat = document.getElementById("totalFilesStat");
-const indexedFilesStat = document.getElementById("indexedFilesStat");
-const indexedChunksStat = document.getElementById("indexedChunksStat");
 const screens = {
   chat: document.getElementById("screen-chat"),
   library: document.getElementById("screen-library"),
