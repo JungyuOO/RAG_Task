@@ -131,6 +131,10 @@ class AnswerGenerator(AnswerFormatMixin, AnswerCitationMixin, InlineCitationMixi
 
         answer = self.strip_code_blocks_for_non_code_route(answer, answer_route)
         answer = self.sanitize_answer(answer, use_retrieved_context)
+        if use_retrieved_context and selected_context_items and self.looks_like_negative_retrieved_answer(answer):
+            extractive_answer = self.build_extractive_text_answer(selected_context_items)
+            if extractive_answer:
+                answer = extractive_answer
 
         t_citation = time.perf_counter()
         if use_retrieved_context and policy_decision.allow_citations and not self.should_suppress_citations(answer):

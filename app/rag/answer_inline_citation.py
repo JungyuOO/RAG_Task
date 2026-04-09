@@ -94,18 +94,36 @@ class InlineCitationMixin:
         if len(body.strip()) < _MIN_SENTENCE_CHAR:
             return line
 
-        best = self._match_sentence_to_chunk(body, chunk_profiles)
-        if best is None:
+        sentence_parts = self._split_sentences(body)
+        if not sentence_parts:
+            sentence_parts = [body]
+
+        matches: list[dict | None] = [self._match_sentence_to_chunk(part, chunk_profiles) for part in sentence_parts]
+        matched_refs = {
+            (match["file_name"], match["page_number"])
+            for match in matches
+            if match is not None
+        }
+        if not matched_refs:
             return line
 
-        # [source:file.pdf:pN:L1-999] 형식: citation.js의 renderCitationTags()와 호환
-        tag = f" [source:{best['file_name']}:p{best['page_number']}:L1-999]"
-        return prefix + body.rstrip() + tag
+        if len(matched_refs) == 1:
+            best = next(match for match in matches if match is not None)
+            tag = f" [source:{best['file_name']}:p{best['page_number']}:L1-999]"
+            return prefix + body.rstrip() + tag
 
-    @staticmethod
-    def _extract_english_phrases(text: str) -> list[str]:
-        """문장에서 영어 연속 구간을 추출한다 (기술 용어 매칭용)."""
-        return re.findall(r"[A-Za-z][A-Za-z0-9_\-./\s]{3,}", text)
+        rebuilt_parts: list[str] = []
+        for part, match in zip(sentence_parts, matches):
+            stripped = part.rstrip()
+            if not stripped or match is None:
+                rebuilt_parts.append(part)
+                continue
+            tag = f" [source:{match['file_name']}:p{match['page_number']}:L1-999]"
+            trailing_ws_len = len(part) - len(part.rstrip())
+            trailing_ws = part[-trailing_ws_len:] if trailing_ws_len > 0 else ""
+            rebuilt_parts.append(stripped + tag + trailing_ws)
+
+        return prefix + "".join(rebuilt_parts).rstrip()
 
     @staticmethod
     def _substring_score(sentence: str, chunk_text: str) -> float:
