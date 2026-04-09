@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 
-from app.api.routes_shared import logger, resolve_library_pdf, resolve_owner_id, save_library_uploads, scoped_session_id
+from app.api.routes_shared import logger, resolve_library_pdf, resolve_owner_id, save_chat_uploads, scoped_session_id
 from app.api.schemas import ChatRequest, ChatTurnRequest, RetrievalDebugRequest, RetryChatRequest, RetryChatRequestModel
 from app.dependencies import AppContainer, get_container
 
@@ -79,7 +79,7 @@ async def chat_with_upload(
     logger.info("[ChatUpload] owner_id=%s session_id=%s file_count=%d", owner_id, session_id, len(files))
 
     async def event_stream():
-        uploaded_files = await save_library_uploads(container.settings, files)
+        uploaded_files = await save_chat_uploads(container.settings, effective_session_id, files)
         total_chunks = 0
         for file_name in uploaded_files:
             source_path = container.settings.rag_source_dir / file_name
@@ -90,7 +90,7 @@ async def chat_with_upload(
         async for event in container.pipeline.stream_chat(
             session_id=effective_session_id,
             user_message=message,
-            allowed_source_paths=uploaded_source_paths,
+            uploaded_source_paths=uploaded_source_paths,
         ):
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
