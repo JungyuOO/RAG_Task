@@ -158,15 +158,56 @@ class VectorIndex:
                 cursor.execute("DELETE FROM chunks WHERE source_path = %s", (source_path,))
                 cursor.execute("DELETE FROM documents WHERE source_path = %s", (source_path,))
 
-    def load(self) -> list[dict]:
+    def load(
+        self,
+        *,
+        source_paths: list[str] | None = None,
+        target_versions: list[str] | None = None,
+        doc_type: str | None = None,
+        document_group_preference: str | None = None,
+    ) -> list[dict]:
         with self._connection() as connection:
             with connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                conditions: list[str] = []
+                params: list[object] = []
+
+                if source_paths:
+                    conditions.append("source_path = ANY(%s)")
+                    params.append(source_paths)
+
+                if target_versions:
+                    conditions.append("(metadata_json::jsonb ->> 'version_tag') = ANY(%s)")
+                    params.append(target_versions)
+
+                if doc_type and doc_type != "auto":
+                    if doc_type == "operation_manual":
+                        conditions.append("(metadata_json::jsonb ->> 'doc_type') = %s")
+                        params.append("operation_manual")
+                    elif doc_type == "official":
+                        conditions.append("COALESCE(metadata_json::jsonb ->> 'doc_type', '') <> %s")
+                        params.append("operation_manual")
+
+                if document_group_preference and document_group_preference not in {"auto", "mixed"}:
+                    if document_group_preference == "customer_generated":
+                        conditions.append(
+                            "((metadata_json::jsonb ->> 'document_group') = %s OR (metadata_json::jsonb ->> 'doc_type') = %s)"
+                        )
+                        params.extend(["customer_generated", "operation_manual"])
+                    elif document_group_preference == "official_ocp":
+                        conditions.append(
+                            "((metadata_json::jsonb ->> 'document_group') = %s OR COALESCE(metadata_json::jsonb ->> 'doc_type', '') <> %s)"
+                        )
+                        params.extend(["official_ocp", "operation_manual"])
+
+                where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
                 cursor.execute(
-                    """
+                    f"""
                     SELECT chunk_id, doc_id, source_path, text, tokens_json,
                            page_number, metadata_json, vector_json
                     FROM chunks
-                    """
+                    {where_clause}
+                    """,
+                    params,
                 )
                 rows = cursor.fetchall()
 
@@ -208,10 +249,20 @@ class VectorIndex:
                 loader_rows = cursor.fetchall()
 
         loaders_by_path: dict[str, set[str]] = {}
+        doc_type_by_path: dict[str, str] = {}
+        document_group_by_path: dict[str, str] = {}
         for row in loader_rows:
-            loader = json.loads(row["metadata_json"]).get("loader")
+            metadata = json.loads(row["metadata_json"])
+            loader = metadata.get("loader")
             if loader:
                 loaders_by_path.setdefault(row["source_path"], set()).add(loader)
+            if row["source_path"] not in doc_type_by_path:
+                doc_type_by_path[row["source_path"]] = str(metadata.get("doc_type") or "official")
+            if row["source_path"] not in document_group_by_path:
+                document_group_by_path[row["source_path"]] = str(
+                    metadata.get("document_group")
+                    or ("customer_generated" if metadata.get("doc_type") == "operation_manual" else "official_ocp")
+                )
 
         return [
             {
@@ -221,6 +272,8 @@ class VectorIndex:
                 "indexed_pages": row["indexed_pages"] or 0,
                 "indexed_chunks": row["indexed_chunks"] or 0,
                 "loaders": sorted(loaders_by_path.get(row["source_path"], set())),
+                "doc_type": doc_type_by_path.get(row["source_path"], "official"),
+                "document_group": document_group_by_path.get(row["source_path"], "official_ocp"),
             }
             for row in rows
         ]

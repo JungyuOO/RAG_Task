@@ -48,17 +48,38 @@ class IndexRepository:
         self.backend.save(chunks, vectors)
         self._cache = None
 
-    def load(self) -> list[dict]:
-        if self._cache is not None:
+    def warm_cache(self) -> int:
+        return len(self.load())
+
+    def clear_cache(self) -> None:
+        self._cache = None
+
+    def load(
+        self,
+        *,
+        source_paths: list[str] | None = None,
+        target_versions: list[str] | None = None,
+        doc_type: str | None = None,
+        document_group_preference: str | None = None,
+    ) -> list[dict]:
+        use_full_cache = not source_paths and not target_versions and not doc_type and not document_group_preference
+        if use_full_cache and self._cache is not None:
             return self._cache
-        raw = self.backend.load()
+        raw = self.backend.load(
+            source_paths=source_paths,
+            target_versions=target_versions,
+            doc_type=doc_type,
+            document_group_preference=document_group_preference,
+        )
         if self.rag_source_dir is not None:
             for item in raw:
                 item["chunk"]["source_path"] = self._normalize_source_path(
                     item["chunk"]["source_path"]
                 )
-        self._cache = raw
-        return self._cache
+        if use_full_cache:
+            self._cache = raw
+            return self._cache
+        return raw
 
 
     def upsert_document(self, source_path: str, chunks: list[Chunk], vectors: list[list[float]]) -> None:
