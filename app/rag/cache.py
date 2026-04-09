@@ -55,6 +55,13 @@ class JsonFileCache:
         payload = {**value, "_created_at": time.time()}
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def clear(self) -> None:
+        """Remove all cache entries."""
+        for cache_file in self.cache_dir.glob("*.json"):
+            cache_file.unlink(missing_ok=True)
+        self._hits = 0
+        self._misses = 0
+
     def stats(self) -> dict:
         """캐시 적중률 통계를 반환한다."""
         total = self._hits + self._misses
