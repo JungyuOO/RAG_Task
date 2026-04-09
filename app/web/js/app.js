@@ -16,7 +16,9 @@ function bindEventListeners() {
     chatFileInput.value = "";
   });
   fileInput.addEventListener("change", () => {
-    if (fileInput.files.length) uploadFiles();
+    if (typeof syncSelectedUploadFiles === "function") {
+      syncSelectedUploadFiles();
+    }
   });
   uploadDropzone.addEventListener("dragover", (event) => {
     event.preventDefault();

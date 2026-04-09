@@ -58,6 +58,18 @@ function loadAnswerPreviewPage(fileName, pageNumber) {
   }, 0);
 }
 
+function openAnswerPreviewSource(fileName, pageNumber) {
+  renderAnswerPreview({
+    mode: "rag",
+    preview_pages: [
+      {
+        source_path: fileName,
+        page_number: pageNumber,
+      },
+    ],
+  });
+}
+
 function renderAnswerPreview(payload) {
   currentContextPayload = payload || null;
   answerPageStrip.innerHTML = "";
