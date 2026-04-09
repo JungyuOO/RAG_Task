@@ -168,17 +168,12 @@ async function consumeChatStream(response, assistantState, pendingState) {
         assistantState.setPartialText(assistantText);
         updatePendingChatState({ partial_response: assistantText });
       }
-      if (payload.type === "done") {
+if (payload.type === "done") {
         sawDone = true;
         assistantState.setText(assistantText);
         attachSourceButton(assistantState.block, finalContextPayload || currentContextPayload);
-        // 인용 태그 클릭 연동 (citation.js가 로드된 경우)
-        if (typeof renderCitationTags === 'function' && assistantState.body) {
-          const el = assistantState.body;
-          if (el) {
-            el.innerHTML = renderCitationTags(el.textContent || assistantText);
-            bindCitationClicks(el);
-          }
+        if (typeof bindCitationClicks === "function" && assistantState.body) {
+          bindCitationClicks(assistantState.body);
         }
         clearPendingChatState();
         setLibraryStatus((payload.cached ? "캐시 응답 완료 (" : "응답 완료 (") + assistantState.elapsedSeconds() + "초)", "success", "Ready");
