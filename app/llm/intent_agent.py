@@ -1,17 +1,15 @@
 from __future__ import annotations
 
 import json
-import re
 
 from app.llm.base_agent import BaseAgent
-from app.rag.utils import normalize_query_keywords
+from app.rag.utils import normalize_domain_terms, normalize_query_keywords
 
 
 INTENT_SYSTEM_PROMPT = """
-당신은 RAG 시스템의 의도 분류 에이전트입니다.
-사용자의 메시지와 대화 컨텍스트를 분석하여 의도를 분류합니다.
+You classify the user's message intent for a document-grounded RAG assistant.
 
-분류 가능한 의도:
+Valid intents:
 - greeting
 - rag
 - general
@@ -19,35 +17,29 @@ INTENT_SYSTEM_PROMPT = """
 - step_navigation
 - unsupported_language
 
-## doc_type 판별
-
-사용자가 특정 문서 유형을 지정하는 경우 `doc_type` 필드를 함께 반환하세요.
-
-- "operation_manual": 자사/회사/내부/운영 매뉴얼을 지칭하는 경우
-  예: "자사 메뉴얼 기준으로", "우리 매뉴얼에서", "운영 매뉴얼로 바꿔줘", "회사 문서 기반으로", "내부 가이드에서"
-- "official": 공식 문서/OCP 문서를 명시적으로 지칭하는 경우
-  예: "공식 문서 기준으로", "OCP 문서에서", "레드햇 공식 문서로"
-- null 또는 생략: 특정 문서 유형을 지정하지 않은 경우
-
-이전 대화 맥락에서 다루던 주제를 다른 문서 유형으로 전환하는 요청도 감지하세요.
-예: "아까 그거 우리 매뉴얼 기준으로 다시 알려줘" → intent: rag, doc_type: operation_manual
-
-응답은 항상 JSON 객체로만 반환하세요.
+Return only a JSON object.
 """
 
 
 class IntentAgent(BaseAgent):
-    """LLM 기반 사용자 의도 분류 에이전트."""
+    """Intent classifier with a heuristic fast-path and LLM fallback."""
 
-    PHONETIC_MAP = {
-        "피브이시": "PVC",
-        "피브이": "PV",
-        "오씨피": "OCP",
-        "쿠버네티스": "Kubernetes",
-        "인그레스": "Ingress",
-        "디플로이먼트": "Deployment",
-        "서비스메시": "Service Mesh",
-    }
+    GREETING_MARKERS = ("안녕", "hello", "hi", "반가워")
+    STEP_MARKERS = ("다음 단계", "다음 step", "next step", "step ", "1단계", "2단계", "3단계")
+    FOLLOWUP_RAG_MARKERS = (
+        "그 ",
+        "그때",
+        "그 다음",
+        "그다음",
+        "다시",
+        "이어서",
+        "이번에는",
+        "방금",
+        "같은",
+        "that",
+        "again",
+        "continue",
+    )
 
     def __init__(self, llm_client) -> None:
         super().__init__(llm_client, system_prompt=INTENT_SYSTEM_PROMPT)
@@ -57,7 +49,11 @@ class IntentAgent(BaseAgent):
         if unsupported is not None:
             return unsupported
 
-        normalized_message = self._normalize_phonetic_terms(user_message)
+        normalized_message = normalize_domain_terms(user_message)
+        heuristic = self._heuristic_classify(normalized_message, context or {})
+        if heuristic is not None:
+            return heuristic
+
         context_str = json.dumps(context or {}, ensure_ascii=False, default=str)
         result = await self.call(normalized_message, context=context_str)
 
@@ -73,7 +69,6 @@ class IntentAgent(BaseAgent):
             result["search_query"] = search_query
             result["keywords"] = keywords[:8]
 
-        # doc_type 정규화: 유효한 값만 통과
         raw_doc_type = result.get("doc_type")
         if raw_doc_type and str(raw_doc_type).strip().lower() in {"operation_manual", "official"}:
             result["doc_type"] = str(raw_doc_type).strip().lower()
@@ -81,19 +76,88 @@ class IntentAgent(BaseAgent):
             result["doc_type"] = None
         return result
 
-    def _normalize_phonetic_terms(self, text: str) -> str:
-        normalized = text
-        for spoken, canonical in self.PHONETIC_MAP.items():
-            normalized = re.sub(spoken, canonical, normalized, flags=re.IGNORECASE)
-        return normalized
+    def _heuristic_classify(self, normalized_message: str, context: dict) -> dict | None:
+        lowered = normalized_message.casefold().strip()
+        if not lowered:
+            return {"intent": "general", "confidence": 0.2, "doc_type": None}
+        if any(marker in lowered for marker in self.GREETING_MARKERS):
+            return {"intent": "greeting", "confidence": 0.95, "doc_type": None}
 
-    def _detect_unsupported_language(self, text: str) -> dict | None:
-        has_korean = any("\uAC00" <= ch <= "\uD7A3" for ch in text)
-        has_cjk = any("\u4E00" <= ch <= "\u9FFF" for ch in text)
-        if has_korean and has_cjk:
+        procedure_state = context.get("procedure_state") or {}
+        if procedure_state and any(marker in lowered for marker in self.STEP_MARKERS):
+            return {"intent": "step_navigation", "step_target": "next", "confidence": 0.9, "doc_type": None}
+        if self._looks_like_rag_query(lowered, context or {}):
+            return {
+                "intent": "rag",
+                "search_query": normalized_message,
+                "keywords": normalize_query_keywords(normalized_message)[:8],
+                "confidence": 0.85,
+                "doc_type": None,
+            }
+        return None
+
+    def _looks_like_rag_query(self, lowered: str, context: dict) -> bool:
+        strong_rag_hints = (
+            "공식",
+            "고객사",
+            "문서",
+            "메뉴얼",
+            "매뉴얼",
+            "가이드",
+            "yaml",
+            "cli",
+            "configmap",
+            "deployment",
+            "service",
+            "route",
+            "oauth",
+            "token requests",
+            "identity provider",
+            "ldap",
+            "htpasswd",
+            "authorization",
+            "rbac",
+            "mtu",
+            "install-config",
+            "compare",
+            "difference",
+        )
+        has_rag_hint = any(marker in lowered for marker in strong_rag_hints)
+        if has_rag_hint:
+            return True
+        if any(marker in lowered for marker in self.FOLLOWUP_RAG_MARKERS) and context.get("selected_sources"):
+            return True
+        return False
+
+    @staticmethod
+    def _detect_unsupported_language(text: str) -> dict | None:
+        if not text or not text.strip():
+            return None
+        has_korean = any("\uAC00" <= ch <= "\uD7A3" or "\u1100" <= ch <= "\u11FF" or "\u3130" <= ch <= "\u318F" for ch in text)
+        if has_korean:
+            has_cjk = any("\u4E00" <= ch <= "\u9FFF" for ch in text)
+            if has_cjk:
+                return {
+                    "intent": "unsupported_language",
+                    "message": "한국어로 질문해 주세요.",
+                    "confidence": 1.0,
+                }
+            return None
+        if any(("\u3040" <= ch <= "\u309F") or ("\u30A0" <= ch <= "\u30FF") for ch in text):
             return {
                 "intent": "unsupported_language",
-                "message": "한국어로 질문해 주세요.",
+                "message": "한국어로 질문해 주세요. 기술 키워드는 그대로 영어로 입력해도 됩니다.",
+                "confidence": 1.0,
+            }
+        cjk_chars = [ch for ch in text if ("\u4E00" <= ch <= "\u9FFF") or ("\uF900" <= ch <= "\uFAFF")]
+        if not cjk_chars:
+            return None
+        alpha_chars = [ch for ch in text if ch.isalpha()]
+        cjk_ratio = len(cjk_chars) / max(len(alpha_chars), 1)
+        if len(cjk_chars) >= 2 and cjk_ratio >= 0.1:
+            return {
+                "intent": "unsupported_language",
+                "message": "한국어로 질문해 주세요. 기술 키워드는 그대로 영어로 입력해도 됩니다.",
                 "confidence": 1.0,
             }
         return None

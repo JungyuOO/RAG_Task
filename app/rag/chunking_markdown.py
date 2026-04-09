@@ -12,7 +12,7 @@ from app.rag.utils import stable_hash
 class StructuredMarkdownChunker(StructuredMarkdownChunkerSupport):
     """마크다운 구조를 인식해 공식 문서형 콘텐츠를 의미 단위로 청킹한다."""
 
-    def __init__(self, *, chunk_size: int, overlap: int, max_block_chars: int = 1400) -> None:
+    def __init__(self, *, chunk_size: int, overlap: int, max_block_chars: int = 2000) -> None:
         self.chunk_size = chunk_size
         self.overlap = overlap
         self.max_block_chars = max_block_chars

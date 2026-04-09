@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import difflib
 import hashlib
 import re
 from collections import Counter
 from pathlib import Path
 
 
-TOKEN_PATTERN = re.compile(r"[0-9A-Za-z가-힣]+")
+TOKEN_PATTERN = re.compile(r"[0-9A-Za-z가-힣_./+-]+")
 _KO_CHAR_RANGE = re.compile(r"[가-힣]")
 _KO_SUFFIXES = sorted(
     [
@@ -32,69 +33,119 @@ _KO_SUFFIXES = sorted(
         "부터",
         "에는",
         "에도",
-        "에서",
-        "에게",
-        "으로",
-        "와의",
+        "께서",
         "과는",
         "과도",
-        "에서",
-        "에게",
-        "으로",
-        "로는",
-        "로도",
-        "이다",
+        "라고",
+        "라는",
+        "이라",
         "이고",
         "이며",
         "이랑",
-        "랑",
-        "으로",
-        "에서",
-        "에게",
-        "까지",
-        "부터",
-        "처럼",
-        "만큼",
-        "에게",
-        "에는",
-        "으로",
-        "에서",
-        "하고",
-        "이라",
-        "라고",
-        "이라는",
-        "라는",
-        "이나",
-        "나",
-        "이",
-        "가",
         "은",
         "는",
+        "이",
+        "가",
         "을",
         "를",
-        "와",
         "과",
-        "의",
+        "와",
+        "로",
         "도",
         "만",
-        "로",
         "에",
-        "게",
-        "서",
-        "요",
-        "좀",
-        "중",
+        "의",
     ],
     key=len,
     reverse=True,
 )
-_TECH_TOKEN_WHITELIST = {"pv", "pvc", "rbac", "scc", "api", "cli", "yaml", "json", "oc"}
+_TECH_TOKEN_WHITELIST = {"pv", "pvc", "rbac", "scc", "api", "cli", "yaml", "json", "oc", "ocp", "k8s"}
+DOMAIN_ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
+    "Pod": ("pod", "파드", "팟", "포드"),
+    "Deployment": ("deployment", "deploy", "디플로이먼트", "디플로이"),
+    "Service": ("service", "서비스"),
+    "Service Mesh": ("service mesh", "service-mesh", "servicemesh", "서비스 메시", "서비스메시", "서비스 메쉬", "서비스메쉬", "서비스 매쉬", "서비스매쉬"),
+    "Ingress": ("ingress", "인그레스"),
+    "Route": ("route", "라우트"),
+    "Node": ("node", "노드"),
+    "ConfigMap": ("configmap", "config map", "컨피그맵", "설정맵"),
+    "Secret": ("secret", "시크릿", "시크렛"),
+    "StatefulSet": ("statefulset", "stateful set", "스테이트풀셋", "스테이트풀 셋"),
+    "DaemonSet": ("daemonset", "daemon set", "데몬셋", "데몬 셋"),
+    "PV": ("pv", "persistent volume", "퍼시스턴트볼륨", "퍼시스턴트 볼륨", "피브이"),
+    "PVC": ("pvc", "persistent volume claim", "퍼시스턴트볼륨클레임", "퍼시스턴트 볼륨 클레임", "피브이씨"),
+    "OCP": ("ocp", "openshift", "open shift", "오픈시프트", "오씨피"),
+    "Kubernetes": ("kubernetes", "k8s", "쿠버네티스", "케이8에스", "케이에잇에스"),
+}
 
 
 def normalize_text(text: str) -> str:
     cleaned = text.replace("\x00", " ")
     cleaned = re.sub(r"\s+", " ", cleaned)
     return cleaned.strip()
+
+
+def _compact_domain_token(value: str) -> str:
+    return re.sub(r"[\s_\-./]", "", value.casefold())
+
+
+def _replace_exact_domain_aliases(text: str) -> str:
+    normalized = text
+    alias_pairs = [
+        (alias, canonical)
+        for canonical, aliases in DOMAIN_ALIAS_GROUPS.items()
+        for alias in aliases
+    ]
+    alias_pairs.sort(key=lambda item: len(item[0]), reverse=True)
+    for alias, canonical in alias_pairs:
+        normalized = re.sub(re.escape(alias), canonical, normalized, flags=re.IGNORECASE)
+    return normalized
+
+
+def _replace_fuzzy_domain_aliases(text: str) -> str:
+    words = text.split()
+    if not words:
+        return text
+
+    alias_lookup = {
+        _compact_domain_token(alias): canonical
+        for canonical, aliases in DOMAIN_ALIAS_GROUPS.items()
+        for alias in aliases
+    }
+    result: list[str] = []
+    i = 0
+    while i < len(words):
+        matched = False
+        for width in (3, 2, 1):
+            if i + width > len(words):
+                continue
+            phrase = " ".join(words[i : i + width])
+            compact = _compact_domain_token(phrase)
+            if len(compact) < 4:
+                continue
+            best_alias = None
+            best_score = 0.0
+            for alias_compact in alias_lookup:
+                score = difflib.SequenceMatcher(None, compact, alias_compact).ratio()
+                if score > best_score:
+                    best_score = score
+                    best_alias = alias_compact
+            threshold = 0.90 if width == 1 else 0.82
+            if best_alias is not None and best_score >= threshold:
+                result.append(alias_lookup[best_alias])
+                i += width
+                matched = True
+                break
+        if not matched:
+            result.append(words[i])
+            i += 1
+    return " ".join(result)
+
+
+def normalize_domain_terms(text: str) -> str:
+    normalized = normalize_text(text)
+    normalized = _replace_exact_domain_aliases(normalized)
+    return _replace_fuzzy_domain_aliases(normalized)
 
 
 def strip_korean_suffix(token: str) -> str:
@@ -162,14 +213,11 @@ def extracted_markdown_path(extract_dir: Path, source_path: Path) -> Path:
 
 
 def extracted_markdown_candidates(extract_dir: Path, source_path: Path) -> list[Path]:
-    # First try a stem-based glob so the file can still be found even if the
-    # original path string changed across environments such as Docker or local runs.
     stem = source_path.stem
     glob_matches = list(extract_dir.glob(f"{stem}-????????.md"))
     if glob_matches:
         return glob_matches
 
-    # If no exported markdown exists yet, fall back to the current path-based candidates.
     candidates: list[Path] = []
     for candidate_source in (source_path, source_path.resolve()):
         candidate_path = extracted_markdown_path(extract_dir, candidate_source)

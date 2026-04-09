@@ -3,19 +3,24 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import logging
+
 from collections.abc import AsyncIterator
 
 import httpx
 
 from app.config import Settings
 
-
+logger = logging.getLogger("rag.llm")
 class LlmClient:
-    """원격 LLM 엔드포인트에 httpx SSE로 스트리밍 요청을 보내는 클라이언트.
+    """원격 LLM 엔드포인트에 httpx SSE로 스트리밍 요청을 보내는 클라이언트."""
 
-    타임아웃/실패 시 쿨다운을 적용하여 반복 요청을 방지하고,
-    OpenAI 호환 /chat/completions API를 사용한다.
-    """
+    RETRYABLE_EXCEPTIONS = (
+        httpx.ConnectError,
+        httpx.ConnectTimeout,
+        httpx.ReadTimeout,
+        httpx.RemoteProtocolError,
+    )
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -25,7 +30,6 @@ class LlmClient:
         self._client: httpx.AsyncClient | None = None
 
     def _get_client(self) -> httpx.AsyncClient:
-        """httpx.AsyncClient를 최초 호출 시 생성하고 이후에는 재사용한다."""
         if self._client is None:
             timeout = httpx.Timeout(
                 connect=self.settings.llm_connect_timeout_seconds,
@@ -37,12 +41,16 @@ class LlmClient:
         return self._client
 
     async def close(self) -> None:
-        """AsyncClient를 닫는다."""
         if self._client is not None:
             await self._client.aclose()
             self._client = None
 
+    async def _sleep_before_retry(self, attempt: int) -> None:
+        await asyncio.sleep(min(1.5 * attempt, 5.0))
+
     async def stream_chat(self, messages: list[dict]) -> AsyncIterator[str]:
+        t_total = time.perf_counter()
+
         now = time.monotonic()
         if now < self._stream_disabled_until:
             remaining = max(self._stream_disabled_until - now, 0.0)
@@ -61,47 +69,130 @@ class LlmClient:
             "stream": True,
         }
 
-        try:
-            async with asyncio.timeout(self.settings.llm_total_timeout_seconds):
-                async with self._get_client().stream(
-                    "POST",
-                    f"{self.settings.cllm_base_url}/chat/completions",
-                    headers=headers,
-                    json=payload,
-                ) as response:
-                    response.raise_for_status()
-                    self._stream_disabled_until = 0.0
-                    self._last_error = ""
-                    async for line in response.aiter_lines():
-                        if not line or not line.startswith("data:"):
-                            continue
-                        data = line[5:].strip()
-                        if data == "[DONE]":
-                            break
-                        try:
-                            payload = json.loads(data)
-                        except json.JSONDecodeError:
-                            continue
-                        delta = payload["choices"][0]["delta"].get("content")
-                        if delta:
-                            yield delta
-        except TimeoutError as exc:
-            self._last_error = str(exc) or "LLM total timeout exceeded."
-            self._stream_disabled_until = time.monotonic() + max(self.settings.llm_timeout_cooldown_seconds, 0.0)
-            raise RuntimeError("LLM total timeout exceeded.") from exc
-        except (httpx.HTTPError, RuntimeError) as exc:
-            self._last_error = str(exc)
-            self._stream_disabled_until = time.monotonic() + max(self.settings.llm_failure_cooldown_seconds, 0.0)
-            raise
+        max_attempts = 3
+        empty_stream_attempts = 0
+        last_exc: Exception | None = None
+
+        for attempt in range(1, max_attempts + 1):
+            first_token_at: float | None = None
+            token_count = 0
+            char_count = 0
+            try:
+                async with asyncio.timeout(self.settings.llm_total_timeout_seconds):
+                    t_http = time.perf_counter()
+                    async with self._get_client().stream(
+                        "POST",
+                        f"{self.settings.cllm_base_url}/chat/completions",
+                        headers=headers,
+                        json=payload,
+                    ) as response:
+                        response.raise_for_status()
+                        logger.info(
+                            "[Timing][LLM.stream_chat] attempt=%d connected=%.3fs",
+                            attempt,
+                            time.perf_counter() - t_http,
+                        )
+                        self._stream_disabled_until = 0.0
+                        self._last_error = ""
+
+                        first_token_deadline = time.monotonic() + max(
+                            float(getattr(self.settings, "llm_first_token_timeout_seconds", 12.0)),
+                            1.0,
+                        )
+                        async for line in response.aiter_lines():
+                            if first_token_at is None and time.monotonic() > first_token_deadline:
+                                raise RuntimeError("LLM first token timeout exceeded.")
+                            if not line or not line.startswith("data:"):
+                                continue
+                            data = line[5:].strip()
+                            if data == "[DONE]":
+                                if token_count == 0:
+                                    empty_stream_attempts += 1
+                                    logger.warning(
+                                        "[LLM.stream_chat] empty stream received attempt=%d empty_stream_attempts=%d",
+                                        attempt,
+                                        empty_stream_attempts,
+                                    )
+                                    if empty_stream_attempts < 2:
+                                        await self._sleep_before_retry(attempt)
+                                        break
+                                    raise RuntimeError("LLM returned empty stream.")
+                                logger.info(
+                                    "[Timing][LLM.stream_chat] total=%.3fs first_token=%.3fs tokens=%d chars=%d",
+                                    time.perf_counter() - t_total,
+                                    (first_token_at - t_total) if first_token_at is not None else -1.0,
+                                    token_count,
+                                    char_count,
+                                )
+                                return
+                            try:
+                                chunk_payload = json.loads(data)
+                            except json.JSONDecodeError:
+                                continue
+                            delta = chunk_payload["choices"][0]["delta"].get("content")
+                            if delta:
+                                if first_token_at is None:
+                                    first_token_at = time.perf_counter()
+                                    logger.info(
+                                        "[Timing][LLM.stream_chat] first_token=%.3fs",
+                                        first_token_at - t_total,
+                                        )
+                                token_count += 1
+                                char_count += len(delta)
+                                yield delta
+                        logger.info(
+                            "[Timing][LLM.stream_chat] total=%.3fs first_token=%.3fs tokens=%d chars=%d",
+                            time.perf_counter() - t_total,
+                            (first_token_at - t_total) if first_token_at is not None else -1.0,
+                            token_count,
+                            char_count,
+                        )
+                        if token_count == 0:
+                            empty_stream_attempts += 1
+                            logger.warning(
+                                "[LLM.stream_chat] stream finished with zero tokens attempt=%d empty_stream_attempts=%d",
+                                attempt,
+                                empty_stream_attempts,
+                            )
+                            if empty_stream_attempts < 2:
+                                await self._sleep_before_retry(attempt)
+                                continue
+                            raise RuntimeError("LLM returned empty stream.")
+                        return
+            except TimeoutError as exc:
+                last_exc = exc
+                self._last_error = str(exc) or "LLM total timeout exceeded."
+                if attempt < max_attempts:
+                    await self._sleep_before_retry(attempt)
+                    continue
+                self._stream_disabled_until = time.monotonic() + max(
+                    self.settings.llm_timeout_cooldown_seconds, 0.0
+                )
+                raise RuntimeError("LLM total timeout exceeded.") from exc
+            except self.RETRYABLE_EXCEPTIONS as exc:
+                last_exc = exc
+                self._last_error = str(exc)
+                if attempt < max_attempts:
+                    await self._sleep_before_retry(attempt)
+                    continue
+                self._stream_disabled_until = time.monotonic() + max(
+                    self.settings.llm_failure_cooldown_seconds, 0.0
+                )
+                raise RuntimeError("LLM stream connection failed after retries.") from exc
+            except (httpx.HTTPStatusError, RuntimeError) as exc:
+                self._last_error = str(exc)
+                self._stream_disabled_until = time.monotonic() + max(
+                    self.settings.llm_failure_cooldown_seconds, 0.0
+                )
+                raise
+
+        if last_exc:
+            raise RuntimeError("LLM stream connection failed.") from last_exc
 
     @staticmethod
     def _extract_from_reasoning(reasoning: str) -> str:
-        """Qwen3.5 reasoning 필드에서 최종 답변 형식을 추출한다.
-
-        reasoning에 '검색쿼리:', '판정:' 등 구조화된 응답이 포함되어 있으면
-        해당 부분을 추출하여 반환한다.
-        """
         import re
+
         markers = ("검색쿼리:", "판정:", "대안1:", "키워드:", "확신도:", "재질문:")
         lines = reasoning.strip().splitlines()
         result_lines: list[str] = []
@@ -114,12 +205,11 @@ class LlmClient:
                 result_lines.append(stripped)
         if result_lines:
             return "\n".join(result_lines)
-        # 마지막 문단을 fallback으로 반환
         paragraphs = re.split(r"\n{2,}", reasoning.strip())
         return paragraphs[-1].strip() if paragraphs else ""
 
     async def generate(self, messages: list[dict], max_tokens: int | None = None) -> str:
-        """비스트리밍 LLM 호출. 질의 재작성 등 짧은 생성 작업에 사용한다."""
+        t_total = time.perf_counter()
         now = time.monotonic()
         if now < self._generate_disabled_until:
             raise RuntimeError("LLM endpoint temporarily unavailable.")
@@ -132,31 +222,70 @@ class LlmClient:
             "stream": False,
             "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
         }
-        try:
-            async with asyncio.timeout(self.settings.llm_total_timeout_seconds):
-                gen_headers = {"Content-Type": "application/json"}
-                if self.settings.cllm_api_key:
-                    gen_headers["Authorization"] = f"Bearer {self.settings.cllm_api_key}"
-                response = await self._get_client().post(
-                    f"{self.settings.cllm_base_url}/chat/completions",
-                    headers=gen_headers,
-                    json=payload,
+
+        gen_headers = {"Content-Type": "application/json"}
+        if self.settings.cllm_api_key:
+            gen_headers["Authorization"] = f"Bearer {self.settings.cllm_api_key}"
+
+        max_attempts = 3
+        last_exc: Exception | None = None
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                async with asyncio.timeout(self.settings.llm_total_timeout_seconds):
+                    t_http = time.perf_counter()
+                    response = await self._get_client().post(
+                        f"{self.settings.cllm_base_url}/chat/completions",
+                        headers=gen_headers,
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    self._generate_disabled_until = 0.0
+                    self._last_error = ""
+
+                    message = data["choices"][0]["message"]
+                    content = message.get("content", "") or ""
+
+                    logger.info(
+                        "[Timing][LLM.generate] attempt=%d http_total=%.3fs chars=%d",
+                        attempt,
+                        time.perf_counter() - t_http,
+                        len(content),
+                    )
+                    logger.info(
+                        "[Timing][LLM.generate] total=%.3fs",
+                        time.perf_counter() - t_total,
+                    )
+
+                    return content.strip()
+            except TimeoutError as exc:
+                last_exc = exc
+                self._last_error = str(exc) or "LLM timeout on generate."
+                if attempt < max_attempts:
+                    await self._sleep_before_retry(attempt)
+                    continue
+                self._generate_disabled_until = time.monotonic() + max(
+                    self.settings.llm_timeout_cooldown_seconds, 0.0
                 )
-                response.raise_for_status()
-                data = response.json()
-                self._generate_disabled_until = 0.0
-                self._last_error = ""
-                message = data["choices"][0]["message"]
-                content = message.get("content") or ""
-                # Qwen3.5: content가 비어있으면 reasoning 필드에서 답변 추출 시도
-                if not content.strip() and message.get("reasoning"):
-                    content = self._extract_from_reasoning(message["reasoning"])
-                return content.strip()
-        except TimeoutError as exc:
-            self._last_error = str(exc) or "LLM timeout on generate."
-            self._generate_disabled_until = time.monotonic() + max(self.settings.llm_timeout_cooldown_seconds, 0.0)
-            raise RuntimeError("LLM timeout on generate.") from exc
-        except (httpx.HTTPError, RuntimeError) as exc:
-            self._last_error = str(exc)
-            self._generate_disabled_until = time.monotonic() + max(self.settings.llm_failure_cooldown_seconds, 0.0)
-            raise
+                raise RuntimeError("LLM timeout on generate.") from exc
+            except self.RETRYABLE_EXCEPTIONS as exc:
+                last_exc = exc
+                self._last_error = str(exc)
+                if attempt < max_attempts:
+                    await self._sleep_before_retry(attempt)
+                    continue
+                self._generate_disabled_until = time.monotonic() + max(
+                    self.settings.llm_failure_cooldown_seconds, 0.0
+                )
+                raise RuntimeError("LLM generate connection failed after retries.") from exc
+            except (httpx.HTTPStatusError, RuntimeError) as exc:
+                self._last_error = str(exc)
+                self._generate_disabled_until = time.monotonic() + max(
+                    self.settings.llm_failure_cooldown_seconds, 0.0
+                )
+                raise
+
+        if last_exc:
+            raise RuntimeError("LLM generate connection failed.") from last_exc
+        raise RuntimeError("LLM generate failed.")

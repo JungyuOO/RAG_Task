@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -41,8 +42,242 @@ class RetrievalStateDeps:
 class RetrievalStateBuilder:
     """Build retrieval state for a chat turn using explicit collaborators."""
 
+    SOURCE_FAMILY_HINTS: dict[str, tuple[str, ...]] = {
+        "auth": ("oauth", "token", "identity", "provider", "ldap", "htpasswd", "authentication", "authorization", "auth", "rbac", "인증", "권한", "신원", "아이덴티티", "토큰", "흐름"),
+        "network": ("mtu", "network", "networking", "advanced_networking", "ovn", "multus", "route", "ingress", "네트워크", "라우트", "인그레스"),
+        "storage": ("storage", "persistent", "volume", "pv", "pvc", "ceph", "odf", "ocs", "스토리지", "볼륨"),
+        "install": ("install", "installer", "bootstrap", "baremetal", "aws", "vsphere", "cluster", "설치", "클러스터"),
+        "appdev": ("deploy", "deployment", "service", "route", "build", "pipeline", "gitops", "app", "project", "배포", "서비스", "프로젝트", "파이프라인"),
+    }
+
     def __init__(self, deps: RetrievalStateDeps) -> None:
         self.deps = deps
+
+    @staticmethod
+    def _should_skip_expand_with_llm(policy: TurnPolicyDecision, topic_state: dict, user_message: str) -> bool:
+        lowered = str(user_message or "").casefold()
+        has_followup_signal = any(marker in lowered for marker in ("그 ", "그때", "그다음", "그 다음", "다시", "이어서", "이번에는", "방금", "that", "again", "continue"))
+        compare_or_summary_signal = any(marker in lowered for marker in ("비교", "차이", "요약", "정리", "summary", "compare", "difference"))
+        has_topic_anchor = (
+            bool(topic_state.get("selected_sources"))
+            or bool(topic_state.get("selected_versions"))
+            or bool(topic_state.get("active_topic"))
+        )
+        if policy.turn_type == "document_followup":
+            return has_followup_signal or compare_or_summary_signal or has_topic_anchor
+        if has_topic_anchor and (
+            has_followup_signal
+            or compare_or_summary_signal
+            or len(str(user_message or "").strip()) <= 48
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def _build_followup_fast_query_result(rewritten_query: str, topic_state: dict) -> dict:
+        return {
+            "refined_query": rewritten_query,
+            "alternative_queries": [],
+            "translated_keywords": [],
+            "target_versions": list(topic_state.get("selected_versions", []) or []),
+            "resources": [],
+            "actions": [],
+            "format_constraints": [],
+            "response_shape": "",
+            "normalized_keywords": [],
+        }
+
+    @staticmethod
+    def _should_skip_reranker(
+        policy: TurnPolicyDecision,
+        document_group_preference: str,
+        source_filter_strategy: str,
+        retrieved: list[dict],
+    ) -> bool:
+        if not retrieved:
+            return True
+        if document_group_preference == "mixed":
+            return False
+        if source_filter_strategy not in {"selected_sources", "keyword_scoped"}:
+            return False
+        top_sources = {
+            Path(str(item["chunk"].get("source_path") or "")).name
+            for item in retrieved[:3]
+        }
+        top_score = float(retrieved[0].get("retrieval_score", retrieved[0].get("rerank_score", 0.0)))
+        if policy.turn_type == "document_query" and source_filter_strategy == "selected_sources":
+            return len(top_sources) <= 2 and top_score >= 0.16
+        if policy.turn_type != "document_followup":
+            return False
+        return len(top_sources) <= 2 and top_score >= 0.14
+
+    @staticmethod
+    def _source_group_from_path(source_path: str) -> str:
+        normalized = str(source_path or "").replace("\\", "/").casefold()
+        base_name = Path(str(source_path or "")).name.casefold()
+        if "/generated_pdf/" in normalized or "/generated/" in normalized or "/chat_uploads/" in normalized:
+            return "customer_generated"
+        if "customer-guide" in base_name or "customer_guide" in base_name:
+            return "customer_generated"
+        return "official_ocp"
+
+    def _build_uploaded_source_filter(
+        self,
+        indexed_source_paths: set[str],
+        query_interpretation: dict,
+        target_versions: list[str],
+        document_group_preference: str,
+        uploaded_source_paths: set[str] | None,
+    ) -> tuple[list[str] | None, str]:
+        uploaded = sorted({str(path) for path in (uploaded_source_paths or set()) if path})
+        if not uploaded:
+            return None, "none"
+        if document_group_preference != "mixed":
+            return uploaded, "uploaded_only"
+
+        all_sources = sorted(indexed_source_paths)
+        interesting_tokens: list[str] = []
+        for value in query_interpretation.get("resources", []) or []:
+            token = str(value).casefold().strip()
+            if len(token) >= 2 and token not in interesting_tokens:
+                interesting_tokens.append(token)
+        for value in query_interpretation.get("normalized_keywords", []) or []:
+            token = str(value).casefold().strip()
+            min_len = 2 if any("\uac00" <= ch <= "\ud7a3" for ch in token) else 3
+            if len(token) >= min_len and token not in interesting_tokens:
+                interesting_tokens.append(token)
+
+        target_version_set = {str(value).strip().casefold() for value in target_versions if value}
+        scored: list[tuple[int, str]] = []
+        for source_path in all_sources:
+            if source_path in uploaded:
+                continue
+            if self._source_group_from_path(source_path) != "official_ocp":
+                continue
+            normalized = str(source_path).replace("\\", "/").casefold()
+            basename = Path(str(source_path)).name.casefold()
+            score = 0
+            if target_version_set and any(version in normalized for version in target_version_set):
+                score += 3
+            for token in interesting_tokens:
+                if token in basename:
+                    score += 2
+                elif token in normalized:
+                    score += 1
+            if score > 0:
+                scored.append((score, source_path))
+
+        scored.sort(key=lambda item: (-item[0], str(item[1])))
+        official_sources = [source_path for _score, source_path in scored[:8]]
+        if not official_sources and target_version_set:
+            for source_path in all_sources:
+                if self._source_group_from_path(source_path) != "official_ocp":
+                    continue
+                normalized = str(source_path).replace("\\", "/").casefold()
+                if any(version in normalized for version in target_version_set):
+                    official_sources.append(source_path)
+            official_sources = sorted(set(official_sources))[:16]
+        return sorted(set(uploaded + official_sources)), "uploaded_mixed"
+
+    def _build_source_filter(
+        self,
+        indexed_source_paths: set[str],
+        topic_state: dict,
+        query_interpretation: dict,
+        target_versions: list[str],
+        document_group_preference: str,
+        allowed_source_paths: set[str] | None,
+        uploaded_source_paths: set[str] | None,
+    ) -> tuple[list[str] | None, str]:
+        if allowed_source_paths:
+            return sorted(allowed_source_paths), "allowed"
+        uploaded_filter, uploaded_strategy = self._build_uploaded_source_filter(
+            indexed_source_paths,
+            query_interpretation,
+            target_versions,
+            document_group_preference,
+            uploaded_source_paths,
+        )
+        if uploaded_filter:
+            return uploaded_filter, uploaded_strategy
+
+        all_sources = sorted(indexed_source_paths)
+        selected_source_names = {
+            str(source).casefold().strip()
+            for source in topic_state.get("selected_sources", []) or []
+            if source
+        }
+        if selected_source_names:
+            matched = [
+                source_path
+                for source_path in all_sources
+                if Path(str(source_path)).name.casefold() in selected_source_names
+            ]
+            if document_group_preference == "customer_generated":
+                matched = [source_path for source_path in matched if str(source_path).replace("\\", "/").lower().endswith(".pdf")]
+            if matched:
+                return matched[:8], "selected_sources"
+
+        interesting_tokens: list[str] = []
+        for value in query_interpretation.get("resources", []) or []:
+            token = str(value).casefold().strip()
+            if len(token) >= 2 and token not in interesting_tokens:
+                interesting_tokens.append(token)
+        for value in query_interpretation.get("normalized_keywords", []) or []:
+            token = str(value).casefold().strip()
+            min_len = 2 if any("\uac00" <= ch <= "\ud7a3" for ch in token) else 3
+            if len(token) >= min_len and token not in interesting_tokens:
+                interesting_tokens.append(token)
+
+        matched_families = [
+            family
+            for family, hints in self.SOURCE_FAMILY_HINTS.items()
+            if any(token in hints for token in interesting_tokens)
+        ]
+
+        scored: list[tuple[int, str]] = []
+        target_version_set = {str(value).strip() for value in target_versions if value}
+        for source_path in all_sources:
+            group = self._source_group_from_path(source_path)
+            if document_group_preference in {"customer_generated", "official_ocp"} and group != document_group_preference:
+                continue
+            normalized = str(source_path).replace("\\", "/").casefold()
+            if document_group_preference == "customer_generated" and not normalized.endswith(".pdf"):
+                continue
+            basename = Path(str(source_path)).name.casefold()
+            score = 0
+            if target_version_set and any(version.casefold() in normalized for version in target_version_set):
+                score += 3
+            for family in matched_families:
+                if any(hint in basename or hint in normalized for hint in self.SOURCE_FAMILY_HINTS[family]):
+                    score += 4
+            for token in interesting_tokens:
+                if token in basename:
+                    score += 2
+                elif token in normalized:
+                    score += 1
+            if score > 0:
+                scored.append((score, source_path))
+
+        scored.sort(key=lambda item: (-item[0], str(item[1])))
+        if scored:
+            limit = 4 if matched_families else 8
+            return [source_path for _score, source_path in scored[:limit]], "keyword_scoped"
+        return None, "broad"
+
+    def _scoped_topic_state_for_query(self, topic_state: dict, document_group_preference: str) -> dict:
+        if not topic_state:
+            return {}
+        scoped = dict(topic_state)
+        scoped["active_document_group"] = document_group_preference
+        if document_group_preference not in {"customer_generated", "official_ocp"}:
+            return scoped
+        selected_sources = []
+        for source in topic_state.get("selected_sources", []) or []:
+            if self._source_group_from_path(str(source)) == document_group_preference:
+                selected_sources.append(source)
+        scoped["selected_sources"] = selected_sources
+        return scoped
 
     async def run(
         self,
@@ -50,11 +285,12 @@ class RetrievalStateBuilder:
         user_message: str,
         allowed_source_paths: set[str] | None = None,
         *,
+        uploaded_source_paths: set[str] | None = None,
         version_tag: str | None = None,
         turn_context: dict | None = None,
     ) -> dict:
         deps = self.deps
-        target_versions = [version_tag] if version_tag else None
+        t_total = time.perf_counter()
         # turn_context가 이미 계산된 경우 재사용 (중복 LLM 호출 방지)
         if turn_context is None:
             turn_context = await deps.resolve_turn_context(session_id, user_message)
@@ -77,14 +313,14 @@ class RetrievalStateBuilder:
             else user_message.strip()
         )
 
-        index_items_all = deps.index_repository.load()
-        all_sources: list[str] = []
-        seen_sources: set[str] = set()
-        for item in index_items_all:
-            src = item["chunk"]["source_path"]
-            if src not in seen_sources:
-                seen_sources.add(src)
-                all_sources.append(src)
+        t_source_catalog = time.perf_counter()
+        indexed_source_paths = deps.index_repository.get_indexed_source_paths()
+        all_sources = sorted(indexed_source_paths)
+        logger.info(
+            "[Timing][RetrievalStateBuilder.run] source_catalog=%.3fs sources=%d",
+            time.perf_counter() - t_source_catalog,
+            len(all_sources),
+        )
 
         # turn_context에서 이미 계산된 intent_result 재사용 (중복 LLM 호출 제거)
         intent_result = turn_context.get("intent_result") or await deps.intent_agent.classify(
@@ -102,10 +338,23 @@ class RetrievalStateBuilder:
             logger.info("[DocType] doc_type=%s (from=%s)", doc_type,
                         "intent" if intent_result.get("doc_type") else "topic_state")
 
-        query_result = await deps.retrieval_agent.expand(
-            rewritten_query,
-            intent_result=intent_result,
-            available_sources=all_sources,
+        t_retrieval_expand = time.perf_counter()
+        if self._should_skip_expand_with_llm(policy, topic_state, user_message):
+            query_result = self._build_followup_fast_query_result(rewritten_query, topic_state)
+            expand_strategy = "followup_fastpath"
+        else:
+            query_result = await deps.retrieval_agent.expand(
+                rewritten_query,
+                intent_result=intent_result,
+                available_sources=all_sources,
+            )
+            expand_strategy = "llm_or_agent"
+        logger.info(
+            "[Timing][RetrievalStateBuilder.run] retrieval_agent_expand=%.3fs strategy=%s alternatives=%d target_versions=%s",
+            time.perf_counter() - t_retrieval_expand,
+            expand_strategy,
+            len(query_result.get("alternative_queries", []) or query_result.get("alternatives", []) or []),
+            query_result.get("target_versions", []),
         )
         refined_query = query_result["refined_query"]
         alternative_queries = query_result.get("alternative_queries", [])
@@ -119,28 +368,112 @@ class RetrievalStateBuilder:
             query_result=query_result,
             topic_state=topic_state,
         )
+        target_versions = [version_tag] if version_tag else list(query_result.get("target_versions", []) or topic_state.get("selected_versions", []) or [])
+        document_group_preference = str(query_interpretation.get("document_group_preference") or "").strip() or "auto"
+        if document_group_preference == "auto":
+            document_group_preference = str(
+                topic_state.get("last_document_group_preference")
+                or topic_state.get("active_document_group")
+                or "auto"
+            )
         logger.info(
-            "[QueryInterpretation] intent=%s resources=%s actions=%s formats=%s shape=%s keywords=%s",
+            "[QueryInterpretation] intent=%s resources=%s actions=%s formats=%s shape=%s keywords=%s target_versions=%s document_group=%s",
             query_interpretation["intent"],
             query_interpretation["resources"],
             query_interpretation["actions"],
             query_interpretation["format_constraints"],
             query_interpretation["response_shape"],
             query_interpretation["normalized_keywords"],
+            target_versions,
+            document_group_preference,
         )
 
+        source_filter, source_filter_strategy = self._build_source_filter(
+            indexed_source_paths,
+            topic_state,
+            query_interpretation,
+            target_versions,
+            document_group_preference,
+            allowed_source_paths,
+            uploaded_source_paths,
+        )
+        t_index_load = time.perf_counter()
+        index_items_all = deps.index_repository.load(
+            source_paths=source_filter,
+            target_versions=target_versions or None,
+            doc_type=doc_type,
+            document_group_preference=document_group_preference,
+        )
+        if source_filter and not index_items_all:
+            source_filter = None
+            source_filter_strategy = "broad_fallback"
+            index_items_all = deps.index_repository.load(
+                source_paths=None,
+                target_versions=target_versions or None,
+                doc_type=doc_type,
+                document_group_preference=document_group_preference,
+            )
+        logger.info(
+            "[Timing][RetrievalStateBuilder.run] index_load=%.3fs items=%d target_versions=%s source_filter=%d source_strategy=%s doc_type=%s document_group=%s",
+            time.perf_counter() - t_index_load,
+            len(index_items_all),
+            target_versions,
+            len(source_filter or []),
+            source_filter_strategy,
+            doc_type or "",
+            document_group_preference,
+        )
+
+        scoped_topic_state = self._scoped_topic_state_for_query(topic_state, document_group_preference)
         aliased_query = deps.expand_query_with_resource_aliases(refined_query, query_interpretation)
-        expanded_query = deps.expand_query_with_context(aliased_query, topic_state)
+        expanded_query = deps.expand_query_with_context(aliased_query, scoped_topic_state)
         expanded_query = self._expand_short_resource_query(
             expanded_query,
             user_message,
             query_interpretation,
         )
+        t_embed = time.perf_counter()
         query_vector = deps.embedder.encode(expanded_query)
-        index_items = deps.retrieval_service.filter_index_items(index_items_all, allowed_source_paths, doc_type=doc_type)
+        logger.info(
+            "[Timing][RetrievalStateBuilder.run] embed=%.3fs query_len=%d",
+            time.perf_counter() - t_embed,
+            len(expanded_query),
+        )
+        t_filter_index = time.perf_counter()
+        index_items = deps.retrieval_service.filter_index_items(
+            index_items_all,
+            allowed_source_paths,
+            uploaded_source_paths=uploaded_source_paths,
+            doc_type=doc_type,
+            document_group_preference=document_group_preference,
+        )
+        if source_filter and not index_items and source_filter_strategy in {"selected_sources", "keyword_scoped"}:
+            source_filter = None
+            source_filter_strategy = "broad_post_filter_fallback"
+            index_items_all = deps.index_repository.load(
+                source_paths=None,
+                target_versions=target_versions or None,
+                doc_type=doc_type,
+                document_group_preference=document_group_preference,
+            )
+            index_items = deps.retrieval_service.filter_index_items(
+                index_items_all,
+                allowed_source_paths,
+                uploaded_source_paths=uploaded_source_paths,
+                doc_type=doc_type,
+                document_group_preference=document_group_preference,
+            )
+        logger.info(
+            "[Timing][RetrievalStateBuilder.run] filter_index_items=%.3fs before=%d after=%d doc_type=%s document_group=%s",
+            time.perf_counter() - t_filter_index,
+            len(index_items_all),
+            len(index_items),
+            doc_type or "",
+            document_group_preference,
+        )
 
         # doc_type 필터 적용 후 청크가 0개인 경우 — 해당 문서가 아직 인덱싱되지 않은 것
-        no_doc_type_docs = bool(doc_type) and len(index_items) == 0 and len(index_items_all) > 0
+        no_doc_type_docs = bool(doc_type) and len(index_items) == 0 and bool(all_sources)
 
         # BM25는 영어 문서에 대해 Lexical Exact Match를 수행하므로,
         # 한국어가 섞인 rewritten_query 대신 RetrievalAgent가 영어로 번역한 refined_query를 사용한다.
@@ -158,6 +491,7 @@ class RetrievalStateBuilder:
         # top_k개는 selected_source_pass / alternative_queries 병합용,
         # 전체 풀은 cross-encoder 입력으로 재사용하여 중복 호출을 제거한다.
         rrf_k = getattr(deps.settings, "rrf_k", 30)
+        t_retrieve_fast = time.perf_counter()
         base_rrf_pool = deps.retriever.search_rrf(
             expanded_query, query_vector, index_items, rrf_k=rrf_k,
             limit=deps.retriever.candidate_pool_size,
@@ -165,8 +499,16 @@ class RetrievalStateBuilder:
             keyword_query=bm25_keyword_query,
         )
         retrieved = base_rrf_pool[: deps.retriever.top_k]
+        logger.info(
+            "[Timing][RetrievalStateBuilder.run] retrieve_fast=%.3fs pool=%d top_k=%d",
+            time.perf_counter() - t_retrieve_fast,
+            len(base_rrf_pool),
+            len(retrieved),
+        )
 
         query_interpretation_dict = dict(query_interpretation)
+        query_interpretation_dict["target_versions"] = target_versions
+        query_interpretation_dict["document_group_preference"] = document_group_preference
 
         if not query_interpretation["resources"] and topic_state.get("last_explicit_resources"):
             inherited = topic_state["last_explicit_resources"][:2]
@@ -178,10 +520,15 @@ class RetrievalStateBuilder:
             for source in topic_state.get("selected_sources", []) or []
             if source
         }
+        has_selected_source_hit = any(
+            Path(str(item["chunk"]["source_path"] or "")).name.casefold() in selected_source_names
+            for item in retrieved
+        )
         lowered_shape = str(query_interpretation["response_shape"] or "").casefold()
         lowered_intent = str(query_interpretation["intent"] or "").casefold()
         should_run_selected_source_pass = (
             bool(selected_source_names)
+            and not has_selected_source_hit
             and (
                 lowered_shape == "code"
                 or lowered_intent in {"explain", "yaml_example", "cli_example", "code_example", "procedure_followup"}
@@ -222,17 +569,19 @@ class RetrievalStateBuilder:
 
         seen_chunk_ids: set[str] = {item["chunk"]["chunk_id"] for item in retrieved}
         merged_extras: list[dict] = []
-        for alt_query in alternative_queries[:2]:
-            alt_aliased = deps.expand_query_with_resource_aliases(alt_query, query_interpretation_dict)
-            alt_expanded = deps.expand_query_with_context(alt_aliased, topic_state)
-            alt_vector = deps.embedder.encode(alt_expanded)
-            alt_bm25_kw = self._build_bm25_keyword_query(alt_query)
-            alt_retrieved = deps.retriever.search_rrf(alt_expanded, alt_vector, index_items, rrf_k=rrf_k, target_versions=target_versions, keyword_query=alt_bm25_kw)
-            for item in alt_retrieved:
-                cid = item["chunk"]["chunk_id"]
-                if cid not in seen_chunk_ids:
-                    seen_chunk_ids.add(cid)
-                    merged_extras.append(item)
+        alt_query_passes = int(getattr(deps.settings, "retrieval_alternative_query_max_passes", 0))
+        if not retrieved and alt_query_passes > 0:
+            for alt_query in alternative_queries[:alt_query_passes]:
+                alt_aliased = deps.expand_query_with_resource_aliases(alt_query, query_interpretation_dict)
+                alt_expanded = deps.expand_query_with_context(alt_aliased, scoped_topic_state)
+                alt_vector = deps.embedder.encode(alt_expanded)
+                alt_bm25_kw = self._build_bm25_keyword_query(alt_query)
+                alt_retrieved = deps.retriever.search_rrf(alt_expanded, alt_vector, index_items, rrf_k=rrf_k, target_versions=target_versions, keyword_query=alt_bm25_kw)
+                for item in alt_retrieved:
+                    cid = item["chunk"]["chunk_id"]
+                    if cid not in seen_chunk_ids:
+                        seen_chunk_ids.add(cid)
+                        merged_extras.append(item)
         if merged_extras:
             retrieved = retrieved + merged_extras
 
@@ -243,7 +592,7 @@ class RetrievalStateBuilder:
                 index + 1,
                 Path(chunk["source_path"]).name,
                 chunk.get("page_number", "?"),
-                item.get("rerank_score", 0),
+                item.get("retrieval_score", item.get("rerank_score", 0)),
                 item.get("dense_score", 0),
                 item.get("sparse_score", 0),
             )
@@ -263,9 +612,22 @@ class RetrievalStateBuilder:
                 if cid not in seen_ids:
                     seen_ids.add(cid)
                     extended.append(item)
-            extended.sort(key=lambda item: item.get("rerank_score", 0), reverse=True)
-            extended = extended[:20]
-            retrieved = deps.reranker.rerank(expanded_query, extended)
+            extended.sort(key=lambda item: item.get("retrieval_score", item.get("rerank_score", 0)), reverse=True)
+            rerank_limit = 20
+            if policy.turn_type == "document_followup" and document_group_preference != "mixed":
+                rerank_limit = 4
+            extended = extended[:rerank_limit]
+            if self._should_skip_reranker(policy, document_group_preference, source_filter_strategy, retrieved):
+                logger.info(
+                    "[Retrieval] skip_reranker turn_type=%s document_group=%s source_strategy=%s top_score=%.4f",
+                    policy.turn_type,
+                    document_group_preference,
+                    source_filter_strategy,
+                    float(retrieved[0].get("retrieval_score", retrieved[0].get("rerank_score", 0.0))),
+                )
+                retrieved = extended
+            else:
+                retrieved = deps.reranker.rerank(expanded_query, extended)
             retrieved = deps.metadata_aware_rerank(
                 user_message,
                 query_interpretation_dict,
@@ -287,7 +649,8 @@ class RetrievalStateBuilder:
 
         retrieval_metrics = deps.retriever.compute_retrieval_metrics(
             retrieved,
-            min_score=deps.settings.retrieval_min_score,
+            min_score=getattr(deps.settings, "retrieval_gate_threshold", deps.settings.retrieval_min_score),
+            score_field="final_retrieval_score",
         )
         top_score = retrieval_metrics["top_score"]
         use_retrieved_context = deps.should_use_retrieved_context(
@@ -297,10 +660,10 @@ class RetrievalStateBuilder:
             query_interpretation_dict,
         )
         logger.info(
-            "[Retrieval] top_score=%.4f use_context=%s min_score=%.4f",
+            "[Retrieval] top_score=%.4f use_context=%s gate_threshold=%.4f",
             top_score,
             use_retrieved_context,
-            deps.settings.retrieval_min_score,
+            getattr(deps.settings, "retrieval_gate_threshold", deps.settings.retrieval_min_score),
         )
         context_items = retrieved if use_retrieved_context else []
         grounded_pages = deps.retrieval_service.aggregate_page_grounding(context_items)
@@ -317,6 +680,11 @@ class RetrievalStateBuilder:
             selected_context_items,
             query_interpretation_dict,
         )
+        selected_context_items = deps.retrieval_service.rebalance_context_items_by_document_group(
+            selected_context_items,
+            query_interpretation_dict.get("document_group_preference"),
+            limit=max(int(deps.settings.grounded_chunk_top_n), 1),
+        )
         if not selected_context_items and str(query_interpretation["response_shape"] or "").casefold() == "code":
             fallback_code_items = deps.find_fallback_code_context_items(
                 user_message,
@@ -330,13 +698,19 @@ class RetrievalStateBuilder:
                 grounded_pages = deps.retrieval_service.aggregate_page_grounding(fallback_code_items)
                 top_score = max(
                     top_score,
-                    max(float(item.get("rerank_score", 0.0)) for item in fallback_code_items),
+                    max(float(item.get("final_retrieval_score", item.get("rerank_score", 0.0))) for item in fallback_code_items),
                 )
                 use_retrieved_context = True
         preferred_preview_source = deps.retrieval_service.select_grounded_preview_source(grounded_pages)
         preview_pages = deps.retrieval_service.build_grounded_preview_pages(
             preferred_preview_source,
             grounded_pages,
+        )
+        logger.info(
+            "[Timing][RetrievalStateBuilder.run] total=%.3fs target_versions=%s selected_context=%d",
+            time.perf_counter() - t_total,
+            target_versions,
+            len(selected_context_items),
         )
         return {
             "rewritten_query": rewritten_query,
@@ -410,8 +784,8 @@ class RetrievalStateBuilder:
         "management", "resource", "resources", "works", "work",
         "features", "feature", "role", "roles",
         # Korean filler (after tokenize strips suffixes)
-        "뭐야", "무엇", "어떻게", "왜", "설명", "개념", "역할", "특징",
-        "동작", "원리", "구성", "요소", "방법", "차이", "비교",
+        "뭐야", "무엇", "어떻게", "왜", "설명", "설명해줘", "알려줘", "개념", "역할", "특징",
+        "동작", "원리", "구성", "요소", "방법", "대해", "대해서", "알고싶어", "알고", "차이", "비교",
     }
 
     @classmethod
@@ -435,4 +809,3 @@ class RetrievalStateBuilder:
                 seen.add(t)
                 unique.append(t)
         return " ".join(unique)
-

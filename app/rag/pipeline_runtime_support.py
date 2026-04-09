@@ -13,6 +13,41 @@ from app.rag.utils import normalize_text, stable_hash
 
 
 class PipelineRuntimeMixin:
+    REWRITE_FASTPATH_MARKERS = (
+        "공식",
+        "고객사",
+        "문서",
+        "메뉴얼",
+        "매뉴얼",
+        "가이드",
+        "기준",
+        "비교",
+        "차이",
+        "yaml",
+        "cli",
+        "configmap",
+        "deployment",
+        "service",
+        "route",
+        "oauth",
+        "rbac",
+        "mtu",
+        "install-config",
+    )
+    REWRITE_FOLLOWUP_MARKERS = (
+        "그 ",
+        "그때",
+        "그 다음",
+        "그다음",
+        "다시",
+        "이어서",
+        "이번에는",
+        "방금",
+        "that",
+        "again",
+        "continue",
+    )
+
     def _build_answer_cache_key(
         self,
         session_id: str,
@@ -30,6 +65,7 @@ class PipelineRuntimeMixin:
             "context_ids": sorted(context_ids),
             "answer_route": answer_route,
             "intent": str(interpretation.get("intent", "") or ""),
+            "document_group_preference": str(interpretation.get("document_group_preference", "") or ""),
             "response_shape": str(interpretation.get("response_shape", "") or ""),
             "resources": sorted(str(value) for value in interpretation.get("resources", []) if value),
             "actions": sorted(str(value) for value in interpretation.get("actions", []) if value),
@@ -38,19 +74,11 @@ class PipelineRuntimeMixin:
         }
         return stable_hash(json.dumps(cache_scope, ensure_ascii=False, sort_keys=True))
 
-    def _should_run_judge_agent(self, policy_decision, query_interpretation: dict | None, top_score: float) -> bool:
-        query_interpretation = query_interpretation or {}
-        if policy_decision.turn_type == "document_followup":
-            return False
-        if query_interpretation.get("resources") and top_score >= 0.35:
-            return False
-        return True
-
     def _canonical_cache_query(self, user_message: str, rewritten_query: str, query_interpretation: dict | None) -> str:
         query_interpretation = query_interpretation or {}
         normalized = normalize_text(user_message).lower()
         normalized_keywords = [str(value).lower() for value in query_interpretation.get("normalized_keywords", []) if value]
-        has_referential_marker = any(marker in normalized for marker in ("洹멸굅", "洹멸굔", "洹몄?", "洹?yaml", "洹?肄붾뱶", "?ㅼ떆", "洹몃읆", "that", "this", "again"))
+        has_referential_marker = any(marker in normalized for marker in ("그거", "그건", "그 ", "그 yaml", "그 코드", "다시", "그중", "that", "this", "again"))
         if query_interpretation.get("resources") and normalized_keywords and not has_referential_marker:
             return " ".join(sorted(dict.fromkeys(normalized_keywords)))
         return rewritten_query
@@ -98,6 +126,8 @@ class PipelineRuntimeMixin:
         rewrite_context = rewrite_context or self.session_repository.build_rewrite_context(session_id, user_message)
         if rewrite_context is None:
             return user_message.strip()
+        if self._should_skip_rewrite_with_llm(user_message, rewrite_context):
+            return user_message.strip()
 
         history_lines: list[str] = []
         for turn in rewrite_context["conversation_history"]:
@@ -114,6 +144,10 @@ class PipelineRuntimeMixin:
             context_parts.append(f"활성 엔티티: {', '.join(rewrite_context['active_entities'])}")
         if rewrite_context["selected_sources"]:
             context_parts.append(f"참조 문서: {', '.join(rewrite_context['selected_sources'])}")
+        if rewrite_context.get("selected_versions"):
+            context_parts.append(f"선택 버전: {', '.join(rewrite_context['selected_versions'])}")
+        if rewrite_context.get("last_document_group_preference") and rewrite_context.get("last_document_group_preference") != "auto":
+            context_parts.append(f"문서군 선호: {rewrite_context['last_document_group_preference']}")
 
         prompt = (
             "당신은 RAG 검색 시스템의 질의 재작성기입니다.\n"
@@ -147,6 +181,22 @@ class PipelineRuntimeMixin:
                 return user_message.strip()
         return user_message.strip()
 
+    def _should_skip_rewrite_with_llm(self, user_message: str, rewrite_context: dict) -> bool:
+        lowered = normalize_text(user_message).casefold()
+        if not lowered:
+            return True
+        has_fastpath_hint = any(marker in lowered for marker in self.REWRITE_FASTPATH_MARKERS)
+        has_followup_marker = any(marker in lowered for marker in self.REWRITE_FOLLOWUP_MARKERS)
+        has_selected_sources = bool(rewrite_context.get("selected_sources"))
+        has_versions = bool(rewrite_context.get("selected_versions"))
+        if has_fastpath_hint:
+            return True
+        if has_followup_marker and (has_selected_sources or has_versions):
+            return True
+        if (has_selected_sources or has_versions) and len(lowered) <= 96 and not has_followup_marker:
+            return True
+        return False
+
     def _is_valid_rewritten_query(self, user_message: str, rewritten: str) -> bool:
         if not rewritten:
             return False
@@ -169,11 +219,32 @@ class PipelineRuntimeMixin:
             return False
         return True
 
-    async def _prepare_retrieval_state(self, session_id: str, user_message: str, allowed_source_paths: set[str] | None = None, *, version_tag: str | None = None, turn_context: dict | None = None) -> dict:
+    async def _prepare_retrieval_state(
+        self,
+        session_id: str,
+        user_message: str,
+        allowed_source_paths: set[str] | None = None,
+        *,
+        uploaded_source_paths: set[str] | None = None,
+        version_tag: str | None = None,
+        turn_context: dict | None = None,
+    ) -> dict:
         builder = RetrievalStateBuilder(self._build_retrieval_state_deps())
-        return await builder.run(session_id, user_message, allowed_source_paths, version_tag=version_tag, turn_context=turn_context)
+        return await builder.run(
+            session_id,
+            user_message,
+            allowed_source_paths,
+            uploaded_source_paths=uploaded_source_paths,
+            version_tag=version_tag,
+            turn_context=turn_context,
+        )
 
-    async def inspect_retrieval(self, session_id: str, user_message: str, allowed_source_paths: set[str] | None = None) -> dict:
+    async def inspect_retrieval(
+        self,
+        session_id: str,
+        user_message: str,
+        allowed_source_paths: set[str] | None = None,
+    ) -> dict:
         state = await self._prepare_retrieval_state(session_id, user_message, allowed_source_paths)
         return self.answer_service.build_context_payload(
             state["rewritten_query"],
@@ -240,6 +311,7 @@ class PipelineRuntimeMixin:
         session_id: str,
         user_message: str,
         allowed_source_paths: set[str] | None = None,
+        uploaded_source_paths: set[str] | None = None,
         append_user_turn: bool = True,
         version_tag: str | None = None,
     ) -> AsyncIterator[dict]:
@@ -249,6 +321,7 @@ class PipelineRuntimeMixin:
             session_id=session_id,
             user_message=user_message,
             allowed_source_paths=allowed_source_paths,
+            uploaded_source_paths=uploaded_source_paths,
             append_user_turn=append_user_turn,
             version_tag=version_tag,
             available_versions=available_versions,
@@ -297,7 +370,6 @@ class PipelineRuntimeMixin:
             ensure_topic_for_resolution=self._ensure_topic_for_resolution,
             build_answer_cache_key=self._build_answer_cache_key,
             canonical_cache_query=self._canonical_cache_query,
-            should_run_judge_agent=self._should_run_judge_agent,
             build_policy_answer=self._build_policy_answer,
             build_missing_extractive_answer=self._build_missing_extractive_answer,
             select_code_example_context_items=self._select_code_example_context_items,
@@ -309,6 +381,6 @@ class PipelineRuntimeMixin:
             get_prompt_composer=self._get_prompt_composer,
             answer_service=self.answer_service,
             answer_cache_repository=self.answer_cache_repository,
-            judge_agent=self.judge_agent,
+            answer_rewrite_agent=self.answer_rewrite_agent,
             llm=self.llm,
         )

@@ -5,6 +5,17 @@ from pathlib import Path
 
 
 class AnswerFormatMixin:
+    NEGATIVE_RETRIEVED_MARKERS = (
+        "제공된 문서에는",
+        "문서에는",
+        "관련 내용을 찾을 수 없습니다",
+        "포함되어 있지 않습니다",
+        "명시적인 목록은 없습니다",
+        "구체적인 설명이 포함되어 있지 않습니다",
+        "is not included in the provided document",
+        "is not specifically described in the provided document",
+    )
+
     def build_extractive_table_answer(self, context_items: list[dict]) -> str | None:
         tables: list[dict[str, str]] = []
         seen_tables: set[str] = set()
@@ -127,8 +138,112 @@ class AnswerFormatMixin:
             return self._sanitize_retrieved_answer(answer)
         return self._sanitize_general_answer(answer)
 
+    def looks_like_negative_retrieved_answer(self, answer: str) -> bool:
+        normalized = (answer or "").strip().casefold()
+        if not normalized:
+            return False
+        return any(marker.casefold() in normalized for marker in self.NEGATIVE_RETRIEVED_MARKERS)
+
+    def build_extractive_text_answer(self, context_items: list[dict]) -> str | None:
+        bullets: list[str] = []
+        seen: set[str] = set()
+
+        for item in context_items[:4]:
+            chunk = item["chunk"]
+            metadata = chunk.get("metadata") or {}
+            if metadata.get("is_toc"):
+                continue
+            text = str(chunk.get("text", "") or "")
+            if not text.strip():
+                continue
+            cleaned = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+            cleaned = re.sub(r"(?m)^##\s*Page\s+\d+\s*$", " ", cleaned)
+            cleaned = re.sub(r"(?m)^-\s*(loader|chars):.*$", " ", cleaned)
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            if not cleaned:
+                continue
+
+            segments = re.split(r"(?<=[.!?다요])\s+", cleaned)
+            for segment in segments:
+                line = segment.strip(" -*")
+                if len(line) < 18:
+                    continue
+                if self._looks_like_toc_line(line):
+                    continue
+                lowered = line.casefold()
+                if lowered in seen:
+                    continue
+                seen.add(lowered)
+                bullets.append(line)
+                if len(bullets) >= 6:
+                    break
+            if len(bullets) >= 6:
+                break
+
+        if not bullets:
+            return None
+
+        lines = ["문서 기준으로 정리하면 다음과 같습니다."]
+        for bullet in bullets:
+            lines.append(f"- {bullet}")
+        return "\n\n".join(lines).strip()
+
+    def build_extractive_compare_answer(self, context_items: list[dict]) -> str | None:
+        grouped: dict[str, list[str]] = {"official_ocp": [], "customer_generated": []}
+        seen: dict[str, set[str]] = {"official_ocp": set(), "customer_generated": set()}
+
+        for item in context_items[:6]:
+            chunk = item["chunk"]
+            metadata = chunk.get("metadata") or {}
+            group = str(metadata.get("document_group") or "")
+            if metadata.get("is_toc"):
+                continue
+            if group not in grouped:
+                group = "customer_generated" if str(metadata.get("doc_type") or "") == "operation_manual" else "official_ocp"
+            text = str(chunk.get("text", "") or "")
+            if not text.strip():
+                continue
+            cleaned = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+            cleaned = re.sub(r"(?m)^##\s*Page\s+\d+\s*$", " ", cleaned)
+            cleaned = re.sub(r"(?m)^-\s*(loader|chars):.*$", " ", cleaned)
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            if not cleaned:
+                continue
+            for segment in re.split(r"(?<=[.!?])\s+|(?<=다\.)\s+|(?<=니다\.)\s+", cleaned):
+                line = segment.strip(" -*")
+                if len(line) < 18:
+                    continue
+                if self._looks_like_toc_line(line):
+                    continue
+                lowered = line.casefold()
+                if lowered in seen[group]:
+                    continue
+                seen[group].add(lowered)
+                grouped[group].append(line)
+                if len(grouped[group]) >= 3:
+                    break
+
+        parts: list[str] = []
+        if grouped["official_ocp"]:
+            parts.append("공식 문서에서는 다음과 같이 설명합니다.\n\n- " + "\n- ".join(grouped["official_ocp"][:3]))
+        if grouped["customer_generated"]:
+            parts.append("고객사 메뉴얼에서는 다음과 같이 설명합니다.\n\n- " + "\n- ".join(grouped["customer_generated"][:3]))
+        if not parts:
+            return None
+        return "\n\n".join(parts).strip()
+
     def _sanitize_retrieved_answer(self, answer: str) -> str:
         sanitized = answer.replace("\r\n", "\n").strip()
+        sanitized = re.sub(r"(?im)^\s*(?:제공해주신 초안.*|자연스러운 한국어로 정리한 답변은 다음과 같습니다\.?|문맥을 자연스럽게 연결.*답변은 다음과 같습니다\.?)\s*", "", sanitized)
+        sanitized = re.sub(r"(?m)^\s*---+\s*$", "", sanitized)
+        sanitized = sanitized.replace("• - ", "- ").replace("• ", "- ")
+        sanitized = re.sub(r"\[\d+\]", "", sanitized)
+        sanitized = re.sub(
+            r"(?:^|[\s,])\[[^\]\n]+?\.pdf\]\s*p\.\d+(?:-\d+)?(?:\s*,\s*p\.\d+(?:-\d+)?)*",
+            "",
+            sanitized,
+            flags=re.IGNORECASE,
+        )
         lines: list[str] = []
         for raw_line in sanitized.split("\n"):
             line = raw_line.strip()
@@ -136,6 +251,8 @@ class AnswerFormatMixin:
                 lines.append("")
                 continue
             if self._is_retrieved_mode_negative_artifact(line):
+                continue
+            if self._is_general_mode_source_artifact(line):
                 continue
             lines.append(raw_line.rstrip())
 
@@ -193,15 +310,20 @@ class AnswerFormatMixin:
 
     def _is_retrieved_mode_negative_artifact(self, line: str) -> bool:
         normalized = line.casefold()
-        patterns = (
-            "제공된 문서에는",
-            "문서에는",
-            "포함되어 있지 않습니다",
-            "구체적인 정의나 설명이 포함되어 있지 않습니다",
-            "is not included in the provided document",
-            "is not specifically described in the provided document",
-        )
-        return any(pattern.casefold() in normalized for pattern in patterns)
+        return any(pattern.casefold() in normalized for pattern in self.NEGATIVE_RETRIEVED_MARKERS)
+
+    def _looks_like_toc_line(self, line: str) -> bool:
+        stripped = line.strip()
+        lowered = stripped.casefold()
+        if re.match(r"^\d+(?:\.\d+){1,4}\.?\s+", stripped):
+            return True
+        if stripped.endswith("절") or " 절" in stripped:
+            return True
+        if "table of contents" in lowered or lowered == "contents":
+            return True
+        if re.search(r"\bp\.\d+\b", lowered):
+            return True
+        return False
 
     def _extract_code_candidates(self, text: str) -> list[str]:
         candidates: list[str] = []

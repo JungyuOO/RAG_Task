@@ -67,6 +67,9 @@ class AnswerCitationMixin:
         negative_markers = (
             "업로드된 문서에서 관련 내용을 찾을 수 없습니다",
             "관련 내용을 찾기 어렵습니다",
+            "제공된 문서에는",
+            "포함되어 있지 않습니다",
+            "명시적인 목록은 없습니다",
             "다른 질문을 해주시거나",
             "관련 문서를 업로드해 주세요",
             "찾을 수 없습니다",
@@ -216,7 +219,12 @@ class AnswerCitationMixin:
             return answer
         if self.should_suppress_citations(answer):
             return answer
+        if "[source:" in answer:
+            return answer
         if self.extract_answer_citations(answer):
+            return answer
+        unique_files = {citation["file_name"] for citation in answer_citations if citation.get("file_name")}
+        if len(unique_files) <= 1:
             return answer
         return answer.rstrip() + self.build_source_line(answer_citations)
 
@@ -245,40 +253,3 @@ class AnswerCitationMixin:
             "items": self.retrieval_service.build_context_items_payload(context_items),
         }
 
-
-class CitationExtractor:
-    """인라인 인용 태그 파싱 및 HTML 변환"""
-    CITATION_RE = re.compile(r'\[source:([^:]+):p(\d+):L(\d+)-(\d+)\]')
-
-    def parse_citations(self, text: str) -> list[dict]:
-        citations = []
-        for i, match in enumerate(self.CITATION_RE.finditer(text)):
-            citations.append({
-                "file_name": match.group(1),
-                "page": int(match.group(2)),
-                "line_start": int(match.group(3)),
-                "line_end": int(match.group(4)),
-                "index": i + 1,
-                "raw": match.group(0),
-            })
-        return citations
-
-    def clean_for_display(self, text: str) -> str:
-        return self.CITATION_RE.sub("", text).strip()
-
-    def to_html_tag(self, citation: dict) -> str:
-        return (
-            f'<sup class="citation-tag" '
-            f'data-file="{citation["file_name"]}" '
-            f'data-page="{citation["page"]}" '
-            f'data-line-start="{citation["line_start"]}" '
-            f'data-line-end="{citation["line_end"]}">'
-            f'[{citation["index"]}]</sup>'
-        )
-
-    def render_with_html_tags(self, text: str) -> tuple[str, list[dict]]:
-        citations = self.parse_citations(text)
-        rendered = text
-        for c in reversed(citations):
-            rendered = rendered.replace(c["raw"], self.to_html_tag(c))
-        return rendered, citations

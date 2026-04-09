@@ -8,6 +8,10 @@ from app.rag.utils import normalize_text, stable_hash, tokenize
 
 
 class StructuredMarkdownChunkerSupport:
+    TOC_SECTION_MARKERS = ("table of contents", "contents", "목차")
+    OVERVIEW_SECTION_MARKERS = ("overview", "introduction", "about", "개요", "소개")
+    PROCEDURE_MARKERS = ("step", "steps", "procedure", "procedures", "절차", "단계", "순서")
+
     def _parse_annotated_markdown_blocks(self, annotated_lines: list[tuple[str, int]]) -> list[MarkdownBlock]:
         blocks: list[MarkdownBlock] = []
         for section in self._split_annotated_sections(annotated_lines):
@@ -261,12 +265,12 @@ class StructuredMarkdownChunkerSupport:
             "page_end": page_end,
             "block_types": ",".join(sorted({block.kind for block in blocks})),
             "block_count": len(blocks),
-            "chunking_strategy": "structured_markdown",
             "section_title": nearest_heading,
             "section_path": " > ".join(section_path_parts),
             "nearest_heading": nearest_heading,
             "parent_headings": section_path_parts[:-1],
         }
+        metadata.update(self._infer_structure_flags(chunk_text, metadata))
         if any(block.kind == "code" for block in blocks):
             metadata.update(self._infer_code_metadata(chunk_text))
         return Chunk(
@@ -278,6 +282,57 @@ class StructuredMarkdownChunkerSupport:
             page_number=page_start if page_start == page_end else None,
             metadata=metadata,
         )
+
+    def _infer_structure_flags(self, text: str, metadata: dict) -> dict[str, bool]:
+        normalized = text.replace("\r\n", "\n")
+        lowered = normalized.casefold()
+        section_title = str(metadata.get("section_title", "") or "").casefold()
+        section_path = str(metadata.get("section_path", "") or "").casefold()
+        block_types = {value.strip().casefold() for value in str(metadata.get("block_types", "")).split(",") if value.strip()}
+        page_start = int(metadata.get("page_start") or 0)
+
+        lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+        short_lines = [line for line in lines if len(line) <= 90]
+        numbered_heading_lines = [
+            line
+            for line in lines
+            if re.match(r"^\d+(?:\.\d+){1,4}\.?\s+", line)
+        ]
+        has_contents_heading = any(marker in section_title or marker in section_path or marker in lowered for marker in self.TOC_SECTION_MARKERS)
+        is_toc = bool(
+            has_contents_heading
+            or (
+                len(numbered_heading_lines) >= 2
+                and len(short_lines) >= max(2, len(lines) // 2)
+                and "code" not in block_types
+                and "table" not in block_types
+            )
+        )
+
+        overview_markers = self.OVERVIEW_SECTION_MARKERS
+        is_overview = bool(
+            not is_toc
+            and any(marker in section_title or marker in section_path for marker in overview_markers)
+        )
+        is_intro = bool(
+            not is_toc
+            and page_start <= 3
+            and (
+                any(marker in section_title or marker in section_path for marker in overview_markers)
+                or (len(lines) <= 4 and len(short_lines) >= max(1, len(lines) - 1))
+            )
+        )
+        is_procedure = bool(
+            any(marker in section_title or marker in section_path for marker in self.PROCEDURE_MARKERS)
+            or "list" in block_types
+            or any(re.match(r"^(?:\d+\.\s+|[-*]\s+)", line) for line in lines[:6])
+        )
+        return {
+            "is_toc": is_toc,
+            "is_intro": is_intro,
+            "is_overview": is_overview,
+            "is_procedure": is_procedure,
+        }
 
     def _infer_code_metadata(self, text: str) -> dict[str, str | list[str]]:
         normalized = text.replace("\r\n", "\n")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import re
 
 from app.rag.types import ChatTurn
 from app.rag.utils import normalize_text
@@ -32,6 +33,7 @@ class TurnContextResolution:
 
 
 class TurnContextResolver:
+    VERSION_PATTERN = re.compile(r"(?<!\d)(4\.(?:15|16|17|18|19|20|21))(?!\d)")
     EXPLICIT_SWITCH_MARKERS = ("instead", "back to", "switch to", "다시", "이번엔", "말고", "아까", "이전")
     REFERENT_MARKERS = (
         "that", "this", "those", "it", "그거", "그건", "그 코드", "그 예시", "그 차이", "그중", "바꿔", "로도", "아까 그거",
@@ -72,6 +74,8 @@ class TurnContextResolver:
         )
 
     def _score_topics(self, normalized_message: str, session_topics: list[dict], current_topic_id: str | None) -> list[TopicCandidate]:
+        explicit_version = self._extract_version(normalized_message)
+        explicit_group = self._detect_document_group_preference(normalized_message)
         scored: list[TopicCandidate] = []
         for topic in session_topics:
             topic_id = str(topic.get("topic_id") or "")
@@ -80,6 +84,9 @@ class TurnContextResolver:
             sources = [self._normalize(str(value)) for value in topic.get("sources", []) if value]
             entities = [self._normalize(str(value)) for value in topic.get("entities", []) if value]
             last_user_focus = self._normalize(str(topic.get("last_user_focus") or ""))
+            topic_summary = topic.get("summary", {}) or {}
+            topic_versions = [str(value).strip() for value in topic_summary.get("selected_versions", []) if value]
+            topic_group = str(topic_summary.get("last_document_group_preference") or "auto")
             score = 0.0
             reasons: list[str] = []
             if label and label in normalized_message:
@@ -105,6 +112,20 @@ class TurnContextResolver:
             if current_topic_id and topic_id == current_topic_id:
                 score += 0.12
                 reasons.append("current")
+            if explicit_version:
+                if explicit_version in topic_versions:
+                    score += 0.28
+                    reasons.append("version")
+                elif topic_versions:
+                    score -= 0.22
+                    reasons.append("version_mismatch")
+            if explicit_group != "auto":
+                if topic_group == explicit_group:
+                    score += 0.24
+                    reasons.append("doc_group")
+                elif topic_group not in {"", "auto"}:
+                    score -= 0.20
+                    reasons.append("doc_group_mismatch")
             if any(marker in normalized_message for marker in self.EXPLICIT_SWITCH_MARKERS) and topic_id != current_topic_id:
                 if label and label in normalized_message:
                     score += 0.2
@@ -136,3 +157,20 @@ class TurnContextResolver:
     def _normalize(self, value: str) -> str:
         return " ".join(normalize_text(value).lower().split())
 
+    def _extract_version(self, normalized_message: str) -> str | None:
+        match = self.VERSION_PATTERN.search(normalized_message)
+        if match:
+            return match.group(1)
+        return None
+
+    def _detect_document_group_preference(self, normalized_message: str) -> str:
+        lowered = normalized_message.casefold()
+        wants_official = any(marker in lowered for marker in ("official docs", "official document", "공식 문서", "공식 docs", "red hat docs"))
+        wants_customer = any(marker in lowered for marker in ("고객사", "운영 메뉴얼", "운영 매뉴얼", "customer guide", "customer manual"))
+        if wants_official and wants_customer:
+            return "mixed"
+        if wants_official:
+            return "official_ocp"
+        if wants_customer:
+            return "customer_generated"
+        return "auto"

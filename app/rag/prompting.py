@@ -36,8 +36,10 @@ class PromptComposer:
         summary = topic.get("summary", {})
         return {
             "active_topic": topic.get("topic_label") or summary.get("topic_label") or "",
+            "active_document_group": summary.get("last_document_group_preference", "auto"),
             "active_entities": topic.get("entities", [])[:6],
             "selected_sources": topic.get("sources", [])[:3],
+            "selected_versions": summary.get("selected_versions", [])[:3],
             "selected_pages": summary.get("important_pages", [])[:5],
             "last_retrieval_mode": topic.get("last_retrieval_mode", ""),
             "last_answer_citations": [],
@@ -54,6 +56,7 @@ class PromptComposer:
             "last_grounded_section_paths": summary.get("last_grounded_section_paths", [])[:4],
             "last_example_source_pages": summary.get("last_example_source_pages", [])[:6],
             "last_example_anchor": summary.get("last_example_anchor", {}),
+            "last_document_group_preference": summary.get("last_document_group_preference", "auto"),
         }
 
     def build_rewrite_context_from_topic(self, topic: dict | None, topic_turns: list) -> dict | None:
@@ -87,6 +90,7 @@ class PromptComposer:
             "active_topic": str(topic_state.get("active_topic") or ""),
             "active_entities": topic_state.get("active_entities", [])[:6],
             "selected_sources": topic_state.get("selected_sources", [])[:3],
+            "selected_versions": topic_state.get("selected_versions", [])[:3],
             "selected_pages": topic_state.get("selected_pages", [])[:5],
             "last_retrieval_mode": str(topic_state.get("last_retrieval_mode") or ""),
             "last_response_shape": last_response_shape,
@@ -94,6 +98,7 @@ class PromptComposer:
             "last_explicit_resources": topic_state.get("last_explicit_resources", [])[:4],
             "last_code_resource_kind": str(topic_state.get("last_code_resource_kind") or ""),
             "last_example_anchor": topic_state.get("last_example_anchor", {}),
+            "last_document_group_preference": topic_state.get("last_document_group_preference", "auto"),
         }
 
     def build_prompt_memory_snapshot(self, session_id: str, topic_id: str | None = None) -> dict:
@@ -169,14 +174,27 @@ class PromptComposer:
     def build_prompt_context_text(self, context_blocks: list[str]) -> str:
         max_items = max(int(self.settings.llm_prompt_context_items), 1)
         char_limit = max(int(self.settings.llm_prompt_context_char_limit), 600)
-        selected_blocks = context_blocks[:max_items]
+        selected_blocks: list[str] = []
+        seen_headers: set[str] = set()
+        for block in context_blocks:
+            header = block.splitlines()[0].strip() if block.strip() else ""
+            if header and header in seen_headers:
+                continue
+            if header:
+                seen_headers.add(header)
+            selected_blocks.append(block)
+            if len(selected_blocks) >= max_items:
+                break
         parts: list[str] = []
         used = 0
         for block in selected_blocks:
+            compact = re.sub(r"\n{3,}", "\n\n", block).strip()
+            if len(compact) > 700:
+                compact = compact[:700].rsplit("\n", 1)[0].strip()
             remaining = char_limit - used
             if remaining <= 0:
                 break
-            trimmed = block[:remaining]
+            trimmed = compact[:remaining]
             parts.append(trimmed)
             used += len(trimmed)
         return "\n\n".join(parts) if parts else "No reliable retrieved context."
@@ -197,6 +215,8 @@ class PromptComposer:
             "Do not mention unrelated prior questions or prior document topics unless the current user message explicitly asks for them. "
             "When retrieved context is used, end the answer with a short source line such as '[file.pdf] p.5' or '[file.pdf] p.5-6'. "
             "Keep answers concise but grounded. "
+            "Separate major points into short paragraphs with a blank line between paragraphs. "
+            "When comparing sources, explicitly separate the answer into sections such as '공식 문서는 ...' and '고객사 메뉴얼은 ...'. "
             f"{KOREAN_ONLY_INSTRUCTION}"
         )
         if code_example_request:
@@ -260,26 +280,31 @@ class PromptComposer:
         summary = self.session_repository.summary(session_id)
         prompt_memory = self.build_prompt_memory_snapshot(session_id, topic_id=topic_id)
         prompt_recent_turns = max(int(self.settings.llm_prompt_recent_turns), 1)
-        recent_turns = (
-            self.build_prompt_recent_turns_clean(session_id, topic_id=topic_id)
-            if is_new_topic
-            else self.build_prompt_recent_turns(session_id, topic_id=topic_id)
-        )
+        recent_turns = self.build_prompt_recent_turns_clean(session_id, topic_id=topic_id)
+        if len(recent_turns) > 4:
+            recent_turns = recent_turns[-4:]
 
         # recent_turns 이전에 더 오래된 턴이 있으면 다이제스트로 삽입
         older_digest = self._build_older_turns_digest(session_id, topic_id, skip_recent=prompt_recent_turns)
 
         context_text = self.build_prompt_context_text(context_blocks)
 
-        session_context_parts = [
-            f"Conversation summary:\n{summary or 'No summary yet.'}",
-        ]
+        session_context_parts = []
+        if summary:
+            session_context_parts.append(f"Conversation summary:\n{summary}")
         if older_digest:
             session_context_parts.append(f"Earlier conversation digest:\n{older_digest}")
+        compact_memory = {
+            "topic": prompt_memory.get("topic", ""),
+            "active_topic": prompt_memory.get("active_topic", ""),
+            "selected_sources": prompt_memory.get("selected_sources", [])[:2],
+            "selected_pages": prompt_memory.get("selected_pages", [])[:3],
+            "last_explicit_resources": prompt_memory.get("last_explicit_resources", [])[:3],
+            "last_answer_route": prompt_memory.get("last_answer_route", ""),
+        }
         session_context_parts += [
-            f"Session memory:\n{json.dumps(prompt_memory, ensure_ascii=False)}",
+            f"Session memory:\n{json.dumps(compact_memory, ensure_ascii=False)}",
             f"Retrieval mode: {response_mode}",
-            f"Turn policy: {json.dumps(turn_policy, ensure_ascii=False)}",
             f"Top retrieval score: {top_score:.4f}",
             f"Retrieved context:\n{context_text}",
         ]
@@ -291,5 +316,27 @@ class PromptComposer:
                 "content": "\n\n".join(session_context_parts),
             },
             *recent_turns,
+            {"role": "user", "content": user_message},
+        ]
+
+    def build_compact_llm_messages(
+        self,
+        user_message: str,
+        code_example_request: bool,
+        context_blocks: list[str],
+        query_interpretation: dict | None = None,
+    ) -> list[dict]:
+        system_prompt = self.build_system_prompt(code_example_request, query_interpretation=query_interpretation)
+        compact_context = self.build_prompt_context_text(context_blocks[:2])
+        return [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "system",
+                "content": (
+                    "Retrieved context:\n"
+                    f"{compact_context}\n\n"
+                    "Answer only from this context. Keep the answer concise, grounded, and in Korean."
+                ),
+            },
             {"role": "user", "content": user_message},
         ]

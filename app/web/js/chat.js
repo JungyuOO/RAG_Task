@@ -8,40 +8,34 @@ function setComposerPending(pending) {
 }
 
 function attachSourceButton(block, metadata) {
-  if (!metadata || !Array.isArray(metadata.preview_pages) || !metadata.preview_pages.length) return;
-  let actions = block.querySelector(".message-actions");
-  if (!actions) {
-    actions = document.createElement("div");
-    actions.className = "message-actions";
-    block.appendChild(actions);
-  } else {
-    actions.innerHTML = "";
-  }
+  void block;
+  void metadata;
+}
 
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "secondary mini-button";
-  button.textContent = "자료 보기";
-  button.addEventListener("click", () => {
-    renderAnswerPreview(metadata);
-  });
-  actions.appendChild(button);
+function createMessageShell(role, { loading = false } = {}) {
+  const block = document.createElement("div");
+  block.className = "message " + role + (loading ? " loading" : "");
+
+  const roleNode = document.createElement("div");
+  roleNode.className = "message-role";
+  roleNode.textContent = role === "user" ? "You" : "CW AI Assistant";
+
+  const body = document.createElement("div");
+  body.className = "message-body";
+
+  block.appendChild(roleNode);
+  block.appendChild(body);
+  return { block, body };
 }
 
 function appendMessage(role, text, metadata) {
   const shouldStick = chatPinnedToBottom;
-  const block = document.createElement("div");
-  block.className = "message " + role;
-  const roleLabel = role === "user" ? "You" : "CW AI Assistant";
-  block.innerHTML = '<div class="message-role">' + roleLabel + '</div><div class="message-body"></div>';
-  const body = block.querySelector(".message-body");
+  const { block, body } = createMessageShell(role);
   if (role === "assistant") {
     renderAssistantText(body, text, { final: true });
+    attachSourceButton(block, metadata || null);
   } else {
     body.textContent = text;
-  }
-  if (role === "assistant") {
-    attachSourceButton(block, metadata || null);
   }
   chatLog.appendChild(block);
   scrollChatToBottom(shouldStick);
@@ -50,34 +44,49 @@ function appendMessage(role, text, metadata) {
 
 function appendAssistantLoading() {
   const shouldStick = chatPinnedToBottom;
-  const block = document.createElement("div");
-  block.className = "message assistant loading";
-  block.innerHTML = '<div class="message-role">CW AI Assistant</div><div class="message-body"><div class="loading-indicator"><div class="loading-copy"><div class="loading-title">답변 생성 중</div><div class="loading-subtitle">문서와 대화 내용을 바탕으로 응답을 준비하고 있습니다.</div></div><div class="loading-meta"><div class="loading-dots" aria-hidden="true"><span></span><span></span><span></span></div><span class="loading-elapsed">0.0초</span></div></div></div>';
+  const { block, body } = createMessageShell("assistant", { loading: true });
+  body.innerHTML = '<div class="loading-indicator"><div class="loading-copy"><div class="loading-title">답변 생성 중</div><div class="loading-subtitle">문서와 대화 내용을 바탕으로 응답을 준비하고 있습니다.</div></div><div class="loading-meta"><div class="loading-dots" aria-hidden="true"><span></span><span></span><span></span></div><span class="loading-elapsed">0.0초</span></div></div>';
   chatLog.appendChild(block);
   scrollChatToBottom(shouldStick);
 
-  const body = block.querySelector(".message-body");
-  const elapsedNode = block.querySelector(".loading-elapsed");
+  const elapsedNode = body.querySelector(".loading-elapsed");
+  const titleNode = body.querySelector(".loading-title");
+  const subtitleNode = body.querySelector(".loading-subtitle");
   const startedAt = Date.now();
+  let finalized = false;
   const intervalId = window.setInterval(() => {
-    elapsedNode.textContent = ((Date.now() - startedAt) / 1000).toFixed(1) + "초";
+    if (elapsedNode) {
+      elapsedNode.textContent = ((Date.now() - startedAt) / 1000).toFixed(1) + "초";
+    }
   }, 100);
+
+  function finalizeLoading() {
+    if (finalized) return;
+    finalized = true;
+    window.clearInterval(intervalId);
+    block.classList.remove("loading");
+  }
 
   return {
     block,
+    body,
+    setStage(message) {
+      if (finalized) return;
+      if (titleNode) titleNode.textContent = "답변 생성 중";
+      if (subtitleNode) subtitleNode.textContent = message || "응답을 준비하고 있습니다.";
+    },
     setText(text) {
-      window.clearInterval(intervalId);
-      block.classList.remove("loading");
+      finalizeLoading();
       renderAssistantText(body, text, { final: true });
       scrollChatToBottom(true);
     },
     setPartialText(text) {
+      finalizeLoading();
       renderAssistantText(body, text, { final: false });
       scrollChatToBottom(true);
     },
     setError(text) {
-      window.clearInterval(intervalId);
-      block.classList.remove("loading");
+      finalizeLoading();
       body.textContent = text;
       scrollChatToBottom(true);
     },
@@ -138,6 +147,9 @@ async function consumeChatStream(response, assistantState, pendingState) {
           statusBar.show();
           statusBar.addStage(payload.stage, payload.message);
         }
+        if (assistantState && typeof assistantState.setStage === "function") {
+          assistantState.setStage(payload.message);
+        }
       }
       if (payload.type === "context") {
         currentContextPayload = payload;
@@ -148,24 +160,20 @@ async function consumeChatStream(response, assistantState, pendingState) {
       }
       if (payload.type === "token") {
         assistantText += payload.content;
-        assistantState.setText(assistantText);
+        assistantState.setPartialText(assistantText);
         updatePendingChatState({ partial_response: assistantText });
       }
       if (payload.type === "replace_answer") {
         assistantText = payload.content;
-        assistantState.setText(assistantText);
+        assistantState.setPartialText(assistantText);
         updatePendingChatState({ partial_response: assistantText });
       }
-      if (payload.type === "done") {
+if (payload.type === "done") {
         sawDone = true;
+        assistantState.setText(assistantText);
         attachSourceButton(assistantState.block, finalContextPayload || currentContextPayload);
-        // 인용 태그 클릭 연동 (citation.js가 로드된 경우)
-        if (typeof renderCitationTags === 'function' && assistantState.block) {
-          const el = assistantState.block.querySelector('.message-text') || assistantState.block;
-          if (el) {
-            el.innerHTML = renderCitationTags(el.textContent || assistantText);
-            bindCitationClicks(el);
-          }
+        if (typeof bindCitationClicks === "function" && assistantState.body) {
+          bindCitationClicks(assistantState.body);
         }
         clearPendingChatState();
         setLibraryStatus((payload.cached ? "캐시 응답 완료 (" : "응답 완료 (") + assistantState.elapsedSeconds() + "초)", "success", "Ready");
@@ -194,6 +202,7 @@ async function retryPendingChat(pendingState) {
   const turns = Array.from(chatLog.querySelectorAll(".message-role")).map((node) => node.textContent);
   if (!turns.length || turns[turns.length - 1] !== "CW AI Assistant") {
     const assistantState = appendAssistantLoading();
+    if (statusBar) statusBar.reset();
     setComposerPending(true);
     setLibraryStatus("새로고침 이후 답변을 복구하는 중입니다.", "loading", "Recovering");
     try {
@@ -241,6 +250,7 @@ async function sendMessage() {
   localStorage.removeItem(STORAGE_KEYS.draftMessage);
   appendMessage("user", message);
   const assistantState = appendAssistantLoading();
+  if (statusBar) statusBar.reset();
   setLibraryStatus(pendingChatFiles.length ? "첨부 문서를 반영해 답변을 준비 중입니다." : "Assistant가 답변 생성 중입니다.", "loading", "Processing");
 
   try {

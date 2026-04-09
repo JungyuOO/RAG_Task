@@ -28,7 +28,6 @@ WORKDIR /app
 
 # 프로젝트 루트 전체 복사
 # - app/web, app/resources 정적 파일 포함 (StaticFiles 상대 경로 정상 동작)
-# - scripts/build_index.py 포함 (컨테이너 내 인덱스 수동 빌드용)
 COPY . /app/
 
 # 볼륨 마운트 경로 사전 생성 및 소유권 설정

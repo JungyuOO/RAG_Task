@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     llm_write_timeout_seconds: float = 10.0
     llm_pool_timeout_seconds: float = 10.0
     llm_total_timeout_seconds: float = 180.0
+    llm_first_token_timeout_seconds: float = 12.0
     llm_timeout_cooldown_seconds: float = 3.0
     llm_failure_cooldown_seconds: float = 5.0
     llm_stream_temperature: float = 0.1
@@ -36,35 +37,50 @@ class Settings(BaseSettings):
     llm_generate_max_tokens: int = 512
     llm_prompt_recent_turns: int = 10
     llm_prompt_context_items: int = 5
-    llm_prompt_context_char_limit: int = 4000
+    llm_prompt_context_char_limit: int = 8000
 
-    rag_data_dir: Path
     rag_source_dir: Path
-    rag_index_dir: Path
     rag_cache_dir: Path
     rag_extract_dir: Path
     save_extracted_markdown: bool = True
+
+    embedding_backend: str = "ollama"
+
+    tei_base_url: str = ""
+    tei_embedding_model: str = "bge-m3"
+    tei_timeout: float = 120.0
+    embedding_batch_size: int = 16
+    embedding_parallel_workers: int = 4
+    embedding_batch_char_limit: int = 24000
+    startup_auto_index_enabled: bool = False
 
     # Ollama settings for BGE-M3 embeddings.
     ollama_base_url: str = "http://localhost:11434"
     ollama_embedding_model: str = "bge-m3"
     ollama_timeout: float = 120.0
 
-    chunk_size: int = 512
-    chunk_overlap: int = 50
-    structured_chunk_size: int = 512
-    structured_chunk_overlap: int = 20
-    chunking_strategy: str = "auto"
-    vector_dim: int = 1024
-    retrieval_top_k: int = 3
-    candidate_pool_size: int = 8
-    grounded_page_top_n: int = 3
-    grounded_chunk_top_n: int = 3
+    structured_chunk_size: int = 900
+    structured_chunk_overlap: int = 120
+    retrieval_top_k: int = 5
+    candidate_pool_size: int = 15
+    grounded_page_top_n: int = 5
+    grounded_chunk_top_n: int = 5
     memory_window_turns: int = 12
 
     # Retrieval acceptance thresholds tuned against the current corpus.
     retrieval_min_score: float = 0.25
     retrieval_retry_min_score: float = 0.10
+    retrieval_gate_threshold: float = 0.30
+    retrieval_explain_gate_threshold: float = 0.24
+
+    # Final retrieval score weights.
+    retrieval_final_ce_weight: float = 0.65
+    retrieval_final_metadata_weight: float = 0.25
+    retrieval_final_anchor_weight: float = 0.10
+    retrieval_explain_focus_boost: float = 0.08
+
+    # Keep alternative-query retrieval disabled by default.
+    retrieval_alternative_query_max_passes: int = 0
 
     # BM25 parameters.
     bm25_k1: float = 1.2
@@ -103,6 +119,7 @@ class Settings(BaseSettings):
         "llm_write_timeout_seconds",
         "llm_pool_timeout_seconds",
         "llm_total_timeout_seconds",
+        "llm_first_token_timeout_seconds",
         "llm_timeout_cooldown_seconds",
         "llm_failure_cooldown_seconds",
     )
@@ -113,23 +130,13 @@ class Settings(BaseSettings):
             raise ValueError(f"timeout must be positive: {value}")
         return value
 
-    @field_validator("chunk_overlap")
-    @classmethod
-    def _overlap_less_than_size(cls, value: int, info) -> int:
-        """chunk_overlap must be smaller than chunk_size."""
-        chunk_size = info.data.get("chunk_size", 512)
-        if value >= chunk_size:
-            raise ValueError(
-                f"chunk_overlap({value}) must be smaller than chunk_size({chunk_size})"
-            )
-        return value
-
     @field_validator(
-        "vector_dim",
         "retrieval_top_k",
         "candidate_pool_size",
         "memory_window_turns",
         "cache_max_entries",
+        "embedding_batch_size",
+        "embedding_parallel_workers",
     )
     @classmethod
     def _positive_int(cls, value: int) -> int:
@@ -138,14 +145,20 @@ class Settings(BaseSettings):
             raise ValueError(f"value must be at least 1: {value}")
         return value
 
+    @field_validator("embedding_batch_char_limit")
+    @classmethod
+    def _non_negative_int(cls, value: int) -> int:
+        """Batch char limit must be zero or positive."""
+        if value < 0:
+            raise ValueError(f"value must be zero or positive: {value}")
+        return value
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     settings = Settings()
     for directory in (
-        settings.rag_data_dir,
         settings.rag_source_dir,
-        settings.rag_index_dir,
         settings.rag_cache_dir,
         settings.rag_extract_dir,
     ):

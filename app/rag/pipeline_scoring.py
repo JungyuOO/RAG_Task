@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from pathlib import Path
 
 logger = logging.getLogger("rag.pipeline")
@@ -20,27 +21,97 @@ def _qi_set(qi: dict, key: str) -> set[str]:
 
 
 class PipelineRetrievalMixin:
+    @staticmethod
+    def _clamp_unit(value: float) -> float:
+        return max(0.0, min(float(value), 1.0))
+
+    @staticmethod
+    def _item_primary_score(item: dict) -> float:
+        return float(item.get("final_retrieval_score", item.get("rerank_score", 0.0)))
+
+    def _normalize_metadata_component(self, metadata_score: float, focus_multiplier: float) -> float:
+        normalized = self._clamp_unit(max(metadata_score, 0.0) / 3.0)
+        return self._clamp_unit(normalized * max(focus_multiplier, 0.0))
+
+    def _build_anchor_score(
+        self,
+        *,
+        item: dict,
+        has_structural_anchor: bool,
+        resource_match_score: float,
+        lexical_match_score: float,
+    ) -> float:
+        lexical_signal = (
+            self._clamp_unit(float(item.get("sparse_score", 0.0)))
+            + self._clamp_unit(float(item.get("title_score", 0.0)))
+        ) / 2.0
+        resource_anchor = self._clamp_unit(max(resource_match_score, 0.0))
+        lexical_anchor = self._clamp_unit(max(lexical_match_score, 0.0) / 0.35)
+        structural_anchor = 1.0 if has_structural_anchor else 0.0
+        continuity_anchor = self._clamp_unit(float(item.get("continuity_score", 0.0)))
+        return max(lexical_signal, resource_anchor, lexical_anchor, structural_anchor, continuity_anchor)
+
+    def _compose_final_retrieval_score(
+        self,
+        *,
+        ce_score: float,
+        metadata_component: float,
+        anchor_score: float,
+    ) -> float:
+        ce_weight = float(getattr(self.settings, "retrieval_final_ce_weight", 0.65))
+        metadata_weight = float(getattr(self.settings, "retrieval_final_metadata_weight", 0.25))
+        anchor_weight = float(getattr(self.settings, "retrieval_final_anchor_weight", 0.10))
+        weight_sum = ce_weight + metadata_weight + anchor_weight
+        if weight_sum <= 0:
+            return self._clamp_unit(ce_score)
+        return self._clamp_unit(
+            (
+                self._clamp_unit(ce_score) * ce_weight
+                + self._clamp_unit(metadata_component) * metadata_weight
+                + self._clamp_unit(anchor_score) * anchor_weight
+            )
+            / weight_sum
+        )
+
     def _metadata_aware_score(self, user_message: str, query_interpretation: dict | None, item: dict) -> dict:
         query_interpretation = query_interpretation or {}
         metadata = item["chunk"].get("metadata", {})
         lowered_text = str(item["chunk"].get("text", "")).casefold()
+        source_path = str(item["chunk"].get("source_path", "") or "")
+        source_name = Path(source_path).name.casefold()
         block_types = {value.strip().casefold() for value in str(metadata.get("block_types", "")).split(",") if value.strip()}
         code_language = str(metadata.get("code_language", "")).casefold()
         code_subtype = str(metadata.get("code_subtype", "")).casefold()
         code_signals = {str(signal).casefold() for signal in metadata.get("code_signals", []) or []}
+        is_toc = bool(metadata.get("is_toc"))
+        is_intro = bool(metadata.get("is_intro"))
+        is_overview = bool(metadata.get("is_overview"))
+        is_procedure = bool(metadata.get("is_procedure"))
         explicit_kind_match = _KIND_RE.search(lowered_text)
         explicit_resource_kind = explicit_kind_match.group(1).casefold() if explicit_kind_match else ""
         query_tokens = {token for token in query_interpretation.get("normalized_keywords", tokenize(user_message)) if len(token) >= 2 and token not in {"yaml", "manifest", "code", "example", "sample", "demo"}}
+        source_query_tokens = set(query_tokens)
+        for token in list(query_tokens):
+            source_query_tokens.update(
+                part
+                for part in re.split(r"[^a-z0-9]+", token.casefold())
+                if len(part) >= 3
+            )
         resources = self._resolve_requested_resource_kinds(query_interpretation)
         actions = _qi_set(query_interpretation, "actions")
         format_constraints = _qi_set(query_interpretation, "format_constraints")
         response_shape = _qi_str(query_interpretation, "response_shape")
         intent = _qi_str(query_interpretation, "intent")
+        normalized_user = normalize_text(user_message).casefold()
+        asks_for_toc = any(marker in normalized_user for marker in ("목차", "contents", "table of contents", "섹션", "절"))
+        asks_for_overview = any(marker in normalized_user for marker in ("개요", "소개", "overview", "introduction", "주제", "설명"))
 
         heading_score = self._heading_overlap_score(user_message, metadata)
-        resource_score = action_score = format_score = shape_score = lexical_score = completeness_score = 0.0
+        resource_score = action_score = format_score = shape_score = lexical_score = completeness_score = group_score = source_score = 0.0
         focus_multiplier = 1.0
         is_single_resource_focus = len(resources) == 1 and (intent == "explain" or response_shape == "text")
+        document_group_preference = _qi_str(query_interpretation, "document_group_preference")
+        item_document_group = str(metadata.get("document_group") or ("customer_generated" if metadata.get("doc_type") == "operation_manual" else "official_ocp")).casefold()
 
         if resources:
             matched_resources = 0
@@ -74,6 +145,20 @@ class PipelineRetrievalMixin:
                 if resource:
                     focus_multiplier = self._compute_focus_multiplier(resource, resources, lowered_text, section_focus_text, focus_multiplier)
 
+        explain_focus_bonus = 0.0
+        if is_single_resource_focus:
+            resource = next(iter(resources), "")
+            section_title = str(metadata.get("section_title", "") or "").casefold()
+            section_path = str(metadata.get("section_path", "") or "").casefold()
+            parent_headings = " ".join(str(value).casefold() for value in metadata.get("parent_headings", []) or [])
+            focus_text = " ".join([section_title, section_path, parent_headings]).strip()
+            boost = float(getattr(self.settings, "retrieval_explain_focus_boost", 0.08))
+            if resource and focus_text:
+                if resource in section_title:
+                    explain_focus_bonus += boost
+                elif resource in focus_text:
+                    explain_focus_bonus += boost * 0.65
+
         if "create" in actions:
             if any(marker in lowered_text for marker in ("create", "생성", "만들", "작성")):
                 action_score += 0.4
@@ -83,17 +168,29 @@ class PipelineRetrievalMixin:
             action_score += 0.5
         if "explain" in actions and "code" not in block_types:
             action_score += 0.25
+        if is_toc and not asks_for_toc:
+            action_score -= 1.0
+        if is_intro and response_shape == "code":
+            action_score -= 0.35
+        if is_overview and response_shape == "code":
+            action_score -= 0.25
+        if is_procedure and intent == "procedure_followup":
+            action_score += 0.35
 
         if "yaml" in format_constraints:
             if code_language in {"yaml", "yml"}:
                 format_score += 1.2
             if code_subtype == "k8s_manifest":
                 format_score += 0.9
+            if is_toc or is_intro or is_overview:
+                format_score -= 0.45
         if "cli" in format_constraints:
             if code_subtype == "cli_command":
                 format_score += 1.1
             if code_language in {"bash", "sh", "shell"}:
                 format_score += 0.8
+            if is_toc or is_intro or is_overview:
+                format_score -= 0.45
         if "table" in format_constraints and "table" in block_types:
             format_score += 1.0
 
@@ -102,6 +199,8 @@ class PipelineRetrievalMixin:
                 shape_score += 0.75
             elif "table" in block_types:
                 shape_score -= 0.15
+            if is_toc or is_intro or is_overview:
+                shape_score -= 0.45
         elif response_shape == "table":
             if "table" in block_types:
                 shape_score += 0.75
@@ -109,6 +208,10 @@ class PipelineRetrievalMixin:
                 shape_score -= 0.2
         elif response_shape in {"text", "comparison"} and "code" in block_types:
             shape_score -= 0.15
+        if is_toc and not asks_for_toc:
+            shape_score -= 0.45
+        if is_intro and not asks_for_overview and intent == "explain":
+            shape_score -= 0.20
 
         for token in query_tokens:
             token_casefold = token.casefold()
@@ -116,15 +219,71 @@ class PipelineRetrievalMixin:
                 lexical_score += 0.35
             elif token_casefold in lowered_text:
                 lexical_score += 0.12
+            if token_casefold in source_name:
+                source_score += 0.18
+
+        source_name_tokens = {
+            token
+            for token in re.split(r"[^a-z0-9]+", source_name)
+            if len(token) >= 3 and token not in {"openshift", "container", "platform", "customer", "guide", "official", "generated", "pdf", "en", "us", "ocp"}
+        }
+        source_overlap = len(source_query_tokens & source_name_tokens)
+        if source_overlap:
+            source_score += min(source_overlap * 0.12, 0.48)
+
+        section_title_tokens = {
+            token
+            for token in re.split(r"[^a-z0-9]+", str(metadata.get("section_title", "")).casefold())
+            if len(token) >= 3
+        }
+        section_path_tokens = {
+            token
+            for token in re.split(r"[^a-z0-9]+", str(metadata.get("section_path", "")).casefold())
+            if len(token) >= 3
+        }
+        section_overlap = len(source_query_tokens & (section_title_tokens | section_path_tokens))
+        if section_overlap:
+            source_score += min(section_overlap * 0.14, 0.56)
 
         if intent in {"yaml_example", "cli_example", "code_example"} and "code" in block_types:
             shape_score += 0.25
         if "code" in block_types:
             completeness_score += self._code_completeness_score(lowered_text)
 
-        metadata_score = heading_score + resource_score + action_score + format_score + shape_score + lexical_score + completeness_score
-        rerank_score = float(item.get("rerank_score", 0.0))
+        if document_group_preference in {"customer_generated", "official_ocp"}:
+            if item_document_group == document_group_preference:
+                group_score += 0.6
+            else:
+                group_score -= 0.2
+        elif document_group_preference == "mixed" and "compare" in actions:
+            if item_document_group in {"customer_generated", "official_ocp"}:
+                group_score += 0.15
+
+        metadata_score = heading_score + resource_score + action_score + format_score + shape_score + lexical_score + completeness_score + explain_focus_bonus + group_score + source_score
+        ce_score = float(item.get("ce_score", item.get("rerank_score", 0.0)))
+        structure_text = " ".join(
+            [
+                str(metadata.get("section_title", "") or ""),
+                str(metadata.get("section_path", "") or ""),
+                " ".join(str(value) for value in metadata.get("parent_headings", []) or []),
+            ]
+        )
+        structure_tokens = set(tokenize(structure_text))
+        has_structural_anchor = bool(query_tokens and query_tokens & structure_tokens)
+        metadata_component = self._normalize_metadata_component(metadata_score, focus_multiplier)
+        anchor_score = self._build_anchor_score(
+            item=item,
+            has_structural_anchor=has_structural_anchor,
+            resource_match_score=resource_score,
+            lexical_match_score=lexical_score,
+        )
+        final_retrieval_score = self._compose_final_retrieval_score(
+            ce_score=ce_score,
+            metadata_component=metadata_component,
+            anchor_score=anchor_score,
+        )
         return {
+            "ce_score": ce_score,
             "heading_overlap_score": heading_score,
             "resource_match_score": resource_score,
             "action_match_score": action_score,
@@ -132,9 +291,16 @@ class PipelineRetrievalMixin:
             "shape_match_score": shape_score,
             "lexical_match_score": lexical_score,
             "completeness_score": completeness_score,
+            "group_match_score": group_score,
+            "source_match_score": source_score,
+            "explain_focus_bonus": explain_focus_bonus,
             "focus_multiplier": focus_multiplier,
             "metadata_score": metadata_score,
-            "metadata_final_score": rerank_score * focus_multiplier + metadata_score,
+            "metadata_component_score": metadata_component,
+            "structural_anchor_score": 1.0 if has_structural_anchor else 0.0,
+            "anchor_score": anchor_score,
+            "metadata_final_score": final_retrieval_score,
+            "final_retrieval_score": final_retrieval_score,
         }
 
     def _compute_focus_multiplier(self, target_resource: str, all_requested_resources: set[str], lowered_text: str, section_focus_text: str, current_multiplier: float) -> float:
@@ -165,10 +331,25 @@ class PipelineRetrievalMixin:
         return min(len(unique_fields) * 0.05, 0.35)
 
     def _metadata_aware_rerank(self, user_message: str, query_interpretation: dict | None, items: list[dict]) -> list[dict]:
+        t_total = time.perf_counter()
         if not items:
+            logger.info("[Timing][PipelineRetrievalMixin._metadata_aware_rerank] total=%.3fs items=0", time.perf_counter() - t_total)
             return []
         rescored = [{**item, **self._metadata_aware_score(user_message, query_interpretation, item)} for item in items]
-        rescored.sort(key=lambda item: (-float(item.get("metadata_final_score", 0.0)), -float(item.get("metadata_score", 0.0)), -float(item.get("rerank_score", 0.0))))
+        rescored.sort(
+            key=lambda item: (
+                -float(item.get("final_retrieval_score", 0.0)),
+                -float(item.get("anchor_score", 0.0)),
+                -float(item.get("metadata_component_score", 0.0)),
+                -float(item.get("ce_score", item.get("rerank_score", 0.0))),
+            )
+        )
+        logger.info(
+            "[Timing][PipelineRetrievalMixin._metadata_aware_rerank] total=%.3fs items=%d top_score=%.4f",
+            time.perf_counter() - t_total,
+            len(rescored),
+            float(rescored[0].get("final_retrieval_score", 0.0)),
+        )
         return rescored
 
     def _has_code_content(self, item: dict) -> bool:
@@ -199,7 +380,7 @@ class PipelineRetrievalMixin:
         if has_positive_match:
             rescored = [item for item in rescored if item.get("resource_match_score", 0) >= 0]
         for item in rescored:
-            item["code_selection_score"] = float(item.get("metadata_final_score", 0.0))
+            item["code_selection_score"] = float(item.get("final_retrieval_score", 0.0))
             item["code_intent_score"] = float(item.get("resource_match_score", 0.0)) + float(item.get("action_match_score", 0.0)) + float(item.get("format_match_score", 0.0)) + float(item.get("shape_match_score", 0.0)) + float(item.get("lexical_match_score", 0.0))
         return rescored
 
@@ -248,7 +429,7 @@ class PipelineRetrievalMixin:
                     break
             if not matched_anchor:
                 continue
-            expanded.append({"chunk": chunk, "dense_score": 0.0, "sparse_score": 0.0, "rerank_score": 0.0})
+            expanded.append({"chunk": chunk, "dense_score": 0.0, "sparse_score": 0.0, "rerank_score": 0.0, "ce_score": 0.0})
             seen_chunk_ids.add(chunk_id)
         return self._metadata_aware_rerank(user_message, query_interpretation, expanded)
 
@@ -261,7 +442,33 @@ class PipelineRetrievalMixin:
         intent = _qi_str(query_interpretation, "intent")
         format_constraints = _qi_set(query_interpretation, "format_constraints")
         normalized_user = normalize_text(user_message).lower()
-        followup_markers = ("그거", "그건", "그 문서", "그 페이지", "그 yaml", "그 코드", "그 타입", "타입", "종류", "특징", "자세히", "더 설명", "설치", "과정", "구성", "차이", "비교", "다음", "계속", "that", "this", "those", "again", "next", "continue")
+        followup_markers = (
+            "그거",
+            "그건",
+            "그 문서",
+            "그 페이지",
+            "그 yaml",
+            "그 코드",
+            "그 예시",
+            "예시",
+            "종류",
+            "특징",
+            "자세히",
+            "설명",
+            "설치",
+            "과정",
+            "구성",
+            "차이",
+            "비교",
+            "다음",
+            "계속",
+            "that",
+            "this",
+            "those",
+            "again",
+            "next",
+            "continue",
+        )
         text_followup_expansion = intent in {"explain", "compare"} and bool(topic_state.get("selected_sources")) and (any(marker in normalized_user for marker in followup_markers) or len(normalized_user) <= 28)
         if response_shape not in {"code", "table"} and not format_constraints.intersection({"yaml", "cli", "table"}) and not text_followup_expansion:
             return ranked_items
@@ -278,7 +485,7 @@ class PipelineRetrievalMixin:
         source_anchor_scores: dict[str, float] = {}
         for item in ranked_items:
             source_path = str(item["chunk"].get("source_path") or "")
-            source_anchor_scores[source_path] = max(source_anchor_scores.get(source_path, 0.0), float(item.get("rerank_score", 0.0)))
+            source_anchor_scores[source_path] = max(source_anchor_scores.get(source_path, 0.0), self._item_primary_score(item))
 
         expanded: list[dict] = list(ranked_items)
         for candidate in index_items:
@@ -299,7 +506,16 @@ class PipelineRetrievalMixin:
             if not same_page_band and not same_section:
                 continue
             continuity_score = source_anchor_scores.get(str(chunk.get("source_path") or ""), 0.0) * 0.35 if text_followup_expansion else 0.0
-            expanded.append({"chunk": chunk, "dense_score": 0.0, "sparse_score": 0.0, "rerank_score": continuity_score})
+            expanded.append(
+                {
+                    "chunk": chunk,
+                    "dense_score": 0.0,
+                    "sparse_score": 0.0,
+                    "rerank_score": 0.0,
+                    "ce_score": 0.0,
+                    "continuity_score": continuity_score,
+                }
+            )
             seen_chunk_ids.add(chunk_id)
         return self._metadata_aware_rerank(user_message, query_interpretation, expanded)
 
@@ -316,7 +532,17 @@ class PipelineRetrievalMixin:
             if selected_source_names and source_name not in selected_source_names:
                 continue
             if self._has_code_content(item) or "code" in str(chunk.get("metadata", {}).get("block_types", "")).split(","):
-                candidate_pool.append({"chunk": chunk, "rerank_score": float(item.get("rerank_score", 0.0)), "dense_score": float(item.get("dense_score", 0.0)), "sparse_score": float(item.get("sparse_score", 0.0)), "score": float(item.get("score", 0.0))})
+                candidate_pool.append(
+                    {
+                        "chunk": chunk,
+                        "rerank_score": float(item.get("rerank_score", 0.0)),
+                        "ce_score": float(item.get("ce_score", item.get("rerank_score", 0.0))),
+                        "dense_score": float(item.get("dense_score", 0.0)),
+                        "sparse_score": float(item.get("sparse_score", 0.0)),
+                        "score": float(item.get("score", 0.0)),
+                        "final_retrieval_score": float(item.get("final_retrieval_score", item.get("rerank_score", 0.0))),
+                    }
+                )
         if not candidate_pool:
             return []
         selected = self._select_code_example_context_items(user_message, query_interpretation, candidate_pool, candidate_pool)
@@ -332,10 +558,10 @@ class PipelineRetrievalMixin:
             if has_positive:
                 items = [item for item in items if item.get("resource_match_score", 0) >= 0]
         if len(items) > 1:
-            top_score = max(float(item.get("metadata_final_score", 0)) for item in items)
+            top_score = max(float(item.get("final_retrieval_score", 0.0)) for item in items)
             if top_score > 0:
                 threshold = top_score * 0.2
-                items = [item for item in items if float(item.get("metadata_final_score", 0)) >= threshold]
+                items = [item for item in items if float(item.get("final_retrieval_score", 0.0)) >= threshold]
         return items
 
     def _apply_focus_filter(self, items: list[dict], query_interpretation: dict | None) -> list[dict]:
@@ -357,10 +583,15 @@ class PipelineRetrievalMixin:
         query_interpretation = query_interpretation or {}
         intent = _qi_str(query_interpretation, "intent")
         response_shape = _qi_str(query_interpretation, "response_shape")
+        actions = [str(value).casefold() for value in query_interpretation.get("actions", []) if value]
         if intent in {"yaml_example", "cli_example", "code_example"} or response_shape == "code":
             return "extractive_code"
         if intent == "table" or response_shape == "table":
             return "extractive_table"
+        if "compare" in actions:
+            return "extractive_compare"
+        if "compare" not in actions and intent in {"explain", "procedure_followup"} and response_shape in {"", "text", "procedure"}:
+            return "extractive_text"
         return "grounded_generation"
 
     def _build_missing_extractive_answer(self, answer_route: str) -> str:
@@ -372,146 +603,33 @@ class PipelineRetrievalMixin:
 
     def _build_policy_answer(self, turn_type: str, top_score: float) -> str:
         if turn_type == "conversational_ack":
-            return "네. 문서와 관련된 질문이 있으시면 이어서 질문해 주세요."
+            return "문서와 관련된 질문이 있으면 이어서 질문해 주세요."
         if turn_type == "greeting":
-            return "안녕하세요! 무엇을 도와드릴까요?"
+            return "안녕하세요. 무엇을 도와드릴까요?"
         if turn_type == "general_chat":
             return "죄송합니다. 업로드한 문서와 관련된 질문만 답변할 수 있습니다. 문서 내용에 대해 질문해 주세요."
         if turn_type == "document_query":
             if top_score >= self.settings.retrieval_retry_min_score:
-                return "관련 내용을 찾기 어렵습니다. 질문을 조금 더 구체적으로 적어 주세요.\n예: `스토리지 문서에서 PV 설명해줘`, `Service 종류를 서로 비교해줘`"
+                return "관련 내용을 찾기 어려웠습니다. 질문을 조금 더 구체적으로 적어 주세요.\n예: `스토리지 문서에서 PV 설명해줘`, `Service 종류를 서로 비교해줘`"
             return "업로드한 문서에서 관련 내용을 찾을 수 없습니다. 다른 질문을 하시거나 관련 문서를 업로드해 주세요."
         return "업로드한 문서에서 관련 내용을 찾을 수 없습니다."
 
     def _should_use_retrieved_context(self, policy, retrieved: list[dict], top_score: float, query_interpretation: dict | None = None) -> bool:
         query_interpretation = query_interpretation or {}
+        del top_score
         if not retrieved:
             logger.info("[RetrievalGate] no retrieved items -> use_context=False")
             return False
-        
-        top_item = retrieved[0]
-        lowered_intent = _qi_str(query_interpretation, "intent")
-        lowered_shape = _qi_str(query_interpretation, "response_shape")
-        
-        lexical_signal = float(top_item.get("sparse_score", 0.0)) + float(top_item.get("title_score", 0.0)) + float(top_item.get("title_match_bonus", 0.0)) + float(top_item.get("compact_match_bonus", 0.0))
-        resource_match_score = float(top_item.get("resource_match_score", 0.0))
-        lexical_match_score = float(top_item.get("lexical_match_score", 0.0))
-        
-        query_tokens = {token for token in query_interpretation.get("normalized_keywords", []) if len(token) >= 2 and token not in {"pdf", "설명", "explain"}}
-        metadata = top_item.get("chunk", {}).get("metadata", {}) or {}
-        structure_text = " ".join([str(metadata.get("section_title", "") or ""), str(metadata.get("section_path", "") or ""), " ".join(str(value) for value in metadata.get("parent_headings", []) or [])])
-        structure_tokens = set(tokenize(structure_text))
-        has_structural_anchor = bool(query_tokens and query_tokens & structure_tokens)
-        strong_resource_anchor = resource_match_score >= 0.9 or lexical_match_score >= 0.2 or has_structural_anchor
-
-        decision = True
-
-        if (
-            policy.turn_type in {"document_query", "document_followup"}
-            and lowered_intent == "explain"
-            and lowered_shape in {"", "text"}
-        ):
-            if top_score >= 0.08 and (lexical_signal > 0.0 or has_structural_anchor or strong_resource_anchor):
-                decision = True
-                logger.info(
-                    "[RetrievalGate] turn_type=%s intent=%s shape=%s top_score=%.4f lexical=%.4f structural=%s strong_anchor=%s use_context=%s",
-                    policy.turn_type,
-                    lowered_intent,
-                    lowered_shape,
-                    top_score,
-                    lexical_signal,
-                    has_structural_anchor,
-                    strong_resource_anchor,
-                    decision,
-                )
-                return decision
-            if top_score >= 0.12:
-                decision = True
-                logger.info(
-                    "[RetrievalGate] turn_type=%s intent=%s shape=%s top_score=%.4f lexical=%.4f structural=%s strong_anchor=%s use_context=%s",
-                    policy.turn_type,
-                    lowered_intent,
-                    lowered_shape,
-                    top_score,
-                    lexical_signal,
-                    has_structural_anchor,
-                    strong_resource_anchor,
-                    decision,
-                )
-                return decision
-
-        if top_score < self.settings.retrieval_min_score:
-            relaxed_threshold = self.settings.retrieval_min_score
-            if query_interpretation.get("resources"):
-                relaxed_threshold = min(relaxed_threshold, max(self.settings.retrieval_retry_min_score, 0.10))
-            if lowered_shape in {"code", "table", "procedure", "comparison"} or lowered_intent in {"yaml_example", "cli_example", "code_example", "table", "compare", "procedure_followup", "explain"}:
-                relaxed_threshold = min(self.settings.retrieval_min_score, max(self.settings.retrieval_retry_min_score, 0.15))
-            if (
-                policy.turn_type in {"document_query", "document_followup"}
-                and lowered_intent == "explain"
-                and (lexical_signal >= 0.06 or has_structural_anchor)
-            ):
-                relaxed_threshold = min(relaxed_threshold, max(self.settings.retrieval_retry_min_score, 0.08))
-            if top_score < relaxed_threshold:
-                decision = False
-                logger.info(
-                    "[RetrievalGate] turn_type=%s intent=%s shape=%s top_score=%.4f relaxed_threshold=%.4f lexical=%.4f structural=%s strong_anchor=%s use_context=%s",
-                    policy.turn_type,
-                    lowered_intent,
-                    lowered_shape,
-                    top_score,
-                    relaxed_threshold,
-                    lexical_signal,
-                    has_structural_anchor,
-                    strong_resource_anchor,
-                    decision,
-                )
-                return decision
-            
-        if len(retrieved) >= 2:
-            second_score = float(retrieved[1].get("rerank_score", 0.0))
-            if top_score - second_score > 0.15 and top_score >= 0.08:
-                decision = True
-                logger.info(
-                    "[RetrievalGate] turn_type=%s intent=%s shape=%s top_score=%.4f second_score=%.4f score_gap=%.4f use_context=%s",
-                    policy.turn_type,
-                    lowered_intent,
-                    lowered_shape,
-                    top_score,
-                    second_score,
-                    top_score - second_score,
-                    decision,
-                )
-                return decision
-        if (
-            policy.turn_type == "document_query"
-            and lowered_intent != "explain"
-            and top_score < 0.2
-            and lexical_signal <= 0.0
-            and not strong_resource_anchor
-        ):
-            decision = False
-            logger.info(
-                "[RetrievalGate] turn_type=%s intent=%s shape=%s top_score=%.4f lexical=%.4f structural=%s strong_anchor=%s use_context=%s",
-                policy.turn_type,
-                lowered_intent,
-                lowered_shape,
-                top_score,
-                lexical_signal,
-                has_structural_anchor,
-                strong_resource_anchor,
-                decision,
-            )   
-            return decision
+        threshold = float(getattr(self.settings, "retrieval_gate_threshold", getattr(self.settings, "retrieval_min_score", 0.25)))
+        if _qi_str(query_interpretation, "intent") == "explain" and _qi_str(query_interpretation, "response_shape") in {"", "text"}:
+            threshold = min(threshold, float(getattr(self.settings, "retrieval_explain_gate_threshold", threshold)))
+        top_item_score = self._item_primary_score(retrieved[0])
+        decision = top_item_score >= threshold
         logger.info(
-            "[RetrievalGate] turn_type=%s intent=%s shape=%s top_score=%.4f lexical=%.4f structural=%s strong_anchor=%s use_context=%s",
-            policy.turn_type,
-            lowered_intent,
-            lowered_shape,
-            top_score,
-            lexical_signal,
-            has_structural_anchor,
-            strong_resource_anchor,
+            "[RetrievalGate] turn_type=%s top_score=%.4f threshold=%.4f use_context=%s",
+            getattr(policy, "turn_type", ""),
+            top_item_score,
+            threshold,
             decision,
         )
         return decision

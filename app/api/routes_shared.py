@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import re
 
 from fastapi import HTTPException, Request, UploadFile
 
@@ -16,6 +17,20 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger("rag.api")
 OWNER_HEADER_NAME = "X-Client-Id"
+CHAT_UPLOAD_DIR_NAME = "chat_uploads"
+
+
+def customer_generated_target_dir(settings, suffix: str) -> Path:
+    return settings.rag_source_dir / ("generated_pdf" if suffix == ".pdf" else "generated")
+
+
+def _sanitize_upload_scope(scope: str) -> str:
+    normalized = re.sub(r"[^0-9A-Za-z._-]+", "_", str(scope or "").strip())
+    return normalized[:80] or "default"
+
+
+def chat_upload_target_dir(settings, session_id: str) -> Path:
+    return settings.rag_source_dir / CHAT_UPLOAD_DIR_NAME / _sanitize_upload_scope(session_id)
 
 
 def resolve_owner_id(request: Request) -> str:
@@ -64,31 +79,91 @@ def resolve_library_pdf(settings, file_name: str) -> Path:
     raise HTTPException(status_code=404, detail="File not found.")
 
 
-async def save_library_uploads(settings, files: list[UploadFile]) -> list[str]:
+async def save_library_uploads(
+    settings,
+    files: list[UploadFile],
+    *,
+    target_group: str | None = None,
+    target_version: str | None = None,
+) -> list[str]:
     if not files:
         raise HTTPException(status_code=400, detail="No files were uploaded.")
 
+    normalized_group = (target_group or "").strip()
+    normalized_version = (target_version or "").strip()
     uploaded_files: list[str] = []
+
     for file in files:
         suffix = Path(file.filename or "").suffix.lower()
         if suffix not in {".pdf", ".md"}:
             raise HTTPException(status_code=400, detail="Only PDF and Markdown files are allowed.")
-        # MD 파일은 generated/ 하위에 저장 (고객사 메뉴얼 분류 유지)
-        if suffix == ".md":
-            target_dir = settings.rag_source_dir / "generated"
+
+        if normalized_group:
+            if normalized_group not in {"official_ocp", "customer_generated"}:
+                raise HTTPException(status_code=400, detail="Invalid upload target group.")
+            if normalized_group == "official_ocp":
+                if not re.fullmatch(r"4\.\d+", normalized_version):
+                    raise HTTPException(status_code=400, detail="A target version like 4.15 is required.")
+                target_dir = settings.rag_source_dir / f"ocp-{normalized_version}"
+                relative_path = Path(f"ocp-{normalized_version}") / Path(file.filename).name
+            else:
+                target_dir = customer_generated_target_dir(settings, suffix)
+                relative_path = Path(target_dir.name) / Path(file.filename).name
+
             target_dir.mkdir(parents=True, exist_ok=True)
             target_path = target_dir / Path(file.filename).name
-            uploaded_files.append(str(Path("generated") / Path(file.filename).name))
+            uploaded_files.append(relative_path.as_posix())
         else:
-            target_path = settings.rag_source_dir / file.filename
-            uploaded_files.append(file.filename)
+            if suffix == ".md":
+                target_dir = customer_generated_target_dir(settings, suffix)
+                target_dir.mkdir(parents=True, exist_ok=True)
+                target_path = target_dir / Path(file.filename).name
+                uploaded_files.append((Path(target_dir.name) / Path(file.filename).name).as_posix())
+            else:
+                target_path = settings.rag_source_dir / file.filename
+                uploaded_files.append(file.filename)
+
         contents = await file.read()
         target_path.write_bytes(contents)
+
+    return uploaded_files
+
+
+async def save_chat_uploads(
+    settings,
+    session_id: str,
+    files: list[UploadFile],
+) -> list[str]:
+    if not files:
+        raise HTTPException(status_code=400, detail="No files were uploaded.")
+
+    target_dir = chat_upload_target_dir(settings, session_id)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    uploaded_files: list[str] = []
+    for file in files:
+        suffix = Path(file.filename or "").suffix.lower()
+        if suffix != ".pdf":
+            raise HTTPException(status_code=400, detail="Only PDF files are allowed in chat uploads.")
+        target_path = target_dir / Path(file.filename).name
+        contents = await file.read()
+        target_path.write_bytes(contents)
+        uploaded_files.append(str(target_path.relative_to(settings.rag_source_dir)).replace("\\", "/"))
+
     return uploaded_files
 
 
 def list_source_pdfs(settings) -> list[Path]:
-    return [path for path in settings.rag_source_dir.rglob("*") if path.is_file() and path.suffix.lower() == ".pdf"]
+    chat_upload_root = (settings.rag_source_dir / CHAT_UPLOAD_DIR_NAME).resolve()
+    results: list[Path] = []
+    for path in settings.rag_source_dir.rglob("*"):
+        if not path.is_file() or path.suffix.lower() != ".pdf":
+            continue
+        resolved = path.resolve()
+        if resolved == chat_upload_root or chat_upload_root in resolved.parents:
+            continue
+        results.append(path)
+    return results
 
 
 def delete_markdown_artifacts(container: AppContainer, file_name: str) -> tuple[Path, bool]:

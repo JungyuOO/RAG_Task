@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import time
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -13,6 +16,7 @@ from app.api.routes_shared import delete_markdown_artifacts, fitz, list_source_p
 from app.dependencies import AppContainer, get_container
 
 router = APIRouter()
+logger = logging.getLogger("rag.startup")
 
 
 @router.get("/")
@@ -106,15 +110,26 @@ async def delete_library_file(file_name: str = Query(..., min_length=1), contain
 
 
 @router.post("/api/library/upload")
-async def upload_to_library(files: list[UploadFile] = File(...), container: AppContainer = Depends(get_container)) -> StreamingResponse:
-    uploaded_files = await save_library_uploads(container.settings, files)
+async def upload_to_library(
+    files: list[UploadFile] = File(...),
+    target_group: str = Query(..., min_length=1),
+    target_version: str | None = Query(None),
+    container: AppContainer = Depends(get_container),
+) -> StreamingResponse:
+    uploaded_files = await save_library_uploads(
+        container.settings,
+        files,
+        target_group=target_group,
+        target_version=target_version,
+    )
     total_files = len(uploaded_files)
 
     async def event_stream():
         loop = asyncio.get_running_loop()
         total_chunks = 0
-        for file_idx, file_name in enumerate(uploaded_files):
-            source_path = container.settings.rag_source_dir / file_name
+        for file_idx, relative_path in enumerate(uploaded_files):
+            source_path = container.settings.rag_source_dir / relative_path
+            file_name = Path(relative_path).name
             queue: asyncio.Queue = asyncio.Queue()
 
             def make_progress_callback(q, ev_loop):
@@ -140,7 +155,7 @@ async def upload_to_library(files: list[UploadFile] = File(...), container: AppC
                 continue
             total_chunks += result.get("indexed_chunks", 0)
             library = container.indexing_service.list_library_documents()
-            yield "data: " + json.dumps({"type": "file_indexed", "file": file_name, "file_idx": file_idx, "total_files": total_files, **result, "library": library}, ensure_ascii=False) + "\n\n"
+            yield "data: " + json.dumps({"type": "file_indexed", "file": file_name, "relative_path": relative_path, "file_idx": file_idx, "total_files": total_files, **result, "library": library}, ensure_ascii=False) + "\n\n"
         yield "data: " + json.dumps({"type": "done", "total_chunks": total_chunks}, ensure_ascii=False) + "\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
@@ -173,11 +188,19 @@ async def reindex_all(request: Request, container: AppContainer = Depends(get_co
 
     try:
         result = await run_in_threadpool(container.indexing_service.rebuild_index, source_files, progress_callback)
+        reindex_state.update(current_stage="warming_cache", progress_pct=95)
+        warm_start = time.perf_counter()
+        warmed_items = await run_in_threadpool(container.pipeline.index_repository.warm_cache)
+        logger.info(
+            "[Timing][Reindex] warm_cache=%.3fs items=%d",
+            time.perf_counter() - warm_start,
+            warmed_items,
+        )
     except Exception:
         reindex_state.update(status="idle", current_stage="error")
         raise
 
-    reindex_state.update(status="done", completed_files=len(source_files), current_file="", current_stage="done", current_chunk=result.get("indexed_chunks", 0), total_chunks=result.get("indexed_chunks", 0), progress_pct=100)
+    reindex_state.update(status="done", completed_files=len(source_files), current_file="", current_stage="done", current_chunk=result.get("indexed_chunks", 0), total_chunks=warmed_items, progress_pct=100)
     return BuildIndexResponse(**result)
 
 
@@ -243,6 +266,7 @@ async def list_chunks(
     container: AppContainer = Depends(get_container),
 ):
     """문서의 인덱싱된 청크 목록 (페이지네이션)"""
+    container.pipeline.index_repository.clear_cache()
     all_items = container.pipeline.index_repository.load()
     matching = [
         item for item in all_items
@@ -277,6 +301,7 @@ async def get_chunk_detail(
     container: AppContainer = Depends(get_container),
 ):
     """개별 청크 상세 (전체 텍스트 + 메타데이터)"""
+    container.pipeline.index_repository.clear_cache()
     all_items = container.pipeline.index_repository.load()
     for item in all_items:
         c = item["chunk"]

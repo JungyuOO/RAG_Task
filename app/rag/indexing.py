@@ -2,21 +2,21 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 import threading
+import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any
 
 from app.config import Settings
-from app.storage import CacheRepository, IndexRepository
-from app.rag.bge_embeddings import BGEOllamaEmbedder
-from app.rag.chunking import TextChunker
+from app.rag.bge_embedding_server import EmbeddingPayloadTooLargeError
 from app.rag.chunking_markdown import StructuredMarkdownChunker
 from app.rag.ingestion_pdf import DocumentIngestor
 from app.rag.types import Document
 from app.rag.utils import extracted_markdown_path, stable_hash
 from app.rag.version_manager import VersionManager
+from app.storage import CacheRepository, IndexRepository
 
 logger = logging.getLogger("rag.startup")
 
@@ -26,26 +26,136 @@ class IndexingService:
         self,
         settings: Settings,
         ingestor: DocumentIngestor,
-        chunker: TextChunker,
         structured_chunker: StructuredMarkdownChunker,
-        embedder: BGEOllamaEmbedder,
+        embedder: Any,
         index_repository: IndexRepository,
         embedding_cache_repository: CacheRepository,
     ) -> None:
         self.settings = settings
         self.ingestor = ingestor
-        self.chunker = chunker
         self.structured_chunker = structured_chunker
         self.embedder = embedder
         self.index_repository = index_repository
         self.embedding_cache_repository = embedding_cache_repository
         self.version_manager = VersionManager()
 
-    _EMBED_BATCH_SIZE = 32  # Ollama 한 번 요청에 보낼 청크 수
-    _EMBED_PARALLEL_WORKERS = 2  # 동시 배치 요청 수
+    def _document_group_for_source_path(self, source_path: Path) -> str:
+        customer_dirs = [
+            (self.settings.rag_source_dir / "generated").resolve(),
+            (self.settings.rag_source_dir / "generated_pdf").resolve(),
+            (self.settings.rag_source_dir / "chat_uploads").resolve(),
+        ]
+        try:
+            resolved = source_path.resolve()
+        except Exception:
+            resolved = source_path
+        for customer_dir in customer_dirs:
+            if resolved == customer_dir or customer_dir in resolved.parents:
+                return "customer_generated"
+        return "official_ocp"
+
+    def _doc_type_for_source_path(self, source_path: Path) -> str:
+        if self._document_group_for_source_path(source_path) == "customer_generated":
+            return "operation_manual"
+        return "official"
 
     def _encode_chunk(self, text: str) -> list[float]:
         return self.embedder.encode_passage(text)
+
+    def _embed_batch_size(self) -> int:
+        return max(1, int(self.settings.embedding_batch_size))
+
+    def _embed_parallel_workers(self) -> int:
+        return max(1, int(self.settings.embedding_parallel_workers))
+
+    def _embed_batch_char_limit(self) -> int:
+        if self.settings.embedding_backend != "tei":
+            return 0
+        return max(0, int(self.settings.embedding_batch_char_limit))
+
+    @staticmethod
+    def _split_embed_batches(
+        chunks: list[Any],
+        miss_indices: list[int],
+        batch_size: int,
+        batch_char_limit: int,
+    ) -> list[tuple[int, list[int], list[str]]]:
+        batches: list[tuple[int, list[int], list[str]]] = []
+        batch_idx: list[int] = []
+        batch_texts: list[str] = []
+        batch_chars = 0
+
+        for miss_idx in miss_indices:
+            text = chunks[miss_idx].text
+            text_chars = len(text)
+            would_exceed_count = len(batch_idx) >= batch_size
+            would_exceed_chars = bool(
+                batch_char_limit and batch_idx and batch_chars + text_chars > batch_char_limit
+            )
+
+            if would_exceed_count or would_exceed_chars:
+                batches.append((len(batches), batch_idx, batch_texts))
+                batch_idx = []
+                batch_texts = []
+                batch_chars = 0
+
+            batch_idx.append(miss_idx)
+            batch_texts.append(text)
+            batch_chars += text_chars
+
+        if batch_idx:
+            batches.append((len(batches), batch_idx, batch_texts))
+
+        return batches
+
+    def _embed_with_backoff(self, batch_texts: list[str], batch_id: str) -> list[list[float]]:
+        total_chars = sum(len(text) for text in batch_texts)
+        avg_chars = total_chars / max(len(batch_texts), 1)
+        logger.info(
+            "[EmbedBatch] 시작: id=%s thread=%s size=%d avg_chars=%.1f total_chars=%d",
+            batch_id,
+            threading.current_thread().name,
+            len(batch_texts),
+            avg_chars,
+            total_chars,
+        )
+
+        t0 = time.perf_counter()
+        try:
+            result = self.embedder.encode_batch(batch_texts)
+        except EmbeddingPayloadTooLargeError:
+            if len(batch_texts) == 1:
+                logger.error(
+                    "[EmbedBatch] 단일 청크도 TEI 한도를 초과했습니다: id=%s chars=%d",
+                    batch_id,
+                    total_chars,
+                )
+                raise
+
+            mid = max(1, len(batch_texts) // 2)
+            logger.warning(
+                "[EmbedBatch] payload too large, splitting: id=%s size=%d total_chars=%d -> %d + %d",
+                batch_id,
+                len(batch_texts),
+                total_chars,
+                mid,
+                len(batch_texts) - mid,
+            )
+            left = self._embed_with_backoff(batch_texts[:mid], f"{batch_id}.0")
+            right = self._embed_with_backoff(batch_texts[mid:], f"{batch_id}.1")
+            result = left + right
+
+        dt = time.perf_counter() - t0
+        logger.info(
+            "[EmbedBatch] 완료: id=%s thread=%s size=%d avg_chars=%.1f total_chars=%d took=%.2fs",
+            batch_id,
+            threading.current_thread().name,
+            len(batch_texts),
+            avg_chars,
+            total_chars,
+            dt,
+        )
+        return result
 
     def _batch_embed_chunks(
         self,
@@ -54,99 +164,63 @@ class IndexingService:
         progress_stage: str = "embed",
         progress_meta_fn=None,
     ) -> tuple[list[list[float]], int, int, float]:
-        """캐시를 먼저 확인 후 미스된 청크만 배치로 임베딩한다.
-
-        Returns:
-            (vectors, cache_hits, cache_misses, embed_api_total_seconds)
-        """
+        """Embed uncached chunks in bounded batches and update the embedding cache."""
         total = len(chunks)
-        cache_keys = [stable_hash(c.text) for c in chunks]
+        cache_keys = [stable_hash(chunk.text) for chunk in chunks]
 
-        # 1단계: 캐시 조회
         vectors: list[list[float] | None] = [None] * total
         miss_indices: list[int] = []
         cache_hits = 0
-        for i, (chunk, key) in enumerate(zip(chunks, cache_keys)):
+        for index, key in enumerate(cache_keys):
             cached = self.embedding_cache_repository.get(key)
             if cached is not None:
-                vectors[i] = cached["vector"]
+                vectors[index] = cached["vector"]
                 cache_hits += 1
             else:
-                miss_indices.append(i)
+                miss_indices.append(index)
 
         cache_misses = len(miss_indices)
-        embed_api_total = 0.0
-
-        # 2단계: 미스된 청크만 배치 임베딩 (병렬 요청)
-        batch_size = self._EMBED_BATCH_SIZE
-        batches: list[tuple[int, list[int], list[str]]] = []
-        for batch_start in range(0, cache_misses, batch_size):
-            batch_idx = miss_indices[batch_start: batch_start + batch_size]
-            batch_texts = [chunks[i].text for i in batch_idx]
-            batches.append((batch_start, batch_idx, batch_texts))
+        batch_size = self._embed_batch_size()
+        batch_char_limit = self._embed_batch_char_limit()
+        batches = self._split_embed_batches(chunks, miss_indices, batch_size, batch_char_limit)
 
         completed_chunks = 0
-
-        def _embed_one_batch(batch_texts: list[str], batch_id: int) -> list[list[float]]:
-            total_chars = sum(len(t) for t in batch_texts)
-            avg_chars = total_chars / max(len(batch_texts), 1)
-
-            logger.info(
-                "[EmbedBatch] 시작: id=%d thread=%s size=%d avg_chars=%.1f total_chars=%d",
-                batch_id,
-                threading.current_thread().name,
-                len(batch_texts),
-                avg_chars,
-                total_chars,
-            )
-
-            t0 = time.perf_counter()
-            result = self.embedder.encode_batch(batch_texts)
-            dt = time.perf_counter() - t0
-
-            logger.info(
-                "[EmbedBatch] 완료: id=%d thread=%s size=%d avg_chars=%.1f total_chars=%d took=%.2fs",
-                batch_id,
-                threading.current_thread().name,
-                len(batch_texts),
-                avg_chars,
-                total_chars,
-                dt,
-            )
-
-            return result
-
-        workers = min(self._EMBED_PARALLEL_WORKERS, len(batches)) or 1
+        workers = min(self._embed_parallel_workers(), len(batches)) or 1
         logger.info(
-            "[EmbedConfig] batch_size=%d configured_workers=%d actual_workers=%d total_batches=%d",
-            self._EMBED_BATCH_SIZE,
-            self._EMBED_PARALLEL_WORKERS,
+            "[EmbedConfig] batch_size=%d batch_char_limit=%d configured_workers=%d actual_workers=%d total_batches=%d",
+            batch_size,
+            batch_char_limit,
+            self._embed_parallel_workers(),
             workers,
             len(batches),
         )
+
         te_total = time.perf_counter()
         with ThreadPoolExecutor(max_workers=workers) as pool:
             future_map = {
-                pool.submit(_embed_one_batch, batch_texts, idx): (batch_start, batch_idx)
-                for idx, (batch_start, batch_idx, batch_texts) in enumerate(batches)
+                pool.submit(self._embed_with_backoff, batch_texts, str(batch_id)): batch_idx
+                for batch_id, batch_idx, batch_texts in batches
             }
             for future in as_completed(future_map):
-                batch_start, batch_idx = future_map[future]
+                batch_idx = future_map[future]
                 batch_vectors = future.result()
-                for i, vec in zip(batch_idx, batch_vectors):
-                    vectors[i] = vec
-                    self.embedding_cache_repository.set(cache_keys[i], {"vector": vec})
+                for index, vector in zip(batch_idx, batch_vectors):
+                    vectors[index] = vector
+                    self.embedding_cache_repository.set(cache_keys[index], {"vector": vector})
                 completed_chunks += len(batch_idx)
                 if progress_callback and total > 0:
                     meta = progress_meta_fn(batch_idx[-1]) if progress_meta_fn else {}
                     progress_callback(progress_stage, cache_hits + completed_chunks, total, meta)
 
         embed_api_total = time.perf_counter() - te_total
-
         logger.info(
-            "[Embed] 배치 임베딩 완료: 청크 %d개 (캐시히트 %d / 미스 %d), API %.2fs, 요청 %d회 (병렬 %d), 청크당 평균 %.3fs",
-            total, cache_hits, cache_misses, embed_api_total,
-            len(batches), workers,
+            "[Embed] 배치 임베딩 완료: 청크 %d개(캐시히트 %d / 미스 %d), API %.2fs, 요청 %d회(병렬 %d), 청크당 평균 %.3fs",
+            total,
+            cache_hits,
+            cache_misses,
+            embed_api_total,
+            len(batches),
+            workers,
             embed_api_total / max(cache_misses, 1),
         )
         return vectors, cache_hits, cache_misses, embed_api_total  # type: ignore[return-value]
@@ -155,75 +229,78 @@ class IndexingService:
         t0 = time.perf_counter()
         logger.info("[Timing][rebuild] 시작 (파일 %d개)", len(source_paths))
 
-        documents, skipped = self.ingestor.ingest_paths(source_paths)
-        t1 = time.perf_counter()
-        logger.info("[Timing][rebuild] PDF 추출 완료: %.2fs, 페이지 %d개", t1 - t0, len(documents))
+        cache_clear_start = time.perf_counter()
+        self.embedding_cache_repository.clear()
+        logger.info("[Timing][rebuild] embedding cache cleared: %.2fs", time.perf_counter() - cache_clear_start)
 
-        chunks = self.chunk_documents(documents)
-        t2 = time.perf_counter()
-        logger.info("[Timing][rebuild] 청킹 완료: %.2fs, 청크 %d개", t2 - t1, len(chunks))
+        clear_start = time.perf_counter()
+        self.index_repository.save([], [])
+        logger.info("[Timing][rebuild] 기존 인덱스 초기화 완료: %.2fs", time.perf_counter() - clear_start)
 
-        for chunk in chunks:
-            source_path = Path(chunk.source_path)
-            version_tag = self.version_manager.detect_version_from_path(source_path)
-            if version_tag:
-                chunk.metadata["version_tag"] = version_tag
+        indexed_files = 0
+        indexed_chunks = 0
+        skipped_files = 0
 
-        def _meta(i: int) -> dict:
-            return {"file_name": Path(chunks[i].source_path).name, "source_path": chunks[i].source_path}
+        for source_path in source_paths:
+            def _progress(stage, current, total, meta=None):
+                if not progress_callback:
+                    return
+                progress_callback(
+                    stage,
+                    current,
+                    total,
+                    {
+                        "file_name": source_path.name,
+                        "source_path": str(source_path),
+                        **(meta or {}),
+                    },
+                )
 
-        vectors, cache_hits, cache_misses, embed_api_total = self._batch_embed_chunks(
-            chunks, progress_callback=progress_callback, progress_meta_fn=_meta
-        )
+            result = self.index_single_file(source_path, progress_callback=_progress)
+            indexed_chunks += result.get("indexed_chunks", 0)
+            if result.get("skipped"):
+                skipped_files += 1
+            else:
+                indexed_files += 1
 
-        t3 = time.perf_counter()
         logger.info(
-            "[Timing][rebuild] 임베딩 완료: %.2fs (API 순수 %.2fs, 캐시히트 %d / 미스 %d)",
-            t3 - t2, embed_api_total, cache_hits, cache_misses,
+            "[Timing][rebuild] 전체 소요: %.2fs (파일별 순차 추출/임베딩/저장)",
+            time.perf_counter() - t0,
         )
-
-        self.index_repository.save(chunks, vectors)
-        t4 = time.perf_counter()
-        logger.info("[Timing][rebuild] DB 저장 완료: %.2fs", t4 - t3)
-        logger.info("[Timing][rebuild] 전체 소요: %.2fs (추출 %.2fs / 청킹 %.2fs / 임베딩 %.2fs / DB %.2fs)",
-                    t4 - t0, t1 - t0, t2 - t1, t3 - t2, t4 - t3)
-
         return {
-            "indexed_files": len({chunk.source_path for chunk in chunks}),
-            "indexed_chunks": len(chunks),
-            "skipped_files": len(skipped),
+            "indexed_files": indexed_files,
+            "indexed_chunks": indexed_chunks,
+            "skipped_files": skipped_files,
         }
 
     def index_markdown_file(self, source_path: Path, doc_type: str = "operation_manual") -> dict:
-        """마크다운 파일을 직접 인덱싱한다 (PDF 없이 텍스트만 사용).
-
-        고객사 운영 매뉴얼 등 PDF가 아닌 마크다운 문서를 RAG에 포함할 때 사용.
-        """
+        """Index a markdown document directly without PDF extraction."""
         markdown_text = source_path.read_text(encoding="utf-8")
         if not markdown_text.strip():
             return {"indexed_chunks": 0, "indexed_pages": 0, "skipped": True}
 
         doc_id = stable_hash(str(source_path))
+        document_group = self._document_group_for_source_path(source_path)
         document = Document(
             doc_id=doc_id,
             source_path=str(source_path),
             page_number=1,
             text=markdown_text,
-            metadata={"loader": "markdown", "doc_type": doc_type},
+            metadata={"loader": "markdown", "doc_type": doc_type, "document_group": document_group},
         )
         chunks = self.structured_chunker.split([document], markdown_text=markdown_text)
 
         version_tag = self.version_manager.detect_version_from_path(source_path)
         for chunk in chunks:
-            chunk.metadata["chunking_strategy"] = "structured_markdown"
             chunk.metadata["doc_type"] = doc_type
+            chunk.metadata["document_group"] = document_group
             if version_tag:
                 chunk.metadata["version_tag"] = version_tag
 
         vectors, _, _, _ = self._batch_embed_chunks(chunks)
 
         self.index_repository.upsert_document(str(source_path), chunks, vectors)
-        logger.info("[IndexMarkdown] %s → %d chunks", source_path.name, len(chunks))
+        logger.info("[IndexMarkdown] %s -> %d chunks", source_path.name, len(chunks))
         return {"indexed_chunks": len(chunks), "indexed_pages": 1, "skipped": False}
 
     def index_single_file(self, source_path: Path, progress_callback=None) -> dict:
@@ -237,28 +314,31 @@ class IndexingService:
         if not documents:
             return {"indexed_chunks": 0, "indexed_pages": 0, "skipped": True}
 
-        # generated/ 하위 파일은 고객사 메뉴얼
-        generated_dir = self.settings.rag_source_dir / "generated"
-        is_manual = str(source_path).startswith(str(generated_dir))
-        doc_type = "operation_manual" if is_manual else "official"
+        document_group = self._document_group_for_source_path(source_path)
+        doc_type = self._doc_type_for_source_path(source_path)
 
         markdown_text = self.load_extracted_markdown(source_path)
         if not markdown_text and source_path.suffix.lower() == ".md":
-            # 마크다운은 원본 텍스트를 마크다운으로 사용
             markdown_text = documents[0].text
 
-        strategy = self.select_chunking_strategy(markdown_text, documents)
-        chunker = self.structured_chunker if strategy == "structured_markdown" else self.chunker
-        chunks = chunker.split(documents, markdown_text=markdown_text)
+        strategy = "structured_markdown"
+        chunks = self.structured_chunker.split(documents, markdown_text=markdown_text)
         t2 = time.perf_counter()
-        logger.info("[Timing][%s] 청킹 완료: %.2fs (전략=%s, doc_type=%s), 청크 %d개", source_path.name, t2 - t1, strategy, doc_type, len(chunks))
+        logger.info(
+            "[Timing][%s] 청킹 완료: %.2fs (전략=%s, doc_type=%s), 청크 %d개",
+            source_path.name,
+            t2 - t1,
+            strategy,
+            doc_type,
+            len(chunks),
+        )
 
         loaders = [doc.metadata.get("loader") for doc in documents if doc.metadata.get("loader")]
         representative_loader = loaders[0] if loaders else None
         version_tag = self.version_manager.detect_version_from_path(source_path)
         for chunk in chunks:
-            chunk.metadata["chunking_strategy"] = strategy
             chunk.metadata["doc_type"] = doc_type
+            chunk.metadata["document_group"] = document_group
             if representative_loader and "loader" not in chunk.metadata:
                 chunk.metadata["loader"] = representative_loader
             if version_tag:
@@ -268,20 +348,31 @@ class IndexingService:
         vectors, cache_hits, cache_misses, embed_api_total = self._batch_embed_chunks(
             chunks,
             progress_callback=progress_callback,
-            progress_meta_fn=lambda _i: {"file_name": file_name},
+            progress_meta_fn=lambda _i: {"file_name": file_name, "source_path": str(source_path)},
         )
 
         t3 = time.perf_counter()
         logger.info(
-            "[Timing][%s] 임베딩 완료: %.2fs (API 순수 %.2fs, 캐시히트 %d / 미스 %d)",
-            source_path.name, t3 - t2, embed_api_total, cache_hits, cache_misses,
+            "[Timing][%s] 임베딩 완료: %.2fs (API %.2fs, 캐시히트 %d / 미스 %d)",
+            source_path.name,
+            t3 - t2,
+            embed_api_total,
+            cache_hits,
+            cache_misses,
         )
 
         self.index_repository.upsert_document(str(source_path), chunks, vectors)
         t4 = time.perf_counter()
         logger.info("[Timing][%s] DB 저장 완료: %.2fs", source_path.name, t4 - t3)
-        logger.info("[Timing][%s] 전체 소요: %.2fs (추출 %.2fs / 청킹 %.2fs / 임베딩 %.2fs / DB %.2fs)",
-                    source_path.name, t4 - t0, t1 - t0, t2 - t1, t3 - t2, t4 - t3)
+        logger.info(
+            "[Timing][%s] 전체 소요: %.2fs (추출 %.2fs / 청킹 %.2fs / 임베딩 %.2fs / DB %.2fs)",
+            source_path.name,
+            t4 - t0,
+            t1 - t0,
+            t2 - t1,
+            t3 - t2,
+            t4 - t3,
+        )
 
         return {
             "indexed_chunks": len(chunks),
@@ -297,13 +388,12 @@ class IndexingService:
         chunks = []
         for source_path, source_documents in documents_by_path.items():
             markdown_text = self.load_extracted_markdown(Path(source_path))
-            strategy = self.select_chunking_strategy(markdown_text, source_documents)
-            chunker = self.structured_chunker if strategy == "structured_markdown" else self.chunker
-            source_chunks = chunker.split(source_documents, markdown_text=markdown_text)
+            source_chunks = self.structured_chunker.split(source_documents, markdown_text=markdown_text)
             loaders = [doc.metadata.get("loader") for doc in source_documents if doc.metadata.get("loader")]
             representative_loader = loaders[0] if loaders else None
+            document_group = self._document_group_for_source_path(Path(source_path))
             for chunk in source_chunks:
-                chunk.metadata["chunking_strategy"] = strategy
+                chunk.metadata["document_group"] = document_group
                 if representative_loader and "loader" not in chunk.metadata:
                     chunk.metadata["loader"] = representative_loader
             chunks.extend(source_chunks)
@@ -315,64 +405,35 @@ class IndexingService:
             return None
         return markdown_path.read_text(encoding="utf-8")
 
-    def select_chunking_strategy(self, markdown_text: str | None, documents: list) -> str:
-        strategy = (self.settings.chunking_strategy or "auto").strip().lower()
-        if strategy in {"page_window", "structured_markdown"}:
-            return strategy
-
-        if not markdown_text:
-            return "page_window"
-
-        page_count = max(sum(1 for line in markdown_text.splitlines() if line.startswith("## Page ")), 1)
-        raw_lines = [line.strip() for line in markdown_text.splitlines() if line.strip()]
-        content_lines = [
-            line
-            for line in raw_lines
-            if not line.startswith("# ") and not line.startswith("## Page ") and not line.startswith("- loader:")
-        ]
-        short_lines = [line for line in content_lines if len(line) <= 60]
-        bullet_lines = [line for line in content_lines if re.match(r"^[-*]\s", line)]
-        avg_chars_per_page = sum(len(document.text) for document in documents) / max(page_count, 1)
-        short_line_ratio = len(short_lines) / max(len(content_lines), 1)
-        bullet_ratio = len(bullet_lines) / max(len(content_lines), 1)
-
-        if avg_chars_per_page <= 420 and (short_line_ratio >= 0.55 or bullet_ratio >= 0.2):
-            return "page_window"
-        return "structured_markdown"
-
     _LIBRARY_EXTS = {".pdf", ".md"}
 
     def list_library_documents(self) -> dict:
         source_files = [
             path
             for path in self.settings.rag_source_dir.rglob("*")
-            if path.is_file() and path.suffix.lower() in self._LIBRARY_EXTS
+            if path.is_file()
+            and path.suffix.lower() in self._LIBRARY_EXTS
+            and "chat_uploads" not in str(path).replace("\\", "/")
+            and not (
+                path.suffix.lower() == ".md"
+                and self._document_group_for_source_path(path) == "customer_generated"
+            )
         ]
         all_docs = self.index_repository.list_documents()
 
-        # 절대경로 → document 맵 (1차 조회)
         indexed_by_path = {doc["source_path"]: doc for doc in all_docs}
-
-        # 상대 suffix (rag_source_dir 기준) → document 맵 (환경 간 경로 불일치 fallback)
-        # 예: "ocp-4.15/file.pdf" → doc
         indexed_by_rel: dict[str, dict] = {}
         for doc in all_docs:
             stored = doc["source_path"].replace("\\", "/")
             src_dir = str(self.settings.rag_source_dir).replace("\\", "/")
-            # source_dir 기준 상대경로 추출 (다른 환경의 절대경로도 처리)
             for sep in (src_dir + "/", "pdfs/", "corpus/pdfs/"):
                 if sep in stored:
-                    rel = stored.split(sep, 1)[-1]
-                    indexed_by_rel[rel] = doc
+                    indexed_by_rel[stored.split(sep, 1)[-1]] = doc
                     break
-
-        generated_dir = self.settings.rag_source_dir / "generated"
 
         indexed_documents = []
         for path in sorted(source_files):
-            # 1차: 절대경로 일치
             aggregated = indexed_by_path.get(str(path))
-            # 2차: 상대경로 일치 (로컬↔Docker 경로 불일치 대응)
             if aggregated is None:
                 rel_key = str(path.relative_to(self.settings.rag_source_dir)).replace("\\", "/")
                 aggregated = indexed_by_rel.get(rel_key)
@@ -385,8 +446,9 @@ class IndexingService:
                     "indexed_chunks": 0,
                     "loaders": [],
                 }
-            # generated/ 하위 파일은 고객사 메뉴얼
-            is_manual = str(path).startswith(str(generated_dir))
+
+            document_group = self._document_group_for_source_path(path)
+            doc_type = self._doc_type_for_source_path(path)
             indexed_documents.append(
                 {
                     "file_name": aggregated["file_name"],
@@ -395,7 +457,8 @@ class IndexingService:
                     "indexed_pages": aggregated["indexed_pages"],
                     "indexed_chunks": aggregated["indexed_chunks"],
                     "loaders": aggregated["loaders"],
-                    "doc_type": "operation_manual" if is_manual else "official",
+                    "doc_type": doc_type,
+                    "document_group": document_group,
                 }
             )
 

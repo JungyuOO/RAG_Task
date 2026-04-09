@@ -43,6 +43,7 @@ class LibraryDocument(BaseModel):
     indexed_chunks: int
     loaders: list[str]
     doc_type: str = "official"
+    document_group: str = "official_ocp"
 
 
 class StartupIndexingStatus(BaseModel):
@@ -94,6 +95,7 @@ class ChatTurnRequest:
     session_id: str
     message: str
     allowed_source_paths: set[str] | None = None
+    uploaded_source_paths: set[str] | None = None
     append_user_turn: bool = True
     version_tag: str | None = None
 
@@ -104,4 +106,5 @@ class RetryChatRequestModel:
     message: str
     owner_id: str | None = None
     allowed_source_paths: set[str] | None = None
+    uploaded_source_paths: set[str] | None = None
     append_user_turn: bool = True

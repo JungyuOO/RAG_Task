@@ -56,6 +56,7 @@ class ChatService:
             session_id=request.session_id,
             user_message=request.message,
             allowed_source_paths=request.allowed_source_paths,
+            uploaded_source_paths=getattr(request, "uploaded_source_paths", None),
             append_user_turn=request.append_user_turn,
             version_tag=getattr(request, "version_tag", None),
         )
@@ -77,5 +78,6 @@ class ChatService:
             session_id=request.session_id,
             user_message=user_message,
             allowed_source_paths=request.allowed_source_paths,
+            uploaded_source_paths=getattr(request, "uploaded_source_paths", None),
             append_user_turn=append_user_turn,
         )
