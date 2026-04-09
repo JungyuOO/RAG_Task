@@ -57,6 +57,7 @@ class HybridRetriever:
         version_map이 제공되면 version_id 기반으로 필터링하고, 그렇지 않으면
         청크 metadata의 version_tag를 직접 비교한다.
         """
+        t_total = time.perf_counter()
         t_version = time.perf_counter()
         original_count = len(index_items)
         if target_versions:
@@ -220,11 +221,25 @@ class HybridRetriever:
                 + overlap * self.rerank_overlap_weight
                 + title_overlap * self.rerank_title_weight
             )
-            reranked.append({**candidate, "rerank_score": final_score, "title_score": title_overlap})
+            reranked.append(
+                {
+                    **candidate,
+                    "rrf_score": candidate["score"],
+                    "retrieval_score": final_score,
+                    "rerank_score": final_score,
+                    "title_score": title_overlap,
+                }
+            )
         reranked.sort(key=lambda entry: entry["rerank_score"], reverse=True)
         return reranked
 
-    def compute_retrieval_metrics(self, results: list[dict], min_score: float) -> dict:
+    def compute_retrieval_metrics(
+        self,
+        results: list[dict],
+        min_score: float,
+        *,
+        score_field: str = "rerank_score",
+    ) -> dict:
         """Compute retrieval quality summary metrics."""
         if not results:
             return {
@@ -237,7 +252,7 @@ class HybridRetriever:
                 "score_spread": 0.0,
                 "dense_sparse_correlation": 0.0,
             }
-        scores = [r["rerank_score"] for r in results]
+        scores = [self._resolve_score(r, score_field) for r in results]
         hits = [s for s in scores if s >= min_score]
         top = scores[0]
         gap = scores[0] - scores[1] if len(scores) >= 2 else 0.0
@@ -262,6 +277,15 @@ class HybridRetriever:
             "score_spread": spread,
             "dense_sparse_correlation": round(rho, 4),
         }
+
+    @staticmethod
+    def _resolve_score(item: dict, score_field: str) -> float:
+        return float(
+            item.get(
+                score_field,
+                item.get("final_retrieval_score", item.get("rerank_score", 0.0)),
+            )
+        )
 
     @staticmethod
     def _rank_values(values: list[float]) -> list[float]:
@@ -293,13 +317,41 @@ class BGEReranker:
         top_k: int = 5,
     ) -> None:
         self.top_k = top_k
-        self._model = CrossEncoder(model_name)
+        self.model_name = model_name
+        self._model: CrossEncoder | None = None
+        self._load_failed = False
+
+    def _get_model(self) -> CrossEncoder | None:
+        if self._model is not None:
+            return self._model
+        if self._load_failed:
+            return None
+        try:
+            self._model = CrossEncoder(self.model_name)
+        except Exception as exc:
+            self._load_failed = True
+            logger.warning(
+                "[BGEReranker] disabled because model load failed: model=%s error=%s",
+                self.model_name,
+                exc,
+            )
+            return None
+        return self._model
 
     def rerank(self, query: str, candidates: list[dict]) -> list[dict]:
         t_total = time.perf_counter()
         if not candidates:
             logger.info("[Timing][BGEReranker.rerank] total=%.3fs empty_candidates", time.perf_counter() - t_total)
             return []
+
+        model = self._get_model()
+        if model is None:
+            logger.info(
+                "[Timing][BGEReranker.rerank] total=%.3fs model_unavailable fallback_top_k=%d",
+                time.perf_counter() - t_total,
+                self.top_k,
+            )
+            return candidates[: self.top_k]
 
         t_pairs = time.perf_counter()
         pairs = [(query, c["chunk"]["text"]) for c in candidates]
@@ -310,7 +362,7 @@ class BGEReranker:
         )
 
         t_predict = time.perf_counter()
-        scores = self._model.predict(pairs)
+        scores = model.predict(pairs)
         logger.info(
             "[Timing][BGEReranker.rerank] cross_encoder_predict=%.3fs candidates=%d",
             time.perf_counter() - t_predict,
@@ -320,7 +372,8 @@ class BGEReranker:
         t_merge = time.perf_counter()
         reranked = []
         for candidate, score in zip(candidates, scores, strict=False):
-            reranked.append({**candidate, "rerank_score": float(score)})
+            ce_score = float(score)
+            reranked.append({**candidate, "ce_score": ce_score, "rerank_score": ce_score})
         reranked.sort(key=lambda x: x["rerank_score"], reverse=True)
         logger.info(
             "[Timing][BGEReranker.rerank] merge_sort=%.3fs",
