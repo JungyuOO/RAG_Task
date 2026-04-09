@@ -171,10 +171,16 @@ function buildList(lines, ordered) {
   list.className = ordered ? "assistant-list ordered" : "assistant-list";
   lines.forEach((line) => {
     const item = document.createElement("li");
-    item.textContent = String(line || "")
+    const text = String(line || "")
       .replace(/^\s*[-*]\s+/, "")
       .replace(/^\s*\d+\.\s+/, "")
       .trim();
+    if (typeof renderCitationTags === "function") {
+      item.innerHTML = renderCitationTags(escapeHtml(text));
+      if (typeof bindCitationClicks === "function") bindCitationClicks(item);
+    } else {
+      item.textContent = text;
+    }
     list.appendChild(item);
   });
   return list;
@@ -208,6 +214,37 @@ function buildMarkdownTable(lines) {
   table.appendChild(thead);
   table.appendChild(tbody);
   return table;
+}
+
+function formatAssistantProse(text) {
+  let value = String(text || "").trim();
+  if (!value) return value;
+
+  value = value.replace(/(\[source:[^\]]+\])(?=\S)/g, "$1\n\n");
+  value = value.replace(/(?<!\n)(\d+\.\s+)/g, "\n\n$1");
+  value = value.replace(/(?<!\n)([-*]\s+)/g, "\n\n$1");
+  value = value.replace(/([.!?]|다\.|요\.)(\s+)(?=[A-Z가-힣0-9])/g, "$1\n\n");
+  value = value.replace(/(?<!\n)(또한,|반면,|한편,|먼저,|다음으로,|마지막으로)/g, "\n\n$1");
+  value = value.replace(/\n{3,}/g, "\n\n");
+  return value.trim();
+}
+
+function renderAssistantProseBlock(block, rawText) {
+  const formatted = formatAssistantProse(rawText);
+  const paragraphs = formatted.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
+  if (!paragraphs.length) return;
+
+  if (typeof renderCitationTags === "function") {
+    block.innerHTML = paragraphs
+      .map((part) => `<p class="assistant-paragraph">${renderCitationTags(escapeHtml(part))}</p>`)
+      .join("");
+    if (typeof bindCitationClicks === "function") bindCitationClicks(block);
+    return;
+  }
+
+  block.innerHTML = paragraphs
+    .map((part) => `<p class="assistant-paragraph">${escapeHtml(part)}</p>`)
+    .join("");
 }
 
 function renderAssistantText(body, value, options = {}) {
@@ -307,12 +344,7 @@ function renderAssistantText(body, value, options = {}) {
     block.className = "assistant-text-block";
     const rawText = textLines.join("\n").trim();
     if (rawText) {
-      if (typeof renderCitationTags === "function") {
-        block.innerHTML = renderCitationTags(escapeHtml(rawText));
-        if (typeof bindCitationClicks === "function") bindCitationClicks(block);
-      } else {
-        block.textContent = rawText;
-      }
+      renderAssistantProseBlock(block, rawText);
       fragment.appendChild(block);
     }
   }
