@@ -16,8 +16,10 @@ DEFAULT_SUMMARY = {
 
 DEFAULT_TOPIC_STATE = {
     "active_topic": "",
+    "active_document_group": "auto",
     "active_entities": [],
     "selected_sources": [],
+    "selected_versions": [],
     "selected_pages": [],
     "last_retrieval_mode": "",
     "last_answer_citations": [],
@@ -35,6 +37,7 @@ DEFAULT_TOPIC_STATE = {
     "last_example_source_pages": [],
     "last_example_anchor": {},
     "last_doc_type": "",
+    "last_document_group_preference": "auto",
     "procedure_state": {},
 }
 
@@ -43,6 +46,7 @@ DEFAULT_TOPIC_THREAD_SUMMARY = {
     "summary": "",
     "entities": [],
     "sources": [],
+    "selected_versions": [],
     "important_pages": [],
     "open_questions": [],
     "resolved_facts": [],
@@ -60,6 +64,7 @@ DEFAULT_TOPIC_THREAD_SUMMARY = {
     "last_example_source_pages": [],
     "last_example_anchor": {},
     "last_doc_type": "",
+    "last_document_group_preference": "auto",
     "turn_count": 0,
 }
 
@@ -194,12 +199,27 @@ def build_topic_state(turns: list[ChatTurn]) -> dict:
     last_example_source_pages: list[int] = []
     last_example_anchor: dict = {}
     last_doc_type = ""
+    selected_versions: list[str] = []
+    last_document_group_preference = "auto"
 
     for turn in recent_turns:
         metadata = turn.metadata or {}
         if turn.role == "assistant":
             last_retrieval_mode = str(metadata.get("mode") or last_retrieval_mode)
             query_interpretation = metadata.get("query_interpretation") or {}
+            turn_versions = [
+                normalize_text(str(value))
+                for value in query_interpretation.get("target_versions", []) or []
+                if value
+            ]
+            if turn_versions:
+                selected_versions = []
+                for version in turn_versions:
+                    if version and version not in selected_versions:
+                        selected_versions.append(version)
+            group_preference = str(query_interpretation.get("document_group_preference") or "").strip()
+            if group_preference:
+                last_document_group_preference = group_preference
             resources = [
                 normalize_text(str(value)).lower()
                 for value in query_interpretation.get("resources", []) or []
@@ -295,8 +315,10 @@ def build_topic_state(turns: list[ChatTurn]) -> dict:
 
     return {
         "active_topic": active_topic,
+        "active_document_group": last_document_group_preference or "auto",
         "active_entities": deduped_entities[:6],
         "selected_sources": selected_sources[:3],
+        "selected_versions": selected_versions[:3],
         "selected_pages": selected_pages[:5],
         "last_retrieval_mode": last_retrieval_mode,
         "last_answer_citations": last_answer_citations,
@@ -314,6 +336,7 @@ def build_topic_state(turns: list[ChatTurn]) -> dict:
         "last_example_source_pages": last_example_source_pages[:6],
         "last_example_anchor": last_example_anchor,
         "last_doc_type": last_doc_type,
+        "last_document_group_preference": last_document_group_preference or "auto",
         "procedure_state": procedure_state,
     }
 
@@ -351,6 +374,7 @@ def build_topic_thread_summary(topic_label: str, turns: list[ChatTurn]) -> dict:
         "summary": summary_text,
         "entities": topic_state.get("active_entities", [])[:6],
         "sources": structured_summary.get("recent_documents", [])[:3],
+        "selected_versions": topic_state.get("selected_versions", [])[:3],
         "important_pages": structured_summary.get("recent_pages", [])[:5],
         "open_questions": structured_summary.get("unresolved_questions", [])[:3],
         "resolved_facts": resolved_facts[:5],
@@ -368,6 +392,7 @@ def build_topic_thread_summary(topic_label: str, turns: list[ChatTurn]) -> dict:
         "last_example_source_pages": topic_state.get("last_example_source_pages", [])[:6],
         "last_example_anchor": topic_state.get("last_example_anchor", {}),
         "last_doc_type": topic_state.get("last_doc_type", ""),
+        "last_document_group_preference": topic_state.get("last_document_group_preference", "auto"),
         "turn_count": len(turns),
     }
 
@@ -393,6 +418,8 @@ def deserialize_topic_row(row: dict) -> dict:
         summary["entities"] = [str(entity) for entity in entity_state["entities"] if entity][:6]
     summary["open_questions"] = [str(item) for item in open_questions if item][:3]
     summary["resolved_facts"] = [str(item) for item in resolved_facts if item][:5]
+    summary["selected_versions"] = [str(item) for item in summary.get("selected_versions", []) if item][:3]
+    summary["last_document_group_preference"] = str(summary.get("last_document_group_preference") or "auto")
     summary["last_user_focus"] = str(row["last_user_focus"] or summary.get("last_user_focus") or "")
     summary["last_retrieval_mode"] = str(row["last_retrieval_mode"] or summary.get("last_retrieval_mode") or "")
     summary["turn_count"] = int(row["turn_count"] or summary.get("turn_count") or 0)
@@ -453,11 +480,14 @@ def build_rewrite_context_payload(recent: list[ChatTurn], summary: dict, topic_s
         "active_topic": str(topic_state.get("active_topic") or summary.get("topic") or ""),
         "active_entities": [str(entity) for entity in topic_state.get("active_entities", []) if entity][:6],
         "selected_sources": [str(source) for source in topic_state.get("selected_sources", []) if source][:3],
+        "selected_versions": [str(v) for v in topic_state.get("selected_versions", []) if v][:3],
         "selected_pages": topic_state.get("selected_pages", [])[:5],
         "last_retrieval_mode": str(topic_state.get("last_retrieval_mode") or ""),
         "last_response_shape": last_response_shape,
         "last_response_intent": last_response_intent,
         "last_explicit_resources": [str(value) for value in topic_state.get("last_explicit_resources", []) if value][:4],
         "last_code_resource_kind": str(topic_state.get("last_code_resource_kind") or ""),
+        "last_example_anchor": topic_state.get("last_example_anchor", {}),
+        "last_document_group_preference": topic_state.get("last_document_group_preference", "auto"),
         "last_doc_type": str(topic_state.get("last_doc_type") or ""),
     }
