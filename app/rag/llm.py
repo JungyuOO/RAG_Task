@@ -50,9 +50,6 @@ class LlmClient:
 
     async def stream_chat(self, messages: list[dict]) -> AsyncIterator[str]:
         t_total = time.perf_counter()
-        first_token_at: float | None = None
-        token_count = 0
-        char_count = 0
 
         now = time.monotonic()
         if now < self._stream_disabled_until:
@@ -73,9 +70,13 @@ class LlmClient:
         }
 
         max_attempts = 3
+        empty_stream_attempts = 0
         last_exc: Exception | None = None
 
         for attempt in range(1, max_attempts + 1):
+            first_token_at: float | None = None
+            token_count = 0
+            char_count = 0
             try:
                 async with asyncio.timeout(self.settings.llm_total_timeout_seconds):
                     t_http = time.perf_counter()
@@ -94,11 +95,28 @@ class LlmClient:
                         self._stream_disabled_until = 0.0
                         self._last_error = ""
 
+                        first_token_deadline = time.monotonic() + max(
+                            float(getattr(self.settings, "llm_first_token_timeout_seconds", 12.0)),
+                            1.0,
+                        )
                         async for line in response.aiter_lines():
+                            if first_token_at is None and time.monotonic() > first_token_deadline:
+                                raise RuntimeError("LLM first token timeout exceeded.")
                             if not line or not line.startswith("data:"):
                                 continue
                             data = line[5:].strip()
                             if data == "[DONE]":
+                                if token_count == 0:
+                                    empty_stream_attempts += 1
+                                    logger.warning(
+                                        "[LLM.stream_chat] empty stream received attempt=%d empty_stream_attempts=%d",
+                                        attempt,
+                                        empty_stream_attempts,
+                                    )
+                                    if empty_stream_attempts < 2:
+                                        await self._sleep_before_retry(attempt)
+                                        break
+                                    raise RuntimeError("LLM returned empty stream.")
                                 logger.info(
                                     "[Timing][LLM.stream_chat] total=%.3fs first_token=%.3fs tokens=%d chars=%d",
                                     time.perf_counter() - t_total,
@@ -129,6 +147,17 @@ class LlmClient:
                             token_count,
                             char_count,
                         )
+                        if token_count == 0:
+                            empty_stream_attempts += 1
+                            logger.warning(
+                                "[LLM.stream_chat] stream finished with zero tokens attempt=%d empty_stream_attempts=%d",
+                                attempt,
+                                empty_stream_attempts,
+                            )
+                            if empty_stream_attempts < 2:
+                                await self._sleep_before_retry(attempt)
+                                continue
+                            raise RuntimeError("LLM returned empty stream.")
                         return
             except TimeoutError as exc:
                 last_exc = exc

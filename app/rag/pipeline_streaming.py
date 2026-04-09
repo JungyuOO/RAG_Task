@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from app.rag.bge_embeddings import EmbeddingModelUnavailableError
 from app.rag.types import TurnPolicyDecision
 
-_VERSION_PATTERN = re.compile(r"^\s*(\d+\.\d+)\s*$")
+logger = logging.getLogger("rag.pipeline")
+_VERSION_PATTERN = re.compile(r"(?<!\d)(4\.(?:15|16|17|18|19|20|21))(?!\d)")
 
 STAGE_MESSAGES = {
     "analyzing_intent": "질문 의도 분석중...",
@@ -38,7 +41,6 @@ class ChatTurnDeps:
     ensure_topic_for_resolution: Any
     build_answer_cache_key: Any
     canonical_cache_query: Any
-    should_run_judge_agent: Any
     build_policy_answer: Any
     build_missing_extractive_answer: Any
     select_code_example_context_items: Any
@@ -50,7 +52,7 @@ class ChatTurnDeps:
     get_prompt_composer: Any
     answer_service: Any
     answer_cache_repository: Any
-    judge_agent: Any
+    answer_rewrite_agent: Any
     llm: Any
 
 
@@ -59,8 +61,8 @@ class StreamingTurnSupport:
         versions_str = " / ".join(available_versions) if available_versions else "4.15 / 4.16 / 4.17 / 4.18 / 4.19 / 4.20 / 4.21"
         clarification_msg = (
             f"어떤 버전의 OpenShift Container Platform을 기준으로 답변할까요?\n\n"
-            f"지원 버전: **{versions_str}**\n\n"
-            f"버전을 명시하거나 화면 상단의 버전 선택 버튼을 사용해 주세요."
+            f" 지원 버전: **{versions_str}**\n\n"
+            f"버전을 명시해주세요."
         )
         for char in clarification_msg:
             yield {"type": "token", "content": char, "cached": False}
@@ -104,7 +106,7 @@ class StreamingTurnSupport:
         if policy_decision.turn_type == "general_chat":
             return _emit(deps.build_policy_answer("general_chat", top_score), "general", False)
         if policy_decision.turn_type == "document_query" and not kwargs["use_retrieved_context"]:
-            return _emit(deps.build_policy_answer("document_query", top_score), "general", True)
+            return _emit(deps.build_policy_answer("document_query", top_score), "general", False)
         return None
 
     async def _handle_extractive_routes(self, **kwargs):
@@ -143,6 +145,55 @@ class StreamingTurnSupport:
             yield {"type": "context", **deps.answer_service.public_context_payload(final_payload)}
             deps.store_assistant_turn(session_id, no_answer, final_payload, resolved_topic_id)
             yield {"type": "done", "cached": False}
+
+        if answer_route == "extractive_text" and use_retrieved_context:
+            extractive_text_answer = deps.answer_service.build_extractive_text_answer(selected_context_items)
+            if extractive_text_answer:
+                try:
+                    rewritten_extractive = await deps.answer_rewrite_agent.rewrite(
+                        user_message,
+                        extractive_text_answer,
+                    )
+                    if rewritten_extractive:
+                        extractive_text_answer = rewritten_extractive
+                except Exception:
+                    pass
+                final_answer, _answer_citations, final_payload = deps.finalize_answer(
+                    answer=extractive_text_answer,
+                    rewritten_query=rewritten_query,
+                    use_retrieved_context=use_retrieved_context,
+                    top_score=top_score,
+                    selected_context_items=selected_context_items,
+                    grounded_pages=grounded_pages,
+                    preferred_preview_source=preferred_preview_source,
+                    response_mode=response_mode,
+                    policy_decision=policy_decision,
+                    query_interpretation=query_interpretation,
+                    answer_route=answer_route,
+                    doc_type=doc_type,
+                )
+                return _emit(final_answer, final_payload)
+            return _no_extractive_answer()
+
+        if answer_route == "extractive_compare" and use_retrieved_context:
+            extractive_compare_answer = deps.answer_service.build_extractive_compare_answer(selected_context_items)
+            if extractive_compare_answer:
+                final_answer, _answer_citations, final_payload = deps.finalize_answer(
+                    answer=extractive_compare_answer,
+                    rewritten_query=rewritten_query,
+                    use_retrieved_context=use_retrieved_context,
+                    top_score=top_score,
+                    selected_context_items=selected_context_items,
+                    grounded_pages=grounded_pages,
+                    preferred_preview_source=preferred_preview_source,
+                    response_mode=response_mode,
+                    policy_decision=policy_decision,
+                    query_interpretation=query_interpretation,
+                    answer_route=answer_route,
+                    doc_type=doc_type,
+                )
+                return _emit(final_answer, final_payload)
+            return _no_extractive_answer()
 
         if answer_route == "extractive_code" and use_retrieved_context:
             code_context_items = deps.select_code_example_context_items(
@@ -209,11 +260,31 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
     def __init__(self, deps: ChatTurnDeps) -> None:
         self.deps = deps
 
+    @staticmethod
+    def _resolve_effective_version_tag(
+        version_tag: str | None,
+        user_message: str | None = None,
+        *topic_states: dict | None,
+    ) -> str | None:
+        if version_tag:
+            return version_tag
+        if user_message:
+            match = _VERSION_PATTERN.search(user_message.strip())
+            if match:
+                return match.group(1)
+        for topic_state in topic_states:
+            if not isinstance(topic_state, dict):
+                continue
+            selected_versions = [str(value).strip() for value in topic_state.get("selected_versions", []) or [] if value]
+            if selected_versions:
+                return selected_versions[0]
+        return None
+
     def _detect_version_selection(self, session_id: str, user_message: str, version_tag: str | None) -> tuple[str | None, str | None]:
         """이전 턴이 버전 clarification이고 현재 메시지가 버전 번호이면 (원래 질문, 버전) 반환."""
         if version_tag is not None:
             return None, None
-        match = _VERSION_PATTERN.match(user_message.strip())
+        match = _VERSION_PATTERN.search(user_message.strip())
         if not match:
             return None, None
         selected_version = match.group(1)
@@ -249,6 +320,7 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
         session_id: str,
         user_message: str,
         allowed_source_paths: set[str] | None = None,
+        uploaded_source_paths: set[str] | None = None,
         append_user_turn: bool = True,
         version_tag: str | None = None,
         available_versions: list[str] | None = None,
@@ -328,10 +400,41 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
         yield {"type": "status", "stage": "analyzing_intent", "message": STAGE_MESSAGES["analyzing_intent"]}
         turn_context = await deps.resolve_turn_context(session_id, user_message)
         state = deps.domain_guard_state(user_message, turn_context)
+        effective_version_tag = self._resolve_effective_version_tag(
+            version_tag,
+            user_message,
+            topic_state_before,
+            turn_context.get("session_topic_state"),
+            turn_context.get("topic_state"),
+        )
+        if (
+            state is None
+            and effective_version_tag is None
+            and available_versions
+        ):
+            logger.info(
+                "[VersionClarification] early_prompt session_id=%s available_versions=%s",
+                session_id,
+                available_versions,
+            )
+            if append_user_turn:
+                deps.session_repository.add_turn(session_id, "user", user_message)
+            async for event in self._stream_version_clarification(
+                session_id, user_message, deps, available_versions
+            ):
+                yield event
+            return
         yield {"type": "status", "stage": "searching_documents", "message": STAGE_MESSAGES["searching_documents"]}
         try:
             if state is None:
-                state = await deps.prepare_retrieval_state(session_id, user_message, allowed_source_paths, version_tag=version_tag, turn_context=turn_context)
+                state = await deps.prepare_retrieval_state(
+                    session_id,
+                    user_message,
+                    allowed_source_paths,
+                    uploaded_source_paths=uploaded_source_paths,
+                    version_tag=effective_version_tag,
+                    turn_context=turn_context,
+                )
         except EmbeddingModelUnavailableError:
             error_message = "임베딩 모델이 아직 준비되지 않았습니다. 잠시 후 다시 시도해 주세요."
             yield {"type": "token", "content": error_message, "cached": False, "error": "embedding_model_unavailable"}
@@ -341,7 +444,7 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
         target_versions_from_agent = state.get("query_interpretation", {}).get("target_versions", [])
         use_retrieved_context_early = state.get("use_retrieved_context", False)
         if (
-            version_tag is None
+            effective_version_tag is None
             and not target_versions_from_agent
             and use_retrieved_context_early
         ):
@@ -442,6 +545,11 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
                 streamed += chunk
                 yield {"type": "token", "content": chunk, "cached": True}
             raw_cached = streamed.strip()
+            logger.info(
+                "[AnswerStream][cached] raw_answer_chars=%d preview=%r",
+                len(raw_cached),
+                raw_cached[:200],
+            )
             final_answer, _answer_citations, final_payload = deps.finalize_answer(
                 answer=raw_cached,
                 rewritten_query=rewritten_query,
@@ -456,7 +564,25 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
                 answer_route=answer_route,
                 doc_type=doc_type,
             )
+            logger.info(
+                "[AnswerStream][cached] final_answer_chars=%d preview=%r selected_context=%s",
+                len(final_answer),
+                final_answer[:200],
+                [
+                    {
+                        "file": Path(str(item["chunk"].get("source_path") or "")).name,
+                        "page": item["chunk"].get("page_number"),
+                        "score": round(float(item.get("final_retrieval_score", item.get("rerank_score", 0.0))), 4),
+                    }
+                    for item in selected_context_items[:3]
+                ],
+            )
             if final_answer != raw_cached:
+                logger.info(
+                    "[AnswerStream][cached] replace_answer triggered raw_preview=%r final_preview=%r",
+                    raw_cached[:200],
+                    final_answer[:200],
+                )
                 yield {"type": "replace_answer", "content": final_answer}
             yield {"type": "context", **deps.answer_service.public_context_payload(final_payload)}
             deps.store_assistant_turn(session_id, final_answer, final_payload, resolved_topic_id)
@@ -478,22 +604,6 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
             return
 
         yield {"type": "status", "stage": "evaluating_relevance", "message": STAGE_MESSAGES["evaluating_relevance"]}
-        if use_retrieved_context and context_blocks and deps.should_run_judge_agent(policy_decision, query_interpretation, top_score):
-            judge_result = await deps.judge_agent.evaluate(user_message, context_blocks, top_score)
-            if not judge_result["relevant"]:
-                clarification = judge_result["clarification_message"]
-                for char in clarification:
-                    yield {"type": "token", "content": char, "cached": False}
-                    await asyncio.sleep(0.03)
-                final_payload = deps.answer_service.build_context_payload(
-                    rewritten_query, "clarification", top_score, None, [], [], [], [],
-                    preview_finalized=True,
-                )
-                yield {"type": "context", **deps.answer_service.public_context_payload(final_payload)}
-                deps.store_assistant_turn(session_id, clarification, final_payload, resolved_topic_id)
-                deps.answer_cache_repository.set(cache_key, {"answer": clarification})
-                yield {"type": "done", "cached": False}
-                return
 
         if policy_decision.needs_clarification and policy_decision.clarification_prompt:
             clarification_answer = policy_decision.clarification_prompt.strip()
@@ -535,36 +645,95 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
 
         is_new_topic = not use_retrieved_context and response_mode != "rag"
         prompt_composer = deps.get_prompt_composer()
-        messages = prompt_composer.build_llm_messages(
-            session_id,
-            user_message,
-            code_example_request,
-            response_mode,
-            turn_policy,
-            top_score,
-            context_blocks,
-            is_new_topic=is_new_topic,
-            topic_id=resolved_topic_id,
-            query_interpretation=query_interpretation,
+        use_compact_primary = (
+            use_retrieved_context
+            and answer_route not in {"extractive_code", "extractive_table"}
+            and str(query_interpretation.get("document_group_preference") or "") != "mixed"
+            and str(query_interpretation.get("intent") or "") in {"explain", "procedure_followup", ""}
+            and top_score >= 0.30
+            and len(context_blocks) <= 3
         )
+        if use_compact_primary:
+            messages = prompt_composer.build_compact_llm_messages(
+                user_message,
+                code_example_request,
+                context_blocks,
+                query_interpretation=query_interpretation,
+            )
+        else:
+            messages = prompt_composer.build_llm_messages(
+                session_id,
+                user_message,
+                code_example_request,
+                response_mode,
+                turn_policy,
+                top_score,
+                context_blocks,
+                is_new_topic=is_new_topic,
+                topic_id=resolved_topic_id,
+                query_interpretation=query_interpretation,
+            )
         yield {"type": "status", "stage": "generating_answer", "message": STAGE_MESSAGES["generating_answer"]}
         parts: list[str] = []
+        prompt_context_text = prompt_composer.build_prompt_context_text(context_blocks)
+        stream_error: str | None = None
         try:
             async for token in deps.llm.stream_chat(messages):
                 parts.append(token)
                 yield {"type": "token", "content": token, "cached": False}
         except Exception as exc:
+            stream_error = str(exc)
+
+        raw_answer = "".join(parts).strip()
+        if not raw_answer:
+            try:
+                generate_messages = messages
+                if not use_compact_primary:
+                    generate_messages = prompt_composer.build_compact_llm_messages(
+                        user_message,
+                        code_example_request,
+                        context_blocks,
+                        query_interpretation=query_interpretation,
+                    )
+                generated_answer = await deps.llm.generate(generate_messages)
+                raw_answer = generated_answer.strip()
+            except Exception as exc:
+                stream_error = stream_error or str(exc)
+        if not raw_answer:
+            if not use_compact_primary:
+                try:
+                    fallback_messages = prompt_composer.build_llm_messages(
+                        session_id,
+                        user_message,
+                        code_example_request,
+                        response_mode,
+                        turn_policy,
+                        top_score,
+                        context_blocks,
+                        is_new_topic=is_new_topic,
+                        topic_id=resolved_topic_id,
+                        query_interpretation=query_interpretation,
+                    )
+                    generated_answer = await deps.llm.generate(fallback_messages)
+                    raw_answer = generated_answer.strip()
+                except Exception as exc:
+                    stream_error = stream_error or str(exc)
+
+        if not raw_answer:
             fallback = deps.build_llm_failure_fallback(
                 user_message,
                 use_retrieved_context,
                 context_blocks,
-                prompt_composer.build_prompt_context_text(context_blocks),
+                prompt_context_text,
                 policy_decision,
             )
-            parts = [fallback]
-            yield {"type": "token", "content": fallback, "cached": False, "error": str(exc)}
-
-        raw_answer = "".join(parts).strip()
+            raw_answer = fallback.strip()
+            yield {"type": "token", "content": raw_answer, "cached": False, "error": stream_error or "empty_llm_stream"}
+        logger.info(
+            "[AnswerStream] raw_answer_chars=%d preview=%r",
+            len(raw_answer),
+            raw_answer[:200],
+        )
         final_answer, _answer_citations, final_payload = deps.finalize_answer(
             answer=raw_answer,
             rewritten_query=rewritten_query,
@@ -579,7 +748,25 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
             answer_route=answer_route,
             doc_type=doc_type,
         )
+        logger.info(
+            "[AnswerStream] final_answer_chars=%d preview=%r selected_context=%s",
+            len(final_answer),
+            final_answer[:200],
+            [
+                {
+                    "file": Path(str(item["chunk"].get("source_path") or "")).name,
+                    "page": item["chunk"].get("page_number"),
+                    "score": round(float(item.get("final_retrieval_score", item.get("rerank_score", 0.0))), 4),
+                }
+                for item in selected_context_items[:3]
+            ],
+        )
         if final_answer != raw_answer:
+            logger.info(
+                "[AnswerStream] replace_answer triggered raw_preview=%r final_preview=%r",
+                raw_answer[:200],
+                final_answer[:200],
+            )
             yield {"type": "replace_answer", "content": final_answer}
         yield {"type": "context", **deps.answer_service.public_context_payload(final_payload)}
         deps.store_assistant_turn(session_id, final_answer, final_payload, resolved_topic_id)

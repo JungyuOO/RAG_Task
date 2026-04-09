@@ -5,12 +5,11 @@ import re
 import time
 
 from app.config import Settings
-from app.llm import AnswerAgent, IntentAgent, JudgeAgent, RetrievalAgent
+from app.llm import AnswerRewriteAgent, IntentAgent, RetrievalAgent
 from app.rag.answer import AnswerGenerator
 from app.rag.bge_embedding_server import BGETEIEmbedder
 from app.rag.bge_embeddings import BGEOllamaEmbedder
 from app.rag.cache import JsonFileCache
-from app.rag.chunking import TextChunker
 from app.rag.chunking_markdown import StructuredMarkdownChunker
 from app.rag.context import TurnContextResolver
 from app.rag.index import VectorIndex
@@ -32,6 +31,14 @@ logger = logging.getLogger("rag.pipeline")
 
 
 class PipelineContextMixin:
+    @staticmethod
+    def _turn_value(turn, key: str, default=None):
+        if hasattr(turn, key):
+            return getattr(turn, key)
+        if hasattr(turn, "get"):
+            return turn.get(key, default)
+        return default
+
     async def _resolve_turn_context(self, session_id: str, user_message: str) -> dict:
         t_total = time.perf_counter()
 
@@ -50,8 +57,8 @@ class PipelineContextMixin:
         last_assistant_text = ""
         if recent_turns:
             last_turn = recent_turns[-1]
-            if str(last_turn.get("role")) == "assistant":
-                last_assistant_text = str(last_turn.get("content") or "")
+            if str(self._turn_value(last_turn, "role", "")) == "assistant":
+                last_assistant_text = str(self._turn_value(last_turn, "content", "") or "")
 
         awaiting_version_clarification = (
             "어떤 버전의 openshift container platform을 기준으로 답변할까요?" in last_assistant_text.lower()
@@ -378,7 +385,6 @@ class RagPipeline(PipelineContextMixin, PipelineRetrievalMixin, PipelineRuntimeM
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.ingestor = DocumentIngestor(settings)
-        self.chunker = TextChunker(chunk_size=settings.chunk_size, overlap=settings.chunk_overlap)
         self.structured_chunker = StructuredMarkdownChunker(
             chunk_size=settings.structured_chunk_size,
             overlap=settings.structured_chunk_overlap,
@@ -391,11 +397,10 @@ class RagPipeline(PipelineContextMixin, PipelineRetrievalMixin, PipelineRuntimeM
             )
         else:
             self.embedder = BGEOllamaEmbedder(
-            base_url=settings.ollama_base_url,
-            model=settings.ollama_embedding_model,
-            timeout=settings.ollama_timeout,
+                base_url=settings.ollama_base_url,
+                model=settings.ollama_embedding_model,
+                timeout=settings.ollama_timeout,
             )
-        settings.vector_dim = self.embedder.dim
         self.index = VectorIndex(settings.db_dsn)
         self.retriever = HybridRetriever(
             top_k=settings.retrieval_top_k,
@@ -425,7 +430,6 @@ class RagPipeline(PipelineContextMixin, PipelineRetrievalMixin, PipelineRuntimeM
         self.indexing_service = IndexingService(
             settings=settings,
             ingestor=self.ingestor,
-            chunker=self.chunker,
             structured_chunker=self.structured_chunker,
             embedder=self.embedder,
             index_repository=self.index_repository,
@@ -433,8 +437,7 @@ class RagPipeline(PipelineContextMixin, PipelineRetrievalMixin, PipelineRuntimeM
         )
         self.intent_agent = IntentAgent(self.llm)
         self.retrieval_agent = RetrievalAgent(self.llm)
-        self.answer_agent = AnswerAgent(self.llm)
-        self.judge_agent = JudgeAgent(self.llm)
+        self.answer_rewrite_agent = AnswerRewriteAgent(self.llm)
         self.retrieval_service = RetrievalService(settings)
         self.answer_service = AnswerGenerator(self.retrieval_service)
         self.turn_context_resolver = TurnContextResolver()
@@ -453,17 +456,33 @@ class RagPipeline(PipelineContextMixin, PipelineRetrievalMixin, PipelineRuntimeM
             return query
         entities = topic_state.get("active_entities", [])
         sources = topic_state.get("selected_sources", [])
-        if not entities and not sources:
+        versions = topic_state.get("selected_versions", [])
+        resources = topic_state.get("last_explicit_resources", [])
+        user_focus = str(topic_state.get("last_user_focus") or "").strip()
+        document_group = str(topic_state.get("active_document_group") or topic_state.get("last_document_group_preference") or "auto")
+        if not entities and not sources and not versions and not resources and not user_focus and document_group == "auto":
             return query
         uppercase_re = re.compile(r"[A-Z]{2,}")
         has_explicit_keyword = bool(uppercase_re.search(query))
         query_lower = query.lower()
         expansion_tokens: list[str] = []
         if not has_explicit_keyword:
+            if document_group == "customer_generated" and "customer guide" not in query_lower:
+                expansion_tokens.extend(["customer", "guide"])
+            elif document_group == "official_ocp" and "official docs" not in query_lower:
+                expansion_tokens.extend(["official", "docs"])
+            for version in versions[:2]:
+                if version and version.lower() not in query_lower:
+                    expansion_tokens.append(version)
             for source in sources[:2]:
                 stem = re.sub(r"\.[^.]+$", "", source)
                 if stem.lower() not in query_lower:
                     expansion_tokens.append(stem)
+            for resource in resources[:2]:
+                if resource and resource.lower() not in query_lower:
+                    expansion_tokens.append(resource)
+            if user_focus and user_focus.lower() not in query_lower:
+                expansion_tokens.append(user_focus)
             added = 0
             for entity in entities:
                 if added >= 3:
@@ -478,14 +497,14 @@ class RagPipeline(PipelineContextMixin, PipelineRetrievalMixin, PipelineRuntimeM
     def _build_llm_failure_fallback(self, user_message: str, use_retrieved_context: bool, context_blocks: list[str], context_text: str, policy) -> str:  # noqa: ARG002
         if use_retrieved_context and context_blocks:
             fallback_excerpt = self._build_grounded_failure_excerpt(context_blocks)
-            return "LLM 응답 생성에 실패했습니다. 검색된 문맥 기준으로 핵심만 정리해 드릴게요.\n\n" + fallback_excerpt
+            return "문서 기준으로 정리하면 다음과 같습니다.\n\n" + fallback_excerpt
         if policy.turn_type == "greeting":
             return "안녕하세요! 무엇을 도와드릴까요?"
         if policy.needs_clarification and policy.clarification_prompt:
             return policy.clarification_prompt
         if policy.response_mode == "conversational":
             return "문서와 관련된 내용이 더 필요하시면 이어서 질문해 주세요."
-        return "현재 LLM 연결이 불안정해 일반 답변을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요."
+        return "현재 문서 기준으로 바로 답할 수 있는 근거를 찾지 못했습니다. 질문 범위를 조금 더 구체적으로 적어 주세요."
 
     def _build_grounded_failure_excerpt(self, context_blocks: list[str]) -> str:
         cleaned_parts: list[str] = []
@@ -506,140 +525,16 @@ class RagPipeline(PipelineContextMixin, PipelineRetrievalMixin, PipelineRuntimeM
             compact = " ".join(filtered_lines)
             compact = re.sub(r"\s+", " ", compact).strip()
             if compact:
-                cleaned_parts.append(compact[:220])
+                cleaned_parts.append(compact[:260])
         if not cleaned_parts:
             return context_blocks[0][:400] if context_blocks else "관련 문맥을 요약하지 못했습니다."
-        return "\n".join(f"- {part}" for part in cleaned_parts[:3])
+        if len(cleaned_parts) == 1:
+            return cleaned_parts[0]
+        return "\n\n".join(f"{idx + 1}. {part}" for idx, part in enumerate(cleaned_parts[:3]))
 
     @staticmethod
     def _detect_non_korean_query(text: str) -> str | None:
-        if not text or not text.strip():
-            return None
-        has_korean = any("\uAC00" <= ch <= "\uD7A3" or "\u1100" <= ch <= "\u11FF" or "\u3130" <= ch <= "\u318F" for ch in text)
-        if has_korean:
-            return None
-        if any(("\u3040" <= ch <= "\u309F") or ("\u30A0" <= ch <= "\u30FF") for ch in text):
-            return "한국어로 질문해 주세요. 기술 키워드는 그대로 영어로 입력해도 됩니다."
-        cjk_chars = [ch for ch in text if ("\u4E00" <= ch <= "\u9FFF") or ("\uF900" <= ch <= "\uFAFF")]
-        if not cjk_chars:
-            return None
-        alpha_chars = [ch for ch in text if ch.isalpha()]
-        latin_alpha_chars = [ch for ch in alpha_chars if "a" <= ch.lower() <= "z"]
-        normalized = normalize_text(text).lower()
-        tokens = re.findall(r"[a-z0-9][a-z0-9_./-]*", normalized)
-        technical_token_markers = ("configmap", "secret", "pod", "deployment", "service", "daemonset", "statefulset", "namespace", "openshift", "kubernetes", "yaml", "kubectl", "role", "rolebinding", "clusterrole", "clusterrolebinding", "ingress", "route", "pvc", "storageclass")
-        technical_tokens = [token for token in tokens if token.isupper() or any(char.isdigit() for char in token) or any(marker in token for marker in technical_token_markers)]
-        total_alpha = len(alpha_chars)
-        cjk_ratio = len(cjk_chars) / max(total_alpha, 1)
-        latin_ratio = len(latin_alpha_chars) / max(total_alpha, 1)
-        if len(cjk_chars) >= 2 and (cjk_ratio >= 0.1 or (latin_ratio < 0.7 and len(technical_tokens) <= 2)):
-            return "한국어로 질문해 주세요. 기술 키워드는 그대로 영어로 입력해도 됩니다."
+        result = IntentAgent._detect_unsupported_language(text)
+        if result is not None:
+            return result.get("message", "한국어로 질문해 주세요.")
         return None
-
-
-class PipelineOrchestrator(RagPipeline):
-    """Phase 1에서 Agent 기반으로 대체될 오케스트레이터 진입점."""
-
-    async def classify_intent(self, user_message: str, context: dict) -> dict:
-        return await self.intent_agent.classify(user_message, context)
-
-    async def expand_query(self, user_message: str, intent_result: dict, available_sources: list) -> dict:
-        t0 = time.perf_counter()
-        result = await self.retrieval_agent.expand(user_message, intent_result, available_sources)
-        logger.info(
-            "[Timing][ExpandQuery] total=%.3fs intent=%s rewritten=%r search_query=%r",
-            time.perf_counter() - t0,
-            intent_result.get("intent"),
-            result.get("rewritten_question") or result.get("rewritten_query"),
-            result.get("search_query"),
-        )
-        return result
-
-    async def process_turn(self, session_id: str, user_message: str, allowed_sources: list | None = None) -> dict:
-        t_total = time.perf_counter()
-        logger.info("[Timing][ProcessTurn] start session_id=%s user_message=%r", session_id, user_message[:120])
-
-        t_ctx = time.perf_counter()
-        context = await self._resolve_turn_context(session_id, user_message)
-        logger.info(
-            "[Timing][ProcessTurn] resolve_turn_context=%.3fs policy=%s",
-            time.perf_counter() - t_ctx,
-            context["policy"].turn_type,
-        )
-        detected_version = self._extract_version_from_text(user_message)
-
-        if detected_version and context["policy"].turn_type == "clarification":
-            prior_user_turn = ""
-            for turn in reversed(context.get("recent_turns", [])):
-                if str(turn.get("role")) == "user":
-                    content = str(turn.get("content") or "")
-                    if content.strip() != user_message.strip():
-                        prior_user_turn = content
-                        break
-
-            if prior_user_turn:
-                merged_user_message = f"{prior_user_turn} (OpenShift Container Platform {detected_version} 기준)"
-                logger.info(
-                    "[VersionClarification] merge previous_question=%r current_reply=%r merged=%r",
-                    prior_user_turn,
-                    user_message,
-                    merged_user_message,
-                )
-                user_message = merged_user_message
-                t_ctx_merged = time.perf_counter()
-                context = await self._resolve_turn_context(session_id, user_message)
-                logger.info(
-                    "[Timing][ProcessTurn] resolve_turn_context_after_merge=%.3fs policy=%s",
-                    time.perf_counter() - t_ctx_merged,
-                    context["policy"].turn_type,
-                )
-
-        t_intent = time.perf_counter()
-        intent = await self.classify_intent(user_message, context)
-        logger.info(
-            "[Timing][ProcessTurn] classify_intent=%.3fs intent=%s",
-            time.perf_counter() - t_intent,
-            intent.get("intent"),
-        )
-
-        if intent.get("intent") == "greeting":
-            logger.info("[Timing][ProcessTurn] total=%.3fs mode=conversational", time.perf_counter() - t_total)
-            return {"intent": intent, "retrieval": None, "mode": "conversational"}
-
-        if intent.get("intent") in {"rag", "clarification"}:
-            t_expand = time.perf_counter()
-            expanded = await self.expand_query(user_message, intent, allowed_sources or [])
-            logger.info(
-                "[Timing][ProcessTurn] expand_query=%.3fs has_retrieval=%s",
-                time.perf_counter() - t_expand,
-                expanded is not None,
-            )
-            logger.info("[Timing][ProcessTurn] total=%.3fs mode=grounded", time.perf_counter() - t_total)
-            return {"intent": intent, "retrieval": expanded, "mode": "grounded"}
-
-        logger.info(
-            "[Timing][ProcessTurn] total=%.3fs mode=%s",
-            time.perf_counter() - t_total,
-            intent.get("intent", "general"),
-        )
-        return {"intent": intent, "retrieval": None, "mode": intent.get("intent", "general")}
-
-    async def check_procedure(self, user_message: str, context_items: list) -> dict:
-        return await self.answer_agent.check_procedure(user_message, context_items)
-
-    async def handle_step_navigation(self, intent: dict, session_id: str, context_items: list) -> dict:
-        step_target = intent.get("step_target", "next")
-        session_state = self.session_repository.topic_state(session_id)
-        procedure = session_state.get("procedure_state", {})
-
-        current = procedure.get("current_step", 0)
-        total = procedure.get("total_steps", 0)
-
-        if step_target == "next":
-            target_step = min(current + 1, total) if total > 0 else current + 1
-        elif step_target == "prev":
-            target_step = max(current - 1, 1)
-        else:
-            target_step = int(step_target) if str(step_target).isdigit() else current
-
-        return {"target_step": target_step, "total_steps": total, "context_items": context_items}
