@@ -19,6 +19,20 @@ class RetrievalService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
+    @staticmethod
+    def primary_score(item: dict) -> float:
+        return float(item.get("final_retrieval_score", item.get("rerank_score", 0.0)))
+
+    @staticmethod
+    def document_group(item: dict) -> str:
+        metadata = item["chunk"].get("metadata", {}) or {}
+        explicit_group = str(metadata.get("document_group") or "").strip()
+        if explicit_group:
+            return explicit_group
+        if str(metadata.get("doc_type") or "") == "operation_manual":
+            return "customer_generated"
+        return "official_ocp"
+
     def build_context_items_payload(self, context_items: list[dict]) -> list[dict]:
         return [
             {
@@ -27,7 +41,6 @@ class RetrievalService:
                 "page_number": item["chunk"]["page_number"] or item["chunk"]["metadata"].get("page_start"),
                 "page_start": item["chunk"]["metadata"].get("page_start"),
                 "page_end": item["chunk"]["metadata"].get("page_end"),
-                "chunking_strategy": item["chunk"]["metadata"].get("chunking_strategy"),
                 "block_types": item["chunk"]["metadata"].get("block_types", ""),
                 "block_count": item["chunk"]["metadata"].get("block_count"),
                 "section_title": item["chunk"]["metadata"].get("section_title", ""),
@@ -37,15 +50,18 @@ class RetrievalService:
                 "code_language": item["chunk"]["metadata"].get("code_language", ""),
                 "code_subtype": item["chunk"]["metadata"].get("code_subtype", ""),
                 "code_signals": item["chunk"]["metadata"].get("code_signals", []),
-                "score": round(item["rerank_score"], 4),
+                "score": round(self.primary_score(item), 4),
+                "final_retrieval_score": round(self.primary_score(item), 4),
                 "rerank_score": round(item["rerank_score"], 4),
+                "ce_score": round(item.get("ce_score", item.get("rerank_score", 0.0)), 4),
+                "retrieval_score": round(item.get("retrieval_score", item.get("score", 0.0)), 4),
                 "base_score": round(item.get("score", 0.0), 4),
                 "dense_score": round(item.get("dense_score", 0.0), 4),
                 "sparse_score": round(item.get("sparse_score", 0.0), 4),
                 "title_score": round(item.get("title_score", 0.0), 4),
                 "title_match_bonus": round(item.get("title_match_bonus", 0.0), 4),
                 "compact_match_bonus": round(item.get("compact_match_bonus", 0.0), 4),
-                "selection_score": round(item.get("selection_score", item["rerank_score"]), 4),
+                "selection_score": round(item.get("selection_score", self.primary_score(item)), 4),
                 "selection_best_page_rank": item.get("selection_best_page_rank"),
                 "selection_page_overlap": item.get("selection_page_overlap", 0),
                 "text_preview": item["chunk"]["text"][:240],
@@ -59,7 +75,7 @@ class RetrievalService:
 
         for item in context_items:
             chunk = item["chunk"]
-            score = float(item["rerank_score"])
+            score = self.primary_score(item)
             page_start = int(chunk["metadata"].get("page_start") or chunk["page_number"] or 1)
             page_end = int(chunk["metadata"].get("page_end") or page_start)
             if page_end < page_start:
@@ -217,7 +233,7 @@ class RetrievalService:
                     ]
                     or [len(grounded_pages)]
                 ),
-                -float(item["rerank_score"]),
+                -self.primary_score(item),
             )
         )
         return ordered_context_items
@@ -321,7 +337,7 @@ class RetrievalService:
             source_bonus = 0.03 if item["chunk"]["source_path"] == preferred_preview_source else 0.0
             page_signal = 0.18 / (best_rank + 1)
             overlap_bonus = 0.03 * page_overlap
-            selection_score = float(item["rerank_score"]) + page_signal + overlap_bonus + source_bonus - span_penalty
+            selection_score = self.primary_score(item) + page_signal + overlap_bonus + source_bonus - span_penalty
             prioritized_items.append(
                 {
                     **item,
@@ -343,7 +359,7 @@ class RetrievalService:
             key=lambda item: (
                 item["selection_best_page_rank"],
                 -item["selection_score"],
-                -float(item["rerank_score"]),
+                -self.primary_score(item),
             )
         )
 
@@ -374,11 +390,33 @@ class RetrievalService:
         self,
         index_items: list[dict],
         allowed_source_paths: set[str] | None,
+        uploaded_source_paths: set[str] | None = None,
         doc_type: str | None = None,
+        document_group_preference: str | None = None,
     ) -> list[dict]:
         items = index_items
 
-        if allowed_source_paths:
+        if uploaded_source_paths:
+            normalized_uploaded = set()
+            for path in uploaded_source_paths:
+                normalized_uploaded.add(str(Path(path)))
+                normalized_uploaded.add(str(Path(path).resolve()))
+
+            def _is_uploaded(item: dict) -> bool:
+                source_path = str(item["chunk"].get("source_path") or "")
+                return (
+                    str(Path(source_path)) in normalized_uploaded
+                    or str(Path(source_path).resolve()) in normalized_uploaded
+                )
+
+            if document_group_preference == "mixed":
+                items = [
+                    item for item in items
+                    if _is_uploaded(item) or self.document_group(item) == "official_ocp"
+                ]
+            else:
+                items = [item for item in items if _is_uploaded(item)]
+        elif allowed_source_paths:
             normalized_allowed = set()
             for path in allowed_source_paths:
                 normalized_allowed.add(str(Path(path)))
@@ -402,4 +440,67 @@ class RetrievalService:
                     if (item["chunk"].get("metadata") or {}).get("doc_type") != "operation_manual"
                 ]
 
+        if document_group_preference and document_group_preference not in {"auto", "mixed"}:
+            if document_group_preference == "customer_generated":
+                items = [
+                    item for item in items
+                    if (
+                        (
+                            (item["chunk"].get("metadata") or {}).get("document_group") == "customer_generated"
+                            or (item["chunk"].get("metadata") or {}).get("doc_type") == "operation_manual"
+                        )
+                        and str(item["chunk"].get("source_path") or "").replace("\\", "/").lower().endswith(".pdf")
+                    )
+                ]
+            elif document_group_preference == "official_ocp":
+                items = [
+                    item for item in items
+                    if (item["chunk"].get("metadata") or {}).get("document_group") == "official_ocp"
+                    or (item["chunk"].get("metadata") or {}).get("doc_type") != "operation_manual"
+                ]
+        elif document_group_preference == "mixed":
+            filtered: list[dict] = []
+            for item in items:
+                metadata = item["chunk"].get("metadata") or {}
+                group = str(metadata.get("document_group") or "")
+                source_path = str(item["chunk"].get("source_path") or "").replace("\\", "/").lower()
+                if group == "customer_generated" and not source_path.endswith(".pdf"):
+                    continue
+                filtered.append(item)
+            items = filtered
+
         return items
+
+    def rebalance_context_items_by_document_group(
+        self,
+        items: list[dict],
+        document_group_preference: str | None,
+        *,
+        limit: int | None = None,
+    ) -> list[dict]:
+        if not items:
+            return items
+        if document_group_preference != "mixed":
+            return items[:limit] if limit is not None else items
+
+        preferred_limit = limit if limit is not None else len(items)
+        grouped: dict[str, list[dict]] = {"official_ocp": [], "customer_generated": []}
+        for item in items:
+            group = self.document_group(item)
+            if group in grouped:
+                grouped[group].append(item)
+
+        if not grouped["official_ocp"] or not grouped["customer_generated"]:
+            return items[:preferred_limit]
+
+        selected: list[dict] = [grouped["official_ocp"][0], grouped["customer_generated"][0]]
+        selected_ids = {item["chunk"]["chunk_id"] for item in selected}
+        for item in items:
+            if len(selected) >= preferred_limit:
+                break
+            chunk_id = item["chunk"]["chunk_id"]
+            if chunk_id in selected_ids:
+                continue
+            selected.append(item)
+            selected_ids.add(chunk_id)
+        return selected[:preferred_limit]
