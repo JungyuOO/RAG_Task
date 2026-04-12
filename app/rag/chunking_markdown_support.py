@@ -295,6 +295,7 @@ class StructuredMarkdownChunkerSupport:
             "display_text": chunk_text,
             "retrieval_text": retrieval_text,
         }
+        metadata["_source_blocks"] = list(blocks)
         metadata.update(self._infer_structure_flags(chunk_text, metadata))
         if any(block.kind == "code" for block in blocks):
             metadata.update(self._infer_code_metadata(chunk_text))
