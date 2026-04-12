@@ -2,9 +2,11 @@
   README_PPT.md — 발표용 슬라이드
   ────────────────────────────────────────────────
   · GitHub 에서 열면 `---` 가로줄로 슬라이드가 자연스럽게 구분됩니다.
-  · Marp / Marp for VS Code 로 열면 실제 PPT 슬라이드로 변환됩니다.
-    (VS Code 에서 `Marp: Export slide deck` 선택)
+  · 실제 슬라이드로 보려면 아래 PDF / PPTX 링크를 사용하세요.
+  · 직접 재빌드: `npx @marp-team/marp-cli README_PPT.md --pdf --pptx --allow-local-files`
 -->
+
+> 📑 **슬라이드로 보기**: [README_PPT.pdf](./README_PPT.pdf) (GitHub 에서 바로 열림) · [README_PPT.pptx](./README_PPT.pptx) (PowerPoint 다운로드)
 
 ---
 marp: true
