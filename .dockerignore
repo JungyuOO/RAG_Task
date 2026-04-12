@@ -6,6 +6,12 @@ __pycache__
 *.pyo
 *.egg-info
 .pytest_cache
+.omx
+.claude
+.playwright-cli
+cohere
+team-shadow-newv201
+**/team-shadow-newv201
 data/
 .env
 tests/
