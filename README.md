@@ -265,6 +265,98 @@ app/
 | 2 | **OCP API 5턴** | 실제 cluster live 조회 + clarification |
 | 3 | **Mixed / Compare 5턴** | 문서 RAG + live OCP 결과 자동 결합 |
 
+### 6.1 시연용 권장 질문 순서
+
+#### A. 문서 기반
+
+1. `pod 확인하는 명령어 뭐야?`
+2. `namespace 확인 명령어 뭐야?`
+3. `yaml 보려면 무슨 명령어 써?`
+4. `pod 확인하는 명령어 뭐야?`
+5. `그거 yaml로 보려면?`
+
+기대 포인트:
+- `oc get pods`
+- `oc project`
+- `oc get <resource> <name> -o yaml`
+- 답변 본문 inline source 표시
+- 우측 preview 연동
+
+#### B. OCP API 기반
+
+1. `지금 pandas 관련 pod 보여줘`
+2. `그쪽 yaml 파일 알려줘`
+3. `build-and-push-crxvmo-build-image-pod 이거 yaml 알려줘`
+4. `warning 이벤트 보여줘`
+5. `demo namespace pod 몇개야?`
+
+기대 포인트:
+- 실제 live pod 조회
+- ambiguous YAML follow-up clarification
+- explicit pod name 입력 시 실제 YAML 응답
+
+#### C. Mixed / Compare 기반
+
+1. `pod 확인하는 명령어 뭐야?`
+2. `그럼 지금 내 ocp 쪽 namespace에서는 어떻게 확인해`
+3. `지금 pandas 관련 pod 보여줘`
+4. `현재 상태 확인 명령어랑 실제 결과 같이 알려줘`
+5. `그 pod yaml이랑 공식 문서의 pod yaml은 뭐가 달라?`
+
+기대 포인트:
+- `문서 기준 명령어`
+- `현재 OCP 결과`
+- compare 응답 시 `공식 문서 기준 / 현재 OCP 기준 / 비교 가이드`
+
+### 6.2 고객사 메뉴얼 시연
+
+고객사 메뉴얼은 startup auto index 여부와 무관하게 **업로드한 파일만 즉시 인덱싱**할 수 있습니다.
+
+#### 업로드 방식
+
+UI 에서 Library 업로드를 사용하거나, API 로 직접 업로드할 수 있습니다.
+
+```bash
+curl -X POST "http://localhost:8000/api/library/upload?target_group=customer_generated" \
+  -F "files=@demo_customer_manual.md"
+```
+
+업로드 대상:
+- `.md` → `generated/`
+- `.pdf` → `generated_pdf/`
+
+색인 완료 후에는 Library 목록에서 `document_group=customer_generated` 로 보입니다.
+
+#### 시연용 샘플 메뉴얼
+
+테스트용 샘플은 아래 경로에 포함되어 있습니다.
+
+```text
+tests/data/demo_customer_manual.md
+```
+
+샘플 메뉴얼 내용:
+- `oc get pods -n demo | grep pandas`
+- `oc get pods -n demo -o wide | grep pandas`
+- `oc get pod <pod_name> -n demo -o yaml`
+- `oc describe pod <pod_name> -n demo`
+- `oc get events -n demo --field-selector type=Warning`
+
+#### 고객사 메뉴얼 시연용 권장 질문
+
+아래 질문은 실제로 고객사 메뉴얼 근거로 응답되는 흐름을 확인했습니다.
+
+1. `고객사 메뉴얼 기준으로 pandas 운영 점검 절차 알려줘`
+2. `고객사 메뉴얼 기준으로 pandas 관련 pod 상태 확인 명령어 알려줘`
+3. `고객사 메뉴얼 기준으로 특정 pod yaml 확인 명령어 알려줘`
+4. `고객사 메뉴얼 기준으로 warning 이벤트 확인 명령어 알려줘`
+
+#### 시연 시 주의사항
+
+- `고객사 메뉴얼 기준으로` 라는 문구를 포함하면 customer-generated 문서 우선도가 높아집니다.
+- 시연용으로는 **고객사 메뉴얼 단독 질문**이 가장 안정적입니다.
+- `공식 문서와 고객사 메뉴얼 비교` 같은 mixed customer/manual 질문은 문구에 따라 흔들릴 수 있으므로, 발표 현장에서는 단독 메뉴얼 질문을 우선 권장합니다.
+
 ---
 
 ## 7. 환경 변수
@@ -298,5 +390,4 @@ app/
 
 ## 9. 참고
 
-- 아키텍처 상세 설명: [`DESIGN.md`](./DESIGN.md)
 - 발표 슬라이드 : [`README_PPT.md`](./README_PPT.md)
