@@ -38,6 +38,11 @@ DEFAULT_TOPIC_STATE = {
     "last_example_anchor": {},
     "last_doc_type": "",
     "last_document_group_preference": "auto",
+    "last_namespace": "",
+    "last_ocp_resource": "",
+    "last_ocp_resource_names": [],
+    "last_ocp_result_items": [],
+    "last_ocp_filter_keyword": "",
     "procedure_state": {},
 }
 
@@ -65,6 +70,11 @@ DEFAULT_TOPIC_THREAD_SUMMARY = {
     "last_example_anchor": {},
     "last_doc_type": "",
     "last_document_group_preference": "auto",
+    "last_namespace": "",
+    "last_ocp_resource": "",
+    "last_ocp_resource_names": [],
+    "last_ocp_result_items": [],
+    "last_ocp_filter_keyword": "",
     "turn_count": 0,
 }
 
@@ -201,6 +211,11 @@ def build_topic_state(turns: list[ChatTurn]) -> dict:
     last_doc_type = ""
     selected_versions: list[str] = []
     last_document_group_preference = "auto"
+    last_namespace = ""
+    last_ocp_resource = ""
+    last_ocp_resource_names: list[str] = []
+    last_ocp_result_items: list[dict] = []
+    last_ocp_filter_keyword = ""
 
     for turn in recent_turns:
         metadata = turn.metadata or {}
@@ -247,10 +262,18 @@ def build_topic_state(turns: list[ChatTurn]) -> dict:
                 for fmt in formats:
                     if fmt and fmt not in last_format_constraints:
                         last_format_constraints.append(fmt)
-            for item in metadata.get("source_grounding", []):
-                file_name = normalize_text(str(item.get("file_name") or ""))
-                if file_name and file_name not in selected_sources:
-                    selected_sources.append(file_name)
+            current_turn_sources: list[str] = []
+            for citation in metadata.get("answer_citations", []) or []:
+                file_name = normalize_text(str(citation.get("file_name") or ""))
+                if file_name and file_name not in current_turn_sources:
+                    current_turn_sources.append(file_name)
+            if not current_turn_sources:
+                for item in metadata.get("source_grounding", []) or []:
+                    file_name = normalize_text(str(item.get("file_name") or ""))
+                    if file_name and file_name not in current_turn_sources:
+                        current_turn_sources.append(file_name)
+            if current_turn_sources:
+                selected_sources = current_turn_sources[:3]
             for item in metadata.get("preview_pages", []):
                 page_number = int(item.get("page_number") or 0)
                 if page_number and page_number not in selected_pages:
@@ -263,6 +286,41 @@ def build_topic_state(turns: list[ChatTurn]) -> dict:
                 procedure_state = metadata["procedure_state"]
             if isinstance(metadata.get("last_example_anchor"), dict) and metadata.get("last_example_anchor"):
                 last_example_anchor = metadata["last_example_anchor"]
+            ocp_context = metadata.get("ocp_context") if isinstance(metadata.get("ocp_context"), dict) else {}
+            if ocp_context:
+                namespace = normalize_text(str(ocp_context.get("namespace") or ""))
+                if namespace:
+                    last_namespace = namespace
+                ocp_resource = normalize_text(str(ocp_context.get("last_resource") or "")).lower()
+                if ocp_resource:
+                    last_ocp_resource = ocp_resource
+                names = [
+                    normalize_text(str(value))
+                    for value in ocp_context.get("last_resource_names", []) or []
+                    if value
+                ]
+                if names:
+                    last_ocp_resource_names = []
+                    for name in names:
+                        if name and name not in last_ocp_resource_names:
+                            last_ocp_resource_names.append(name)
+                result_items: list[dict] = []
+                for item in ocp_context.get("last_result_items", []) or []:
+                    if not isinstance(item, dict):
+                        continue
+                    normalized_item = {
+                        "resource": normalize_text(str(item.get("resource") or "")).lower(),
+                        "name": normalize_text(str(item.get("name") or "")),
+                        "namespace": normalize_text(str(item.get("namespace") or "")),
+                        "kind": normalize_text(str(item.get("kind") or "")),
+                    }
+                    if normalized_item["name"]:
+                        result_items.append(normalized_item)
+                if result_items:
+                    last_ocp_result_items = result_items[:20]
+                filter_keyword = normalize_text(str(ocp_context.get("last_filter_keyword") or ""))
+                if filter_keyword:
+                    last_ocp_filter_keyword = filter_keyword
             track_code_resource_kind = (
                 last_answer_route == "extractive_code"
                 or last_response_shape.casefold() == "code"
@@ -337,6 +395,11 @@ def build_topic_state(turns: list[ChatTurn]) -> dict:
         "last_example_anchor": last_example_anchor,
         "last_doc_type": last_doc_type,
         "last_document_group_preference": last_document_group_preference or "auto",
+        "last_namespace": last_namespace,
+        "last_ocp_resource": last_ocp_resource,
+        "last_ocp_resource_names": last_ocp_resource_names[:12],
+        "last_ocp_result_items": last_ocp_result_items[:20],
+        "last_ocp_filter_keyword": last_ocp_filter_keyword,
         "procedure_state": procedure_state,
     }
 
@@ -393,6 +456,11 @@ def build_topic_thread_summary(topic_label: str, turns: list[ChatTurn]) -> dict:
         "last_example_anchor": topic_state.get("last_example_anchor", {}),
         "last_doc_type": topic_state.get("last_doc_type", ""),
         "last_document_group_preference": topic_state.get("last_document_group_preference", "auto"),
+        "last_namespace": topic_state.get("last_namespace", ""),
+        "last_ocp_resource": topic_state.get("last_ocp_resource", ""),
+        "last_ocp_resource_names": topic_state.get("last_ocp_resource_names", [])[:12],
+        "last_ocp_result_items": topic_state.get("last_ocp_result_items", [])[:20],
+        "last_ocp_filter_keyword": topic_state.get("last_ocp_filter_keyword", ""),
         "turn_count": len(turns),
     }
 
@@ -490,4 +558,8 @@ def build_rewrite_context_payload(recent: list[ChatTurn], summary: dict, topic_s
         "last_example_anchor": topic_state.get("last_example_anchor", {}),
         "last_document_group_preference": topic_state.get("last_document_group_preference", "auto"),
         "last_doc_type": str(topic_state.get("last_doc_type") or ""),
+        "last_namespace": str(topic_state.get("last_namespace") or ""),
+        "last_ocp_resource": str(topic_state.get("last_ocp_resource") or ""),
+        "last_ocp_resource_names": [str(value) for value in topic_state.get("last_ocp_resource_names", []) if value][:12],
+        "last_ocp_filter_keyword": str(topic_state.get("last_ocp_filter_keyword") or ""),
     }

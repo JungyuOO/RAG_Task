@@ -7,7 +7,7 @@ import re
 from fastapi import HTTPException, Request, UploadFile
 
 from app.dependencies import AppContainer
-from app.rag.utils import extracted_markdown_candidates
+from app.rag.utils import extracted_html_candidates, extracted_markdown_candidates, extracted_metadata_candidates
 
 try:
     import fitz
@@ -170,11 +170,13 @@ def delete_markdown_artifacts(container: AppContainer, file_name: str) -> tuple[
     target_path = resolve_library_pdf(container.settings, file_name)
     relative_source_path = container.settings.rag_source_dir / file_name
     markdown_paths = extracted_markdown_candidates(container.settings.rag_extract_dir, relative_source_path)
+    html_paths = extracted_html_candidates(container.settings.rag_extract_dir, relative_source_path)
+    metadata_paths = extracted_metadata_candidates(container.settings.rag_extract_dir, relative_source_path)
 
     target_path.unlink()
     deleted_markdown = False
-    for markdown_path in markdown_paths:
-        if markdown_path.exists() and markdown_path.is_file():
-            markdown_path.unlink()
+    for artifact_path in [*markdown_paths, *html_paths, *metadata_paths]:
+        if artifact_path.exists() and artifact_path.is_file():
+            artifact_path.unlink()
             deleted_markdown = True
     return target_path, deleted_markdown

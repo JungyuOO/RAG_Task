@@ -17,3 +17,4 @@ data/extracted_markdown/*
 !data/corpus/pdfs/.gitkeep
 
 .claude/
+.omx/

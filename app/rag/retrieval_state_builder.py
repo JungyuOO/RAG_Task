@@ -54,6 +54,66 @@ class RetrievalStateBuilder:
         self.deps = deps
 
     @staticmethod
+    def _is_code_or_command_query(query_interpretation: dict | None) -> bool:
+        query_interpretation = query_interpretation or {}
+        intent = str(query_interpretation.get("intent") or "").casefold()
+        response_shape = str(query_interpretation.get("response_shape") or "").casefold()
+        format_constraints = {str(value).casefold() for value in query_interpretation.get("format_constraints", []) if value}
+        return (
+            intent in {"yaml_example", "cli_example", "code_example"}
+            or response_shape == "code"
+            or bool(format_constraints & {"yaml", "cli"})
+        )
+
+    @classmethod
+    def _build_retrieval_profile(cls, query_interpretation: dict | None) -> dict[str, float | int | bool]:
+        if cls._is_code_or_command_query(query_interpretation):
+            return {
+                "dense_rrf_weight": 1.35,
+                "sparse_rrf_weight": 0.35,
+                "rerank_limit": 6,
+                "skip_cross_encoder": True,
+            }
+        return {
+            "dense_rrf_weight": 1.0,
+            "sparse_rrf_weight": 1.0,
+            "rerank_limit": 10,
+            "skip_cross_encoder": False,
+        }
+
+    @staticmethod
+    def _effective_target_versions(target_versions: list[str], document_group_preference: str) -> list[str]:
+        if document_group_preference in {"official_ocp", "mixed"}:
+            return []
+        return list(target_versions or [])
+
+    @staticmethod
+    def _build_format_focused_queries(query_interpretation: dict | None) -> list[str]:
+        query_interpretation = query_interpretation or {}
+        resources = [str(value).casefold().strip() for value in query_interpretation.get("resources", []) if value]
+        format_constraints = {str(value).casefold().strip() for value in query_interpretation.get("format_constraints", []) if value}
+        response_shape = str(query_interpretation.get("response_shape") or "").casefold()
+        queries: list[str] = []
+
+        def _add(value: str) -> None:
+            normalized = value.strip()
+            if normalized and normalized not in queries:
+                queries.append(normalized)
+
+        if "yaml" in format_constraints or response_shape == "code":
+            for resource in resources[:1]:
+                plural = resource if resource.endswith("s") else f"{resource}s"
+                _add(f"oc get {resource} -o yaml")
+                _add(f"oc get {plural} -o yaml")
+                _add(f"oc describe {resource}")
+        elif "cli" in format_constraints:
+            for resource in resources[:1]:
+                plural = resource if resource.endswith("s") else f"{resource}s"
+                _add(f"oc get {resource}")
+                _add(f"oc get {plural}")
+        return queries[:3]
+
+    @staticmethod
     def _should_skip_expand_with_llm(policy: TurnPolicyDecision, topic_state: dict, user_message: str) -> bool:
         lowered = str(user_message or "").casefold()
         has_followup_signal = any(marker in lowered for marker in ("그 ", "그때", "그다음", "그 다음", "다시", "이어서", "이번에는", "방금", "that", "again", "continue"))
@@ -64,27 +124,50 @@ class RetrievalStateBuilder:
             or bool(topic_state.get("active_topic"))
         )
         if policy.turn_type == "document_followup":
-            return has_followup_signal or compare_or_summary_signal or has_topic_anchor
-        if has_topic_anchor and (
-            has_followup_signal
-            or compare_or_summary_signal
-            or len(str(user_message or "").strip()) <= 48
-        ):
+            return has_followup_signal or compare_or_summary_signal
+        if has_topic_anchor and (has_followup_signal or compare_or_summary_signal):
             return True
         return False
 
     @staticmethod
-    def _build_followup_fast_query_result(rewritten_query: str, topic_state: dict) -> dict:
+    def _build_followup_fast_query_result(rewritten_query: str, topic_state: dict, user_message: str) -> dict:
+        lowered = str(user_message or "").casefold()
+        resources: list[str] = []
+        for resource in topic_state.get("last_explicit_resources", []) or []:
+            normalized = str(resource).casefold().strip()
+            if normalized and normalized not in resources:
+                resources.append(normalized)
+        anchor = topic_state.get("last_example_anchor") or {}
+        anchor_resource = str(anchor.get("resource_kind") or "").casefold().strip()
+        if anchor_resource and anchor_resource not in resources:
+            resources.append(anchor_resource)
+        last_code_resource_kind = str(topic_state.get("last_code_resource_kind") or "").casefold().strip()
+        if last_code_resource_kind and last_code_resource_kind not in resources:
+            resources.append(last_code_resource_kind)
+
+        format_constraints: list[str] = []
+        if any(marker in lowered for marker in ("yaml", "manifest")):
+            format_constraints.append("yaml")
+        if any(marker in lowered for marker in ("명령어", "command", "cli", "oc ", "kubectl")):
+            format_constraints.append("cli")
+
+        refined_terms: list[str] = []
+        refined_terms.extend(resources[:2])
+        if "yaml" in format_constraints:
+            refined_terms.extend(["yaml", "oc", "-o yaml"])
+        elif "cli" in format_constraints:
+            refined_terms.append("oc")
+        refined_query = " ".join(dict.fromkeys(term for term in refined_terms if term)).strip() or rewritten_query
         return {
-            "refined_query": rewritten_query,
+            "refined_query": refined_query,
             "alternative_queries": [],
             "translated_keywords": [],
             "target_versions": list(topic_state.get("selected_versions", []) or []),
-            "resources": [],
+            "resources": resources,
             "actions": [],
-            "format_constraints": [],
-            "response_shape": "",
-            "normalized_keywords": [],
+            "format_constraints": format_constraints,
+            "response_shape": "code" if format_constraints else "",
+            "normalized_keywords": refined_terms,
         }
 
     @staticmethod
@@ -96,20 +179,24 @@ class RetrievalStateBuilder:
     ) -> bool:
         if not retrieved:
             return True
+        if document_group_preference == "official_ocp" and source_filter_strategy == "keyword_scoped":
+            return True
         if document_group_preference == "mixed":
             return False
         if source_filter_strategy not in {"selected_sources", "keyword_scoped"}:
             return False
         top_sources = {
             Path(str(item["chunk"].get("source_path") or "")).name
-            for item in retrieved[:3]
+            for item in retrieved[:4]
         }
         top_score = float(retrieved[0].get("retrieval_score", retrieved[0].get("rerank_score", 0.0)))
+        if policy.turn_type == "document_followup":
+            return len(top_sources) <= 3 and top_score >= 0.10
         if policy.turn_type == "document_query" and source_filter_strategy == "selected_sources":
-            return len(top_sources) <= 2 and top_score >= 0.16
-        if policy.turn_type != "document_followup":
-            return False
-        return len(top_sources) <= 2 and top_score >= 0.14
+            return len(top_sources) <= 3 and top_score >= 0.14
+        if policy.turn_type == "document_query" and source_filter_strategy == "keyword_scoped":
+            return len(top_sources) <= 2 and top_score >= 0.20
+        return False
 
     @staticmethod
     def _source_group_from_path(source_path: str) -> str:
@@ -120,6 +207,15 @@ class RetrievalStateBuilder:
         if "customer-guide" in base_name or "customer_guide" in base_name:
             return "customer_generated"
         return "official_ocp"
+
+    @staticmethod
+    def _is_html_single_source_path(source_path: str) -> bool:
+        normalized = str(source_path or "").replace("\\", "/").casefold()
+        return "/ocp-html-single-" in normalized and normalized.endswith(".md")
+
+    def _prefer_official_html_single_sources(self, source_paths: list[str]) -> list[str]:
+        html_single = [source_path for source_path in source_paths if self._is_html_single_source_path(source_path)]
+        return html_single or source_paths
 
     def _build_uploaded_source_filter(
         self,
@@ -136,6 +232,8 @@ class RetrievalStateBuilder:
             return uploaded, "uploaded_only"
 
         all_sources = sorted(indexed_source_paths)
+        if document_group_preference == "official_ocp":
+            all_sources = self._prefer_official_html_single_sources(all_sources)
         interesting_tokens: list[str] = []
         for value in query_interpretation.get("resources", []) or []:
             token = str(value).casefold().strip()
@@ -186,6 +284,7 @@ class RetrievalStateBuilder:
         query_interpretation: dict,
         target_versions: list[str],
         document_group_preference: str,
+        turn_type: str,
         allowed_source_paths: set[str] | None,
         uploaded_source_paths: set[str] | None,
     ) -> tuple[list[str] | None, str]:
@@ -202,20 +301,24 @@ class RetrievalStateBuilder:
             return uploaded_filter, uploaded_strategy
 
         all_sources = sorted(indexed_source_paths)
-        selected_source_names = {
+        if document_group_preference == "official_ocp":
+            all_sources = self._prefer_official_html_single_sources(all_sources)
+        selected_source_names = [
             str(source).casefold().strip()
             for source in topic_state.get("selected_sources", []) or []
             if source
-        }
+        ]
         if selected_source_names:
-            matched = [
-                source_path
-                for source_path in all_sources
-                if Path(str(source_path)).name.casefold() in selected_source_names
-            ]
+            matched: list[str] = []
+            for selected_name in selected_source_names:
+                for source_path in all_sources:
+                    if Path(str(source_path)).name.casefold() == selected_name and source_path not in matched:
+                        matched.append(source_path)
             if document_group_preference == "customer_generated":
                 matched = [source_path for source_path in matched if str(source_path).replace("\\", "/").lower().endswith(".pdf")]
             if matched:
+                if turn_type == "document_followup" and document_group_preference != "mixed":
+                    return matched[:1], "selected_sources_followup"
                 return matched[:8], "selected_sources"
 
         interesting_tokens: list[str] = []
@@ -279,6 +382,140 @@ class RetrievalStateBuilder:
         scoped["selected_sources"] = selected_sources
         return scoped
 
+    @staticmethod
+    def _candidate_prefilter_limit(retriever, settings) -> int:
+        explicit_limit = int(getattr(settings, "pgvector_prefilter_limit", 0) or 0)
+        if explicit_limit > 0:
+            return explicit_limit
+        return max(int(getattr(retriever, "candidate_pool_size", 15)) * 4, int(getattr(retriever, "top_k", 5)) * 6, 40)
+
+    @staticmethod
+    def _candidate_prefilter_min_results(retriever) -> int:
+        return max(int(getattr(retriever, "candidate_pool_size", 15)), int(getattr(retriever, "top_k", 5)) * 3, 20)
+
+    @staticmethod
+    def _strong_query_tokens_for_code(user_message: str, query_interpretation: dict | None) -> list[str]:
+        qi = query_interpretation or {}
+        tokens: list[str] = []
+        for token in qi.get("normalized_keywords", tokenize(user_message)) or []:
+            normalized = str(token).casefold().strip()
+            if len(normalized) < 4:
+                continue
+            if normalized in {"namespace", "project", "status", "command", "yaml", "pod"}:
+                continue
+            if normalized not in tokens:
+                tokens.append(normalized)
+        return tokens
+
+    @classmethod
+    def _select_procedure_token_matches(
+        cls,
+        candidate_items: list[dict],
+        *,
+        user_message: str,
+        query_interpretation: dict | None,
+        limit: int,
+    ) -> list[dict]:
+        strong_tokens = cls._strong_query_tokens_for_code(user_message, query_interpretation)
+        if not strong_tokens:
+            return []
+        matched: list[tuple[int, dict]] = []
+        seen: set[str] = set()
+        for item in candidate_items:
+            chunk = item.get("chunk") or {}
+            metadata = chunk.get("metadata") or {}
+            text_haystack = str(chunk.get("text") or "").casefold()
+            structure_haystack = " ".join(
+                [
+                    str(metadata.get("section_title") or "").casefold(),
+                    str(metadata.get("section_path") or "").casefold(),
+                ]
+            )
+            text_hits = sum(1 for token in strong_tokens if token in text_haystack)
+            structure_hits = sum(1 for token in strong_tokens if token in structure_haystack)
+            token_score = text_hits * 10 + structure_hits
+            if token_score <= 0:
+                continue
+            block_types = {value.strip().casefold() for value in str(metadata.get("block_types", "")).split(",") if value.strip()}
+            if "code" not in block_types and not metadata.get("is_procedure"):
+                continue
+            chunk_id = str(chunk.get("chunk_id") or "")
+            if chunk_id in seen:
+                continue
+            seen.add(chunk_id)
+            matched.append((token_score, item))
+        matched.sort(
+            key=lambda entry: (
+                -entry[0],
+                -float(entry[1].get("final_retrieval_score", entry[1].get("rerank_score", 0.0))),
+            )
+        )
+        return [item for _, item in matched[:limit]]
+
+    @staticmethod
+    def _merge_candidate_pools(primary: list[dict], fallback: list[dict], *, limit: int) -> list[dict]:
+        merged: list[dict] = []
+        seen_chunk_ids: set[str] = set()
+        for item in primary + fallback:
+            chunk_id = str(item.get("chunk", {}).get("chunk_id") or "")
+            if not chunk_id or chunk_id in seen_chunk_ids:
+                continue
+            seen_chunk_ids.add(chunk_id)
+            merged.append(item)
+            if len(merged) >= limit:
+                break
+        return merged
+
+    def _load_index_candidate_pool(
+        self,
+        deps: RetrievalStateDeps,
+        *,
+        query_vector: list[float],
+        source_filter: list[str] | None,
+        target_versions: list[str],
+        doc_type: str | None,
+        document_group_preference: str,
+    ) -> tuple[list[dict], str]:
+        search_dense = getattr(deps.index_repository, "search_dense_candidates", None)
+        if callable(search_dense):
+            try:
+                dense_items = search_dense(
+                    query_vector,
+                    limit=self._candidate_prefilter_limit(deps.retriever, deps.settings),
+                    source_paths=source_filter,
+                    target_versions=target_versions or None,
+                    doc_type=doc_type,
+                    document_group_preference=document_group_preference,
+                )
+                if dense_items:
+                    min_results = self._candidate_prefilter_min_results(deps.retriever)
+                    if len(dense_items) >= min_results:
+                        return dense_items, "pgvector_dense"
+                    fallback_items = deps.index_repository.load(
+                        source_paths=source_filter,
+                        target_versions=target_versions or None,
+                        doc_type=doc_type,
+                        document_group_preference=document_group_preference,
+                    )
+                    merged = self._merge_candidate_pools(
+                        dense_items,
+                        fallback_items,
+                        limit=max(len(dense_items), min_results),
+                    )
+                    return merged, "pgvector_dense_supplemented"
+            except Exception as exc:
+                logger.warning("[RetrievalStateBuilder] pgvector dense prefilter failed: %s", exc)
+
+        return (
+            deps.index_repository.load(
+                source_paths=source_filter,
+                target_versions=target_versions or None,
+                doc_type=doc_type,
+                document_group_preference=document_group_preference,
+            ),
+            "full_load",
+        )
+
     async def run(
         self,
         session_id: str,
@@ -340,7 +577,7 @@ class RetrievalStateBuilder:
 
         t_retrieval_expand = time.perf_counter()
         if self._should_skip_expand_with_llm(policy, topic_state, user_message):
-            query_result = self._build_followup_fast_query_result(rewritten_query, topic_state)
+            query_result = self._build_followup_fast_query_result(rewritten_query, topic_state, user_message)
             expand_strategy = "followup_fastpath"
         else:
             query_result = await deps.retrieval_agent.expand(
@@ -374,10 +611,12 @@ class RetrievalStateBuilder:
             document_group_preference = str(
                 topic_state.get("last_document_group_preference")
                 or topic_state.get("active_document_group")
-                or "auto"
+                or "official_ocp"
             )
+        effective_target_versions = self._effective_target_versions(target_versions, document_group_preference)
+        retrieval_profile = self._build_retrieval_profile(query_interpretation)
         logger.info(
-            "[QueryInterpretation] intent=%s resources=%s actions=%s formats=%s shape=%s keywords=%s target_versions=%s document_group=%s",
+            "[QueryInterpretation] intent=%s resources=%s actions=%s formats=%s shape=%s keywords=%s target_versions=%s effective_target_versions=%s document_group=%s",
             query_interpretation["intent"],
             query_interpretation["resources"],
             query_interpretation["actions"],
@@ -385,6 +624,7 @@ class RetrievalStateBuilder:
             query_interpretation["response_shape"],
             query_interpretation["normalized_keywords"],
             target_versions,
+            effective_target_versions,
             document_group_preference,
         )
 
@@ -392,38 +632,12 @@ class RetrievalStateBuilder:
             indexed_source_paths,
             topic_state,
             query_interpretation,
-            target_versions,
+            effective_target_versions,
             document_group_preference,
+            policy.turn_type,
             allowed_source_paths,
             uploaded_source_paths,
         )
-        t_index_load = time.perf_counter()
-        index_items_all = deps.index_repository.load(
-            source_paths=source_filter,
-            target_versions=target_versions or None,
-            doc_type=doc_type,
-            document_group_preference=document_group_preference,
-        )
-        if source_filter and not index_items_all:
-            source_filter = None
-            source_filter_strategy = "broad_fallback"
-            index_items_all = deps.index_repository.load(
-                source_paths=None,
-                target_versions=target_versions or None,
-                doc_type=doc_type,
-                document_group_preference=document_group_preference,
-            )
-        logger.info(
-            "[Timing][RetrievalStateBuilder.run] index_load=%.3fs items=%d target_versions=%s source_filter=%d source_strategy=%s doc_type=%s document_group=%s",
-            time.perf_counter() - t_index_load,
-            len(index_items_all),
-            target_versions,
-            len(source_filter or []),
-            source_filter_strategy,
-            doc_type or "",
-            document_group_preference,
-        )
-
         scoped_topic_state = self._scoped_topic_state_for_query(topic_state, document_group_preference)
         aliased_query = deps.expand_query_with_resource_aliases(refined_query, query_interpretation)
         expanded_query = deps.expand_query_with_context(aliased_query, scoped_topic_state)
@@ -439,6 +653,37 @@ class RetrievalStateBuilder:
             time.perf_counter() - t_embed,
             len(expanded_query),
         )
+        t_index_load = time.perf_counter()
+        index_items_all, index_load_strategy = self._load_index_candidate_pool(
+            deps,
+            query_vector=query_vector,
+            source_filter=source_filter,
+            target_versions=effective_target_versions,
+            doc_type=doc_type,
+            document_group_preference=document_group_preference,
+        )
+        if source_filter and not index_items_all:
+            source_filter = None
+            source_filter_strategy = "broad_fallback"
+            index_items_all, index_load_strategy = self._load_index_candidate_pool(
+                deps,
+                query_vector=query_vector,
+                source_filter=None,
+                target_versions=effective_target_versions,
+                doc_type=doc_type,
+                document_group_preference=document_group_preference,
+            )
+        logger.info(
+            "[Timing][RetrievalStateBuilder.run] index_load=%.3fs items=%d target_versions=%s source_filter=%d source_strategy=%s load_strategy=%s doc_type=%s document_group=%s",
+            time.perf_counter() - t_index_load,
+            len(index_items_all),
+            effective_target_versions,
+            len(source_filter or []),
+            source_filter_strategy,
+            index_load_strategy,
+            doc_type or "",
+            document_group_preference,
+        )
         t_filter_index = time.perf_counter()
         index_items = deps.retrieval_service.filter_index_items(
             index_items_all,
@@ -452,7 +697,7 @@ class RetrievalStateBuilder:
             source_filter_strategy = "broad_post_filter_fallback"
             index_items_all = deps.index_repository.load(
                 source_paths=None,
-                target_versions=target_versions or None,
+                target_versions=effective_target_versions or None,
                 doc_type=doc_type,
                 document_group_preference=document_group_preference,
             )
@@ -495,8 +740,10 @@ class RetrievalStateBuilder:
         base_rrf_pool = deps.retriever.search_rrf(
             expanded_query, query_vector, index_items, rrf_k=rrf_k,
             limit=deps.retriever.candidate_pool_size,
-            target_versions=target_versions,
+            target_versions=effective_target_versions,
             keyword_query=bm25_keyword_query,
+            dense_weight=float(retrieval_profile["dense_rrf_weight"]),
+            sparse_weight=float(retrieval_profile["sparse_rrf_weight"]),
         )
         retrieved = base_rrf_pool[: deps.retriever.top_k]
         logger.info(
@@ -547,8 +794,10 @@ class RetrievalStateBuilder:
                     query_vector,
                     selected_source_items,
                     rrf_k=rrf_k,
-                    target_versions=target_versions,
+                    target_versions=effective_target_versions,
                     keyword_query=bm25_keyword_query,
+                    dense_weight=float(retrieval_profile["dense_rrf_weight"]),
+                    sparse_weight=float(retrieval_profile["sparse_rrf_weight"]),
                 )
                 for item in source_retrieved:
                     cid = item["chunk"]["chunk_id"]
@@ -576,7 +825,16 @@ class RetrievalStateBuilder:
                 alt_expanded = deps.expand_query_with_context(alt_aliased, scoped_topic_state)
                 alt_vector = deps.embedder.encode(alt_expanded)
                 alt_bm25_kw = self._build_bm25_keyword_query(alt_query)
-                alt_retrieved = deps.retriever.search_rrf(alt_expanded, alt_vector, index_items, rrf_k=rrf_k, target_versions=target_versions, keyword_query=alt_bm25_kw)
+                alt_retrieved = deps.retriever.search_rrf(
+                    alt_expanded,
+                    alt_vector,
+                    index_items,
+                    rrf_k=rrf_k,
+                    target_versions=effective_target_versions,
+                    keyword_query=alt_bm25_kw,
+                    dense_weight=float(retrieval_profile["dense_rrf_weight"]),
+                    sparse_weight=float(retrieval_profile["sparse_rrf_weight"]),
+                )
                 for item in alt_retrieved:
                     cid = item["chunk"]["chunk_id"]
                     if cid not in seen_chunk_ids:
@@ -584,6 +842,26 @@ class RetrievalStateBuilder:
                         merged_extras.append(item)
         if merged_extras:
             retrieved = retrieved + merged_extras
+
+        focused_queries = self._build_format_focused_queries(query_interpretation_dict)
+        if focused_queries:
+            for focused_query in focused_queries:
+                focused_vector = deps.embedder.encode(focused_query)
+                focused_items = deps.retriever.search_rrf(
+                    focused_query,
+                    focused_vector,
+                    index_items,
+                    rrf_k=rrf_k,
+                    target_versions=effective_target_versions,
+                    keyword_query=focused_query,
+                    dense_weight=float(retrieval_profile["dense_rrf_weight"]),
+                    sparse_weight=float(retrieval_profile["sparse_rrf_weight"]),
+                )
+                for item in focused_items:
+                    cid = item["chunk"]["chunk_id"]
+                    if cid not in seen_chunk_ids:
+                        seen_chunk_ids.add(cid)
+                        retrieved.append(item)
 
         for index, item in enumerate(retrieved[:5]):
             chunk = item["chunk"]
@@ -613,17 +891,21 @@ class RetrievalStateBuilder:
                     seen_ids.add(cid)
                     extended.append(item)
             extended.sort(key=lambda item: item.get("retrieval_score", item.get("rerank_score", 0)), reverse=True)
-            rerank_limit = 20
+            rerank_limit = int(retrieval_profile["rerank_limit"])
             if policy.turn_type == "document_followup" and document_group_preference != "mixed":
-                rerank_limit = 4
+                rerank_limit = min(rerank_limit, 3)
             extended = extended[:rerank_limit]
-            if self._should_skip_reranker(policy, document_group_preference, source_filter_strategy, retrieved):
+            lowered_intent = str(query_interpretation_dict.get("intent") or "").casefold()
+            should_skip_cross_encoder = bool(retrieval_profile["skip_cross_encoder"]) or lowered_intent in {"yaml_example", "cli_example", "code_example"}
+            if should_skip_cross_encoder or self._should_skip_reranker(policy, document_group_preference, source_filter_strategy, retrieved):
                 logger.info(
-                    "[Retrieval] skip_reranker turn_type=%s document_group=%s source_strategy=%s top_score=%.4f",
+                    "[Retrieval] skip_reranker turn_type=%s intent=%s document_group=%s source_strategy=%s top_score=%.4f profile=%s",
                     policy.turn_type,
+                    lowered_intent,
                     document_group_preference,
                     source_filter_strategy,
                     float(retrieved[0].get("retrieval_score", retrieved[0].get("rerank_score", 0.0))),
+                    retrieval_profile,
                 )
                 retrieved = extended
             else:
@@ -680,11 +962,29 @@ class RetrievalStateBuilder:
             selected_context_items,
             query_interpretation_dict,
         )
+        selected_context_limit = min(max(int(deps.settings.grounded_chunk_top_n), 1), 3)
         selected_context_items = deps.retrieval_service.rebalance_context_items_by_document_group(
             selected_context_items,
             query_interpretation_dict.get("document_group_preference"),
-            limit=max(int(deps.settings.grounded_chunk_top_n), 1),
+            limit=selected_context_limit,
         )
+        procedure_token_matches = self._select_procedure_token_matches(
+            ordered_context_items,
+            user_message=user_message,
+            query_interpretation=query_interpretation_dict,
+            limit=selected_context_limit,
+        )
+        if procedure_token_matches:
+            selected_context_items = procedure_token_matches
+        elif self._strong_query_tokens_for_code(user_message, query_interpretation_dict):
+            strong_token_fallback = self._select_procedure_token_matches(
+                index_items_all,
+                user_message=user_message,
+                query_interpretation=query_interpretation_dict,
+                limit=selected_context_limit,
+            )
+            if strong_token_fallback:
+                selected_context_items = strong_token_fallback
         if not selected_context_items and str(query_interpretation["response_shape"] or "").casefold() == "code":
             fallback_code_items = deps.find_fallback_code_context_items(
                 user_message,
@@ -693,8 +993,8 @@ class RetrievalStateBuilder:
                 topic_state,
             )
             if fallback_code_items:
-                selected_context_items = fallback_code_items
-                ordered_context_items = fallback_code_items
+                selected_context_items = fallback_code_items[:selected_context_limit]
+                ordered_context_items = fallback_code_items[:selected_context_limit]
                 grounded_pages = deps.retrieval_service.aggregate_page_grounding(fallback_code_items)
                 top_score = max(
                     top_score,
@@ -729,6 +1029,11 @@ class RetrievalStateBuilder:
             "query_interpretation": query_interpretation_dict,
             "doc_type": doc_type or "",
             "no_doc_type_docs": no_doc_type_docs,
+            "index_load_strategy": index_load_strategy,
+            "source_filter_strategy": source_filter_strategy,
+            "index_items_loaded": len(index_items_all),
+            "index_items_filtered": len(index_items),
+            "candidate_pool_size": len(base_rrf_pool),
         }
 
     @staticmethod

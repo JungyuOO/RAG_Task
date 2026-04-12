@@ -43,6 +43,8 @@ class HybridRetriever:
         target_versions: list | None = None,
         version_map: dict | None = None,
         keyword_query: str | None = None,
+        dense_weight: float = 1.0,
+        sparse_weight: float = 1.0,
     ) -> list[dict]:
         """Fuse dense and sparse ranks with RRF, then apply overlap rerank.
 
@@ -139,8 +141,8 @@ class HybridRetriever:
             dense_score = item_scores[idx][1]
             sparse_score = item_scores[idx][2]
             rrf_score = (
-                1.0 / (rrf_k + dense_rank[idx])
-                + 1.0 / (rrf_k + sparse_rank[idx])
+                float(dense_weight) / (rrf_k + dense_rank[idx])
+                + float(sparse_weight) / (rrf_k + sparse_rank[idx])
             )
             rrf_scored.append(
                 {

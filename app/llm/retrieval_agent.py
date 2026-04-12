@@ -73,10 +73,13 @@ class RetrievalAgent(BaseAgent):
     )
     RESOURCE_CANONICALS = (
         "pod",
+        "namespace",
+        "project",
         "deployment",
         "service",
         "route",
         "ingress",
+        "storageclass",
         "node",
         "configmap",
         "secret",
@@ -89,6 +92,7 @@ class RetrievalAgent(BaseAgent):
         "설명",
         "정의",
         "개념",
+        "관계",
         "무엇",
         "뭐야",
         "대해",
@@ -122,6 +126,27 @@ class RetrievalAgent(BaseAgent):
         "우리 코드",
         "고객사 코드",
     )
+    CLI_HINT_MARKERS = (
+        "명령어",
+        "커맨드",
+        "command",
+        "cli",
+        "kubectl",
+        "oc ",
+        "사용법",
+        "어떻게 써",
+        "어떻게 사용",
+        "어떤 명령",
+    )
+    GENERIC_CLI_ANCHORS = ("oc", "cli", "command", "example")
+    GENERIC_YAML_ANCHORS = ("yaml", "manifest", "oc", "example")
+    GENERIC_COMMAND_TOKENS = {
+        "pod", "pods", "namespace", "project", "projects", "yaml", "manifest", "cli", "command", "commands",
+        "명령어", "커맨드", "확인", "봐", "보여", "보려면", "뭐야", "무슨", "어떤", "상태", "현재", "결과",
+        "그거", "그", "그쪽", "해당", "이거", "this", "that", "those", "it",
+        "show", "list", "get", "status", "resource", "resources", "oc", "kubectl",
+    }
+    GENERIC_COMMAND_PREFIXES = ("확인", "보려", "명령", "커맨", "상태", "결과", "현재", "어떤", "무슨")
 
     def __init__(self, llm_client) -> None:
         super().__init__(llm_client, system_prompt=RETRIEVAL_SYSTEM_PROMPT)
@@ -204,6 +229,12 @@ class RetrievalAgent(BaseAgent):
                 or topic_state.get("active_document_group")
                 or "auto"
             )
+        generic_command_query = self._is_generic_command_query(
+            normalized_message,
+            normalized_keywords=normalized_keywords,
+            resources=resources,
+            format_constraints=format_constraints,
+        )
 
         return {
             "intent": intent,
@@ -216,7 +247,37 @@ class RetrievalAgent(BaseAgent):
             "response_shape": response_shape,
             "normalized_keywords": normalized_keywords,
             "needs_multiturn_state": needs_multiturn_state,
+            "generic_command_query": generic_command_query,
         }
+
+    def _is_generic_command_query(
+        self,
+        normalized_message: str,
+        *,
+        normalized_keywords: list[str],
+        resources: list[str],
+        format_constraints: list[str],
+    ) -> bool:
+        if not ({"cli", "yaml"} & {value.casefold() for value in format_constraints}):
+            return False
+        resource_tokens = {resource.casefold() for resource in resources if resource}
+        resource_tokens.update({f"{resource}s" for resource in list(resource_tokens)})
+        lowered = normalized_message.casefold()
+        if any(marker in lowered for marker in ("pandas", "cert-manager", "workshop", "operator", "openshift-")):
+            return False
+        meaningful = []
+        for token in normalized_keywords:
+            normalized = str(token).casefold().strip()
+            if not normalized or len(normalized) < 2:
+                continue
+            if (
+                normalized in self.GENERIC_COMMAND_TOKENS
+                or normalized in resource_tokens
+                or any(normalized.startswith(prefix) for prefix in self.GENERIC_COMMAND_PREFIXES)
+            ):
+                continue
+            meaningful.append(normalized)
+        return not meaningful
 
     def _should_use_fast_path(self, normalized_message: str, intent_result: dict) -> bool:
         if str(intent_result.get("intent", "")).casefold() != "rag":
@@ -225,14 +286,11 @@ class RetrievalAgent(BaseAgent):
         compare_requested = any(marker in lowered for marker in self.COMPARE_MARKERS)
         wants_official = self._mentions_official_doc(lowered)
         wants_customer = self._mentions_customer_doc(lowered)
-        if self._detect_multi_source(lowered) and not (compare_requested and wants_official and wants_customer):
-            return False
         if compare_requested and not (wants_official and wants_customer):
             return False
-        if self._extract_resources(normalized_message):
-            return True
-        explain_markers = ("설명", "정의", "개념", "무엇", "뭐야", "what", "explain", "overview")
-        return any(marker in lowered for marker in explain_markers) or (compare_requested and wants_official and wants_customer)
+        if self._detect_multi_source(lowered) and wants_official and wants_customer:
+            return False
+        return True
 
     def _fast_path_expand(self, normalized_message: str, available_sources: list) -> dict:
         keywords = normalize_query_keywords(normalized_message)
@@ -243,7 +301,14 @@ class RetrievalAgent(BaseAgent):
         format_constraints = self._extract_format_constraints(normalized_message)
         response_shape = self._fallback_response_shape(format_constraints, actions)
         search_terms = [keyword for keyword in keywords if keyword not in self.SEARCH_STOPWORDS]
-        expanded_query = " ".join(search_terms[:8]) if search_terms else normalized_message
+        intent_anchors = self._build_intent_anchors(
+            normalized_message,
+            resources=resources,
+            format_constraints=format_constraints,
+            normalized_keywords=keywords,
+        )
+        expanded_terms = search_terms[:8] + [anchor for anchor in intent_anchors if anchor not in search_terms]
+        expanded_query = " ".join(expanded_terms).strip() if expanded_terms else normalized_message
         translated_keywords = [keyword for keyword in keywords if keyword.isascii()][:4]
         lowered = normalized_message.casefold()
         multi_source = self._detect_multi_source(normalized_message) or (
@@ -263,18 +328,62 @@ class RetrievalAgent(BaseAgent):
             "response_shape": response_shape,
         }
 
+    def _build_intent_anchors(
+        self,
+        normalized_message: str,
+        *,
+        resources: list[str],
+        format_constraints: list[str],
+        normalized_keywords: list[str],
+    ) -> list[str]:
+        lowered = normalized_message.casefold()
+        anchors: list[str] = []
+
+        def _append(values: tuple[str, ...]) -> None:
+            for value in values:
+                if value not in anchors:
+                    anchors.append(value)
+
+        if "cli" in format_constraints or "yaml" in format_constraints:
+            _append(self.GENERIC_CLI_ANCHORS)
+            if resources:
+                _append(tuple(f"{resource}s" for resource in resources if resource))
+            if "namespace" in lowered or "project" in lowered or "네임스페이스" in lowered or "프로젝트" in lowered:
+                _append(("namespace", "project"))
+            if "yaml" in format_constraints:
+                _append(self.GENERIC_YAML_ANCHORS)
+                _append(("-o", "yaml"))
+            custom_keywords = [
+                keyword
+                for keyword in normalized_keywords
+                if len(keyword) >= 3 and keyword not in self.SEARCH_STOPWORDS and keyword not in {"yaml", "namespace", "project"}
+            ]
+            if custom_keywords and not resources:
+                _append(("oc", "get"))
+        return anchors
+
     def _extract_resources(self, normalized_message: str) -> list[str]:
         lowered = normalized_message.casefold()
         resources: list[str] = []
         for canonical in self.RESOURCE_CANONICALS:
             if canonical in lowered and canonical not in resources:
                 resources.append(canonical)
+        if "네임스페이스" in lowered and "namespace" not in resources:
+            resources.append("namespace")
+        if "프로젝트" in lowered and "project" not in resources:
+            resources.append("project")
         if "배포" in lowered and "deployment" not in resources:
             resources.append("deployment")
         if any(marker in lowered for marker in ("연결", "selector", "내부 접근", "연결 구조", "리소스 연결", "서비스 연결")) and "service" not in resources:
             resources.append("service")
         if any(marker in lowered for marker in ("노출", "route", "외부 접근", "연결 구조", "리소스 연결", "외부 노출")) and "route" not in resources:
             resources.append("route")
+        if any(marker in lowered for marker in ("storageclass", "storage class", "스토리지클래스", "스토리지 클래스")) and "storageclass" not in resources:
+            resources.append("storageclass")
+        if any(marker in lowered for marker in ("pv", "persistentvolume", "퍼시스턴트볼륨")) and "pv" not in resources:
+            resources.append("pv")
+        if any(marker in lowered for marker in ("pvc", "persistentvolumeclaim", "퍼시스턴트볼륨클레임")) and "pvc" not in resources:
+            resources.append("pvc")
         return resources
 
     @staticmethod
@@ -295,23 +404,38 @@ class RetrievalAgent(BaseAgent):
         formats: list[str] = []
         if "yaml" in lowered or "manifest" in lowered:
             formats.append("yaml")
-        if "cli" in lowered or "command" in lowered or "명령어" in lowered:
+        resource_mentions = any(canonical in lowered for canonical in RetrievalAgent.RESOURCE_CANONICALS)
+        cli_syntax_hint = bool(re.search(r"\b(?:oc|kubectl)\b", lowered))
+        cli_usage_hint = any(marker in lowered for marker in RetrievalAgent.CLI_HINT_MARKERS)
+        if "cli" in lowered or "command" in lowered or "명령어" in lowered or cli_syntax_hint or cli_usage_hint:
+            formats.append("cli")
+        elif resource_mentions and any(marker in lowered for marker in ("어떻게", "사용", "써", "치면", "입력")):
             formats.append("cli")
         if "table" in lowered or "표" in lowered:
             formats.append("table")
         return formats
 
     def _detect_versions(self, text: str, available_sources: list) -> list[str]:
+        del available_sources
         versions = set(re.findall(r"\b(\d+\.\d+)\b", text or ""))
-        if versions:
-            return sorted(versions)
-        source_versions = []
-        for item in available_sources or []:
-            if isinstance(item, dict):
-                version = str(item.get("version", "") or "").strip()
-                if version:
-                    source_versions.append(version)
-        return sorted(set(source_versions))[:1] if source_versions else []
+        return sorted(versions)
+
+    @staticmethod
+    def _sanitize_target_versions(values: list[str] | None) -> list[str]:
+        sanitized: list[str] = []
+        for value in values or []:
+            text = str(value).strip()
+            if re.fullmatch(r"\d+\.\d+", text) and text not in sanitized:
+                sanitized.append(text)
+        return sanitized
+
+    def _sanitize_resources(self, values: list[str] | None) -> list[str]:
+        sanitized: list[str] = []
+        for value in values or []:
+            text = str(value).strip().lower()
+            if text in self.RESOURCE_CANONICALS and text not in sanitized:
+                sanitized.append(text)
+        return sanitized
 
     def _detect_multi_source(self, text: str) -> bool:
         normalized = (text or "").lower()
@@ -344,7 +468,7 @@ class RetrievalAgent(BaseAgent):
             return "official_ocp"
         if prior_group in {"official_ocp", "customer_generated"} and self._has_followup_reference(lowered):
             return prior_group
-        return "auto"
+        return "official_ocp"
 
     def _mentions_official_doc(self, lowered: str) -> bool:
         return any(marker in lowered for marker in self.OFFICIAL_DOC_MARKERS) or (
@@ -361,6 +485,44 @@ class RetrievalAgent(BaseAgent):
 
     def _has_followup_reference(self, lowered: str) -> bool:
         return any(marker in lowered for marker in self.FOLLOWUP_REFERENCE_MARKERS)
+
+    def _mentions_official_doc(self, lowered: str) -> bool:
+        explicit_markers = (
+            "공식 문서",
+            "공식 docs",
+            "official docs",
+            "official document",
+            "official doc",
+            "red hat docs",
+            "redhat docs",
+            "레드햇 공식 문서",
+            "ocp 공식 문서",
+            "ocp 문서",
+            "공식 가이드",
+        )
+        return any(marker in lowered for marker in explicit_markers) or (
+            "공식" in lowered and any(token in lowered for token in ("문서", "가이드", "기준", "설명"))
+        )
+
+    def _mentions_customer_doc(self, lowered: str) -> bool:
+        explicit_markers = (
+            "고객사",
+            "고객 문서",
+            "고객사 문서",
+            "고객사 메뉴얼",
+            "고객사 매뉴얼",
+            "우리 매뉴얼",
+            "우리 메뉴얼",
+            "운영 매뉴얼",
+            "운영 메뉴얼",
+            "내부 문서",
+            "내부 가이드",
+            "사내 문서",
+            "사내 가이드",
+            "customer guide",
+            "customer manual",
+        )
+        return any(marker in lowered for marker in explicit_markers)
 
     def _inherit_resources_from_topic(self, normalized_message: str, normalized_keywords: list[str], topic_state: dict) -> list[str]:
         if not (topic_state.get("last_explicit_resources") or topic_state.get("last_code_resource_kind") or (topic_state.get("last_example_anchor") or {}).get("resource_kind")):

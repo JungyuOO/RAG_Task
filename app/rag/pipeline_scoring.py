@@ -57,10 +57,17 @@ class PipelineRetrievalMixin:
         ce_score: float,
         metadata_component: float,
         anchor_score: float,
+        query_interpretation: dict | None = None,
     ) -> float:
+        query_interpretation = query_interpretation or {}
+        intent = _qi_str(query_interpretation, "intent")
         ce_weight = float(getattr(self.settings, "retrieval_final_ce_weight", 0.65))
         metadata_weight = float(getattr(self.settings, "retrieval_final_metadata_weight", 0.25))
         anchor_weight = float(getattr(self.settings, "retrieval_final_anchor_weight", 0.10))
+        if intent in {"yaml_example", "cli_example", "code_example"} or _qi_str(query_interpretation, "response_shape") == "code":
+            ce_weight = 0.50
+            metadata_weight = 0.35
+            anchor_weight = 0.15
         weight_sum = ce_weight + metadata_weight + anchor_weight
         if weight_sum <= 0:
             return self._clamp_unit(ce_score)
@@ -83,6 +90,13 @@ class PipelineRetrievalMixin:
         code_language = str(metadata.get("code_language", "")).casefold()
         code_subtype = str(metadata.get("code_subtype", "")).casefold()
         code_signals = {str(signal).casefold() for signal in metadata.get("code_signals", []) or []}
+        block_code_languages = {str(value).casefold() for value in metadata.get("block_code_languages", []) or []}
+        block_code_resource_kinds = {str(value).casefold() for value in metadata.get("block_code_resource_kinds", []) or []}
+        table_headers = {str(value).casefold() for value in metadata.get("table_headers", []) or []}
+        list_item_count = int(metadata.get("list_item_count") or 0)
+        table_row_count = int(metadata.get("table_row_count") or 0)
+        table_column_count = int(metadata.get("table_column_count") or 0)
+        has_cli_block = bool(metadata.get("has_cli_block"))
         is_toc = bool(metadata.get("is_toc"))
         is_intro = bool(metadata.get("is_intro"))
         is_overview = bool(metadata.get("is_overview"))
@@ -102,6 +116,12 @@ class PipelineRetrievalMixin:
         format_constraints = _qi_set(query_interpretation, "format_constraints")
         response_shape = _qi_str(query_interpretation, "response_shape")
         intent = _qi_str(query_interpretation, "intent")
+        is_code_request = (
+            intent in {"yaml_example", "cli_example", "code_example"}
+            or response_shape == "code"
+            or bool(format_constraints & {"yaml", "cli"})
+        )
+        generic_command_query = bool(query_interpretation.get("generic_command_query"))
         normalized_user = normalize_text(user_message).casefold()
         asks_for_toc = any(marker in normalized_user for marker in ("목차", "contents", "table of contents", "섹션", "절"))
         asks_for_overview = any(marker in normalized_user for marker in ("개요", "소개", "overview", "introduction", "주제", "설명"))
@@ -119,6 +139,9 @@ class PipelineRetrievalMixin:
                 if resource == explicit_resource_kind:
                     matched_resources += 1
                     resource_score += 1.0
+                elif resource in block_code_resource_kinds:
+                    matched_resources += 1
+                    resource_score += 0.95
                 elif resource in code_signals:
                     matched_resources += 1
                     resource_score += 0.9
@@ -168,6 +191,8 @@ class PipelineRetrievalMixin:
             action_score += 0.5
         if "explain" in actions and "code" not in block_types:
             action_score += 0.25
+        if intent == "procedure_followup" and list_item_count >= 2:
+            action_score += 0.25
         if is_toc and not asks_for_toc:
             action_score -= 1.0
         if is_intro and response_shape == "code":
@@ -180,6 +205,8 @@ class PipelineRetrievalMixin:
         if "yaml" in format_constraints:
             if code_language in {"yaml", "yml"}:
                 format_score += 1.2
+            if block_code_languages & {"yaml", "yml"}:
+                format_score += 0.8
             if code_subtype == "k8s_manifest":
                 format_score += 0.9
             if is_toc or is_intro or is_overview:
@@ -189,16 +216,24 @@ class PipelineRetrievalMixin:
                 format_score += 1.1
             if code_language in {"bash", "sh", "shell"}:
                 format_score += 0.8
+            if has_cli_block or (block_code_languages & {"bash", "sh", "shell"}):
+                format_score += 0.55
             if is_toc or is_intro or is_overview:
                 format_score -= 0.45
         if "table" in format_constraints and "table" in block_types:
             format_score += 1.0
+        if "table" in format_constraints and table_headers:
+            header_overlap = len(query_tokens & table_headers)
+            if header_overlap:
+                format_score += min(header_overlap * 0.18, 0.54)
 
         if response_shape == "code":
             if "code" in block_types:
                 shape_score += 0.75
             elif "table" in block_types:
                 shape_score -= 0.15
+            if block_code_languages or has_cli_block:
+                shape_score += 0.20
             if is_toc or is_intro or is_overview:
                 shape_score -= 0.45
         elif response_shape == "table":
@@ -206,6 +241,11 @@ class PipelineRetrievalMixin:
                 shape_score += 0.75
             elif "code" in block_types:
                 shape_score -= 0.2
+            if table_row_count > 0 and table_column_count > 0:
+                shape_score += 0.20
+        elif response_shape == "procedure":
+            if list_item_count >= 2:
+                shape_score += 0.35
         elif response_shape in {"text", "comparison"} and "code" in block_types:
             shape_score -= 0.15
         if is_toc and not asks_for_toc:
@@ -221,6 +261,29 @@ class PipelineRetrievalMixin:
                 lexical_score += 0.12
             if token_casefold in source_name:
                 source_score += 0.18
+
+        strong_query_tokens = {
+            token.casefold()
+            for token in query_tokens
+            if len(token) >= 4 and token.casefold() not in {"namespace", "project", "status", "command"}
+        }
+        structure_text_lower = " ".join(
+            [
+                str(metadata.get("section_title", "") or "").casefold(),
+                str(metadata.get("section_path", "") or "").casefold(),
+                " ".join(str(value).casefold() for value in metadata.get("parent_headings", []) or []),
+            ]
+        )
+        strong_token_hits = sum(
+            1 for token in strong_query_tokens
+            if token in lowered_text or token in structure_text_lower
+        )
+        if strong_token_hits:
+            lexical_score += min(strong_token_hits * 0.28, 0.84)
+            if is_procedure:
+                action_score += min(strong_token_hits * 0.12, 0.24)
+        elif strong_query_tokens and (has_cli_block or explicit_resource_kind or is_procedure):
+            source_score -= 0.22
 
         source_name_tokens = {
             token
@@ -245,7 +308,28 @@ class PipelineRetrievalMixin:
         if section_overlap:
             source_score += min(section_overlap * 0.14, 0.56)
 
-        if intent in {"yaml_example", "cli_example", "code_example"} and "code" in block_types:
+        if generic_command_query:
+            if source_name == "cli_tools.md":
+                source_score += 0.90
+            if any(token in query_tokens for token in {"namespace", "project"}):
+                if "oc project" in lowered_text or "oc projects" in lowered_text:
+                    format_score += 0.80
+                if "deployment" in lowered_text and "project" not in lowered_text and "namespace" not in lowered_text:
+                    source_score -= 0.40
+            if any(token in query_tokens for token in {"pod"}):
+                if re.search(r"\boc get pods?\b(?!.*(?:-l|--selector|jsonpath|grep|jq))", lowered_text):
+                    format_score += 0.65
+                if "-o yaml" in lowered_text and "yaml" not in query_tokens:
+                    format_score -= 0.30
+            if "yaml" in query_tokens:
+                if "-o yaml" in lowered_text or "oc describe pod" in lowered_text:
+                    format_score += 0.70
+                if "oc create -f" in lowered_text or "oc apply -f" in lowered_text:
+                    format_score -= 0.45
+            if any(marker in lowered_text for marker in ("-l ", "--selector", "jsonpath", "app.kubernetes.io", "cert-manager", "workshop")):
+                source_score -= 0.40
+
+        if is_code_request and "code" in block_types:
             shape_score += 0.25
         if "code" in block_types:
             completeness_score += self._code_completeness_score(lowered_text)
@@ -261,6 +345,11 @@ class PipelineRetrievalMixin:
 
         metadata_score = heading_score + resource_score + action_score + format_score + shape_score + lexical_score + completeness_score + explain_focus_bonus + group_score + source_score
         ce_score = float(item.get("ce_score", item.get("rerank_score", 0.0)))
+        dense_score = self._clamp_unit(float(item.get("dense_score", 0.0)))
+        sparse_score = self._clamp_unit(float(item.get("sparse_score", 0.0)))
+        if is_code_request:
+            command_dense_prior = self._clamp_unit(dense_score * 0.80 + sparse_score * 0.05)
+            ce_score = max(ce_score, command_dense_prior)
         structure_text = " ".join(
             [
                 str(metadata.get("section_title", "") or ""),
@@ -281,6 +370,7 @@ class PipelineRetrievalMixin:
             ce_score=ce_score,
             metadata_component=metadata_component,
             anchor_score=anchor_score,
+            query_interpretation=query_interpretation,
         )
         return {
             "ce_score": ce_score,
@@ -356,9 +446,12 @@ class PipelineRetrievalMixin:
         text = str(item["chunk"].get("text", "") or "")
         if not text.strip():
             return False
-        return len(self.answer_service._extract_code_candidates(text)) > 0
+        if len(self.answer_service._extract_code_candidates(text)) > 0:
+            return True
+        return len(self.answer_service._extract_command_candidates(text)) > 0
 
     def _select_code_example_context_items(self, user_message: str, query_interpretation: dict | None, ordered_context_items: list[dict], selected_context_items: list[dict]) -> list[dict]:
+        query_interpretation = query_interpretation or {}
         candidates = ordered_context_items or selected_context_items
         code_candidates = self._prefer_block_type_items(candidates, block_type="code", limit=None)
         if not code_candidates:
@@ -367,7 +460,8 @@ class PipelineRetrievalMixin:
             return selected_context_items
 
         requested_resource_kinds = self._resolve_requested_resource_kinds(query_interpretation)
-        if requested_resource_kinds:
+        generic_command_query = bool(query_interpretation.get("generic_command_query"))
+        if requested_resource_kinds and not generic_command_query:
             explicit_kind_matches = [item for item in code_candidates if self._extract_explicit_resource_kind(item) in requested_resource_kinds]
             if explicit_kind_matches:
                 code_candidates = explicit_kind_matches
@@ -377,7 +471,7 @@ class PipelineRetrievalMixin:
 
         rescored = self._metadata_aware_rerank(user_message, query_interpretation, code_candidates)
         has_positive_match = any(item.get("resource_match_score", 0) > 0 for item in rescored)
-        if has_positive_match:
+        if has_positive_match and not generic_command_query:
             rescored = [item for item in rescored if item.get("resource_match_score", 0) >= 0]
         for item in rescored:
             item["code_selection_score"] = float(item.get("final_retrieval_score", 0.0))
@@ -623,6 +717,8 @@ class PipelineRetrievalMixin:
         threshold = float(getattr(self.settings, "retrieval_gate_threshold", getattr(self.settings, "retrieval_min_score", 0.25)))
         if _qi_str(query_interpretation, "intent") == "explain" and _qi_str(query_interpretation, "response_shape") in {"", "text"}:
             threshold = min(threshold, float(getattr(self.settings, "retrieval_explain_gate_threshold", threshold)))
+        if _qi_str(query_interpretation, "intent") in {"yaml_example", "cli_example", "code_example"} or _qi_str(query_interpretation, "response_shape") == "code":
+            threshold = min(threshold, 0.08)
         top_item_score = self._item_primary_score(retrieved[0])
         decision = top_item_score >= threshold
         logger.info(

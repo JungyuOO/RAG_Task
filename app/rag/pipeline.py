@@ -171,7 +171,7 @@ class PipelineContextMixin:
         if intent == "step_navigation":
             return TurnPolicyDecision("conversational_ack", "conversational", False, False, False, False)
         if intent in {"rag", "clarification"}:
-            use_memory_rewrite = resolution_type == "continue" or has_prior_context
+            use_memory_rewrite = resolution_type in {"continue", "switch_existing"}
             turn_type = "document_followup" if resolution_type == "continue" else "document_query"
             return TurnPolicyDecision(turn_type, "rag", True, use_memory_rewrite, True, True)
         return TurnPolicyDecision("general_chat", "general", False, False, False, False)
@@ -388,6 +388,7 @@ class RagPipeline(PipelineContextMixin, PipelineRetrievalMixin, PipelineRuntimeM
         self.structured_chunker = StructuredMarkdownChunker(
             chunk_size=settings.structured_chunk_size,
             overlap=settings.structured_chunk_overlap,
+            min_chunk_chars=settings.structured_chunk_min_chars,
         )
         if settings.embedding_backend == "tei":
             self.embedder = BGETEIEmbedder(

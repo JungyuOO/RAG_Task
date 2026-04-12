@@ -39,6 +39,11 @@ function bindEventListeners() {
     previewOpen = false;
     syncPreviewPanel();
   });
+  document.getElementById("openPreviewPdfBtn").addEventListener("click", () => {
+    if (window.currentPreviewFileName) {
+      openPdf(window.currentPreviewFileName);
+    }
+  });
   clearInputBtn.addEventListener("click", () => {
     messageInput.value = "";
     localStorage.removeItem(STORAGE_KEYS.draftMessage);
@@ -55,49 +60,6 @@ function bindEventListeners() {
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && pdfModal.classList.contains("open")) closePdf();
-    if (event.key === "Escape" && versionDropdown.classList.contains("open")) closeVersionDropdown();
-  });
-  const versionDropdown = document.getElementById("versionDropdown");
-  const versionToggle = document.getElementById("versionToggle");
-  const versionToggleLabel = document.getElementById("versionToggleLabel");
-
-  function closeVersionDropdown() {
-    versionDropdown.classList.remove("open");
-    versionToggle.setAttribute("aria-expanded", "false");
-  }
-
-  versionToggle.addEventListener("click", (event) => {
-    event.stopPropagation();
-    const isOpen = versionDropdown.classList.contains("open");
-    if (isOpen) {
-      closeVersionDropdown();
-    } else {
-      versionDropdown.classList.add("open");
-      versionToggle.setAttribute("aria-expanded", "true");
-    }
-  });
-
-  document.querySelectorAll(".version-menu-item").forEach((item) => {
-    item.addEventListener("click", () => {
-      document.querySelectorAll(".version-menu-item").forEach((b) => b.classList.remove("active"));
-      item.classList.add("active");
-      const version = item.dataset.version || null;
-      selectedVersion = version;
-      const label = version ? version : "전체";
-      versionToggleLabel.textContent = label;
-      if (version) {
-        versionToggle.classList.add("active");
-      } else {
-        versionToggle.classList.remove("active");
-      }
-      closeVersionDropdown();
-    });
-  });
-
-  document.addEventListener("click", (event) => {
-    if (versionDropdown && !versionDropdown.contains(event.target)) {
-      closeVersionDropdown();
-    }
   });
 }
 
@@ -122,7 +84,7 @@ async function initialize() {
     try {
       const session = await loadSession(activeSessionId);
       loadedExistingSession = Array.isArray(session.turns) && session.turns.length > 0;
-    } catch (error) {
+    } catch (_error) {
       resetChatSurface();
     }
   }

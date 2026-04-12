@@ -1,0 +1,11 @@
+{
+  "baseline": "C:\\Users\\KJungyu\\OneDrive\\Desktop\\Company\\과제\\RAG_Task\\tests\\results\\golden\\golden-run-20260412-005405.json",
+  "candidate": "C:\\Users\\KJungyu\\OneDrive\\Desktop\\Company\\과제\\RAG_Task\\tests\\results\\golden\\golden-run-20260412-005405.json",
+  "diff": {
+    "baseline_cases": 1,
+    "candidate_cases": 1,
+    "improved": 0,
+    "regressed": 0,
+    "changed_cases": []
+  }
+}

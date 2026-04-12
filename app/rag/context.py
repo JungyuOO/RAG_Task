@@ -137,7 +137,7 @@ class TurnContextResolver:
     def _looks_like_topic_continuation(self, normalized_message: str, recent_turns: list[ChatTurn]) -> bool:
         if any(marker in normalized_message for marker in self.REFERENT_MARKERS):
             return True
-        if len(normalized_message) <= 24 and recent_turns:
+        if recent_turns and len(normalized_message) <= 8 and " " not in normalized_message:
             return True
         return False
 

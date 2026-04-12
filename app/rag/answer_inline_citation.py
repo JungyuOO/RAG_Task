@@ -28,6 +28,7 @@ _EXISTING_CITATION_RE = re.compile(
     r"\[[^\[\]\n]+?\.pdf[^\[\]\n]*\]|\[source:[^\]]+\]",
     re.IGNORECASE,
 )
+_SOURCE_TAG_RE = re.compile(r"\s*\[source:([^\]]+)\]")
 
 # 본문 문장으로 취급하지 않을 라인 prefix
 _SKIP_LINE_PREFIXES = (
@@ -77,6 +78,21 @@ class InlineCitationMixin:
             out_lines.append(self._inject_into_line(raw_line, chunk_profiles))
 
         return "\n".join(out_lines)
+
+    @staticmethod
+    def collapse_single_citation_answer(answer: str) -> str:
+        source_tags = _SOURCE_TAG_RE.findall(answer or "")
+        unique_tags = []
+        for tag in source_tags:
+            if tag not in unique_tags:
+                unique_tags.append(tag)
+        if len(unique_tags) != 1:
+            return answer
+
+        stripped = _SOURCE_TAG_RE.sub("", answer or "").rstrip()
+        if stripped.endswith("```"):
+            return f"{stripped}\n\n[source:{unique_tags[0]}]"
+        return f"{stripped} [source:{unique_tags[0]}]"
 
     def _inject_into_line(self, line: str, chunk_profiles: list[dict]) -> str:
         list_match = re.match(r"^(\s*(?:[-*+]|\d+\.)\s+)(.*)$", line)

@@ -111,7 +111,9 @@ function renderSessionHistory(items) {
     card.dataset.sessionId = item.session_id;
     const title = item.last_user_message || item.title || "새 채팅";
     const timeText = formatSessionTime(item.last_user_at || item.updated_at);
-    card.innerHTML = '<div class="history-item-head"><div class="item-title">' + escapeHtml(title) + '</div><button class="history-delete" type="button" title="세션 삭제">x</button></div><div class="item-meta">' + escapeHtml(timeText || "시간 정보 없음") + '</div>';
+    card.innerHTML =
+      '<div class="history-item-head"><div class="item-title">' + escapeHtml(title) + '</div><button class="history-delete" type="button" title="세션 삭제">×</button></div>' +
+      '<div class="item-meta">' + escapeHtml(timeText || "시간 정보 없음") + '</div>';
     card.addEventListener("click", () => loadSession(item.session_id));
     card.querySelector(".history-delete").addEventListener("click", (event) => {
       event.stopPropagation();

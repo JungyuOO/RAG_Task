@@ -10,7 +10,7 @@ class StatusBar {
 
   _render() {
     if (!this.container) return;
-    const currentMessage = this.stages.length > 0 ? this.stages[this.stages.length - 1].message : "처리중...";
+    const currentMessage = this.stages.length > 0 ? this.stages[this.stages.length - 1].message : "처리 중입니다.";
     this.container.innerHTML = `
       <div class="status-bar-shell">
         <button class="status-header" type="button">
