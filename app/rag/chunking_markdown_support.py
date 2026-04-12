@@ -4,7 +4,7 @@ import re
 
 from app.rag.chunking import MarkdownBlock
 from app.rag.types import Chunk, Document
-from app.rag.utils import normalize_text, stable_hash, tokenize
+from app.rag.utils import normalize_markdown_display_text, normalize_retrieval_text, normalize_text, stable_hash, tokenize
 
 
 class StructuredMarkdownChunkerSupport:
@@ -14,9 +14,20 @@ class StructuredMarkdownChunkerSupport:
 
     def _parse_annotated_markdown_blocks(self, annotated_lines: list[tuple[str, int]]) -> list[MarkdownBlock]:
         blocks: list[MarkdownBlock] = []
+        _DOT_LEADER_RE = re.compile(r"^(?:\.\s*){6,}$")
+        _PAGE_NUMBER_RE = re.compile(r"^\d{1,4}$")
         for section in self._split_annotated_sections(annotated_lines):
-            lines = [line.strip() for line, _page in section if line.strip()]
-            pages = [page for line, page in section if line.strip()]
+            cleaned_section = [
+                (raw, page)
+                for raw, page in section
+                if raw.strip()
+                and not _DOT_LEADER_RE.match(raw.strip())
+                and not _PAGE_NUMBER_RE.match(raw.strip())
+            ]
+            if not cleaned_section:
+                continue
+            lines = [line.strip() for line, _page in cleaned_section]
+            pages = [page for _line, page in cleaned_section]
             if not lines or not pages:
                 continue
 
@@ -91,7 +102,16 @@ class StructuredMarkdownChunkerSupport:
     def _parse_markdown_blocks(self, body_text: str, page_number: int) -> list[MarkdownBlock]:
         blocks: list[MarkdownBlock] = []
         for section in self._split_markdown_sections(body_text):
-            lines = [line.strip() for line in section.splitlines() if line.strip()]
+            raw_lines = section.splitlines()
+            _DOT_LEADER_RE = re.compile(r"^(?:\.\s*){6,}$")
+            _PAGE_NUMBER_RE = re.compile(r"^\d{1,4}$")
+            lines = [
+                line.strip()
+                for line in raw_lines
+                if line.strip()
+                and not _DOT_LEADER_RE.match(line.strip())
+                and not _PAGE_NUMBER_RE.match(line.strip())
+            ]
             if not lines:
                 continue
             if len(lines) == 1 and (lines[0].startswith("#") or (len(lines[0]) <= 40 and lines[0].endswith(":"))):
@@ -254,10 +274,12 @@ class StructuredMarkdownChunkerSupport:
         return blocks
 
     def _build_chunk(self, doc_id: str, source_path: str, blocks: list[MarkdownBlock], order: int) -> Chunk:
-        chunk_text = "\n\n".join(block.text for block in blocks).strip()
+        raw_chunk_text = "\n\n".join(block.text for block in blocks).strip()
+        chunk_text = self._build_display_text(blocks)
+        retrieval_text = self._build_retrieval_text(blocks)
         page_start = blocks[0].page_start
         page_end = blocks[-1].page_end
-        chunk_id = stable_hash(f"{doc_id}:{order}:{page_start}:{page_end}:{chunk_text[:40]}")
+        chunk_id = stable_hash(f"{doc_id}:{order}:{page_start}:{page_end}:{raw_chunk_text[:40]}")
         section_path_parts = next((list(block.heading_path) for block in reversed(blocks) if block.heading_path), [])
         nearest_heading = section_path_parts[-1] if section_path_parts else ""
         metadata = {
@@ -269,6 +291,9 @@ class StructuredMarkdownChunkerSupport:
             "section_path": " > ".join(section_path_parts),
             "nearest_heading": nearest_heading,
             "parent_headings": section_path_parts[:-1],
+            "raw_text": raw_chunk_text,
+            "display_text": chunk_text,
+            "retrieval_text": retrieval_text,
         }
         metadata.update(self._infer_structure_flags(chunk_text, metadata))
         if any(block.kind == "code" for block in blocks):
@@ -278,10 +303,83 @@ class StructuredMarkdownChunkerSupport:
             doc_id=doc_id,
             source_path=source_path,
             text=chunk_text,
-            tokens=tokenize(chunk_text),
+            tokens=tokenize(retrieval_text),
             page_number=page_start if page_start == page_end else None,
             metadata=metadata,
         )
+
+    def _build_display_text(self, blocks: list[MarkdownBlock]) -> str:
+        parts = [block.text for block in blocks if str(block.text or "").strip()]
+        return self._clean_display_text(normalize_markdown_display_text("\n\n".join(parts)))
+
+    def _build_retrieval_text(self, blocks: list[MarkdownBlock]) -> str:
+        parts: list[str] = []
+        for block in blocks:
+            normalized = normalize_retrieval_text(block.text)
+            if not normalized:
+                continue
+            if block.kind == "heading":
+                parts.append(normalized)
+                continue
+            if block.kind == "list":
+                parts.append(f"steps {normalized}")
+                continue
+            if block.kind == "table":
+                parts.append(f"table {normalized}")
+                continue
+            if block.kind == "code":
+                parts.append(f"code example {normalized}")
+                continue
+            parts.append(normalized)
+        return self._clean_retrieval_text(normalize_retrieval_text("\n".join(parts)))
+
+    @staticmethod
+    def _clean_display_text(text: str) -> str:
+        lines: list[str] = []
+        in_code_block = False
+        previous_blank = False
+
+        for raw_line in str(text or "").splitlines():
+            stripped = raw_line.strip()
+            lowered = stripped.casefold()
+
+            if stripped.startswith("```"):
+                lines.append(stripped)
+                in_code_block = not in_code_block
+                previous_blank = False
+                continue
+
+            if in_code_block:
+                lines.append(raw_line.rstrip())
+                previous_blank = False
+                continue
+
+            if not stripped:
+                if lines and not previous_blank:
+                    lines.append("")
+                    previous_blank = True
+                continue
+
+            if re.fullmatch(r"(?:\.\s*){6,}", stripped):
+                continue
+            if re.fullmatch(r"\d{1,4}", stripped):
+                continue
+            if any(marker in lowered for marker in ("last updated:", "legal notice", "table of contents")):
+                continue
+
+            lines.append(stripped)
+            previous_blank = False
+
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return "\n".join(lines)
+
+    @staticmethod
+    def _clean_retrieval_text(text: str) -> str:
+        cleaned = str(text or "")
+        cleaned = re.sub(r"(?i)\b(last updated|legal notice|table of contents)\b", " ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned
 
     def _infer_structure_flags(self, text: str, metadata: dict) -> dict[str, bool]:
         normalized = text.replace("\r\n", "\n")
