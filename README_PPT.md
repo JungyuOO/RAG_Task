@@ -12,7 +12,7 @@ theme: default
 paginate: true
 size: 16:9
 header: "RAG Task — OCP 문서 기반 질의응답 시스템"
-footer: "2026-04-13 · 정유"
+footer: "2026-04-13 · 김준규"
 ---
 
 <!-- _class: lead -->
@@ -22,7 +22,7 @@ footer: "2026-04-13 · 정유"
 
 프레임워크 없이 직접 구현한 Retrieval-Augmented Generation
 
-`2026-04-13` · 발표자: **정유**
+`2026-04-13` · 발표자: **김준규**
 
 ---
 
@@ -44,9 +44,40 @@ footer: "2026-04-13 · 정유"
 
 ---
 
+## 2-a. 구축 의도 — Why a Custom RAG?
+
+> **"OpenShift Lightspeed의 가치를, 폐쇄망 보안 등급으로."**
+
+- **레퍼런스**: Red Hat **OpenShift Lightspeed (OLS)** — 자연어로 OCP 질문에 답하는 AI 어시스턴트
+- **그러나 공공·금융 등급 환경에는 그대로 도입할 수 없음**
+  - 외부 LLM(OpenAI 등) 호출 → **망분리 위반**
+  - 질의·로그 외부 전송 → **데이터 주권 침해**
+  - Red Hat 관리형 SaaS → **내부 매뉴얼 통합·감사·튜닝 한계**
+- **결론**: 같은 효용을 **100% 폐쇄망에서 자체 운영**하도록 다시 설계 → **본 시스템**
+
+---
+
+## 2-b. OpenShift Lightspeed 대비 차별성
+
+| 구분 | OpenShift Lightspeed | **본 시스템** |
+| --- | --- | --- |
+| **운영 환경** | 외부 LLM / SaaS 의존 | **완전 폐쇄망** — 사내 vLLM · BGE-M3 · PostgreSQL |
+| **데이터 주권** | 외부 트래픽 발생 | **외부 트래픽 0** — 모든 로그 기관 내부 잔존 |
+| **모델 종속성** | Red Hat 지정 모델 | **모델 교체 자유** — Qwen / Llama / 사내 sLLM |
+| **문서 범위** | Red Hat 공식 문서 위주 | **공식 문서 + 내부 운영 매뉴얼 통합 색인** |
+| **버전 관리** | 단일 버전 가정 | **OCP 버전별 색인 분리 + 자동 인식** |
+| **검색 품질** | 프레임워크 블랙박스 | **자체 Hybrid Retrieval** (Dense + BM25 + RRF + Cross-Encoder) |
+| **멀티턴** | 단발 Q&A 중심 | **topic state · step cursor 기반 후속 질문 복원** |
+| **검증성** | 출처 표시 제한적 | **문장 단위 인용 + 페이지 미리보기** → 감사 대응 가능 |
+| **클러스터 연동** | 문서 답변 위주 | **OCP API Live + Mixed 모드** ("문서 기준" + "현재 cluster 기준") |
+| **배포 · 인수** | Red Hat 종속 패키지 | **Docker Compose 한 줄 + 코드 100% 공개** → 운영팀 직접 인수 가능 |
+
+> **"프레임워크 의존 없이 직접 구현 — 그래서 폐쇄망 안에서 끝까지 책임질 수 있습니다."**
+
+---
+
 ## 3. 아키텍처 한눈에 보기
 
-<!-- 아래 mermaid 를 이미지로 export 후 경로 교체 -->
 <p align="center">
   <img src="docs/images/pipeline.png" alt="RAG Pipeline" width="820"/>
 </p>
@@ -186,8 +217,38 @@ flowchart TB
 - ✅ `answer_route = "mixed_doc_ocp"` 플래그가 payload 에 부착
 
 ---
+## 9. 시연 ④ — 고객사 문서 업로드 (Custom Onboarding)
 
-## 9. 로컬 설치
+### 🎯 상황
+신규 고객사가 자사 **내부 운영 매뉴얼 PDF** 를 시스템에 직접 올리고, 곧바로 질의응답에 활용하는 시나리오.
+
+### 🎯 목표
+- 웹 UI 에서 PDF 업로드 → **자동 색인 파이프라인** (extract → chunk → embed → store) 가 한 번에 동작.
+- 색인 진행 상태가 **SSE 로 실시간 노출**되고, 완료 즉시 새 문서 기반 답변 가능.
+- 별도 재배포·재시작 없이 **문서 라이브러리 hot-reload**.
+
+### 💬 시연 흐름 (5 step)
+1. `Library` 탭 → **PDF 업로드** 버튼 → 고객사 운영 매뉴얼 선택
+2. 진행 상태 `extracting → chunking → embedding → indexed` 단계별 표시
+3. 라이브러리 패널에 신규 문서가 **페이지 수 · chunk 수** 와 함께 등록되는 것 확인
+4. 채팅창에서 **신규 문서 한정 질문** 입력 → 인용 출처가 방금 올린 PDF 로 표시
+5. 이어서 **기존 OCP 매뉴얼 질문** → 기존/신규 문서 **동시 검색**까지 검증
+
+---
+
+## 9-a. 시연 ④ — 확인 포인트
+
+- ✅ 업로드 즉시 `task_id` 발급, SSE 로 단계별 progress 스트리밍
+- ✅ `IndexingService` 가 PyMuPDF 추출 → 헤딩 기반 청킹 → BGE-M3 임베딩 → PostgreSQL 저장
+- ✅ **인덱스 hot-reload**: 색인 완료 직후 다음 질문부터 신규 chunk 가 후보군에 포함
+- ✅ 인용 출처에 **신규 문서명 + 페이지 번호** 노출, preview 패널에서 원문 즉시 확인
+- ✅ 기존 OCP 색인과 **충돌 없이 공존** — `version_tag` 단위로 분리 저장
+- ✅ 추출 실패 PDF (스캔본 등) 는 **명시적 에러 메시지** + 부분 색인 방지
+- ✅ 운영자가 **재배포 없이** 고객사별 매뉴얼을 셀프서비스로 추가 가능
+
+---
+
+## 10. 로컬 설치
 
 ```bash
 # 1) 환경 변수 준비
@@ -208,7 +269,7 @@ docker compose up --build -d
 
 ---
 
-## 10. 기술적 하이라이트
+## 11. 기술적 하이라이트
 
 - **프레임워크 zero** — 색인 · 검색 · 리랭킹 · 세션 · 멀티턴 로직 전부 직접 구현.
 - **3-signal hybrid retrieval** — dense cosine + BM25 + RRF 융합 후 Cross-Encoder 재정렬.
@@ -219,7 +280,7 @@ docker compose up --build -d
 
 ---
 
-## 11. 로드맵
+## 12. 로드맵
 
 - 테스트 데이터 기반 **검색 가중치 자동 튜닝**
 - **Tokenizer-aware chunk sizing** (모델 입력 길이 직접 반영)
@@ -237,5 +298,4 @@ docker compose up --build -d
 **질문 환영합니다.**
 
 - 📖 상세 문서: [`README.md`](./README.md)
-- 🏗️ 아키텍처: [`DESIGN.md`](./DESIGN.md)
 - 💻 Repo: `RAG_Task`
