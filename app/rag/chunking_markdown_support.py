@@ -315,6 +315,13 @@ class StructuredMarkdownChunkerSupport:
 
     def _build_retrieval_text(self, blocks: list[MarkdownBlock]) -> str:
         parts: list[str] = []
+        heading_path: tuple[str, ...] = ()
+        for block in reversed(blocks):
+            if block.heading_path:
+                heading_path = block.heading_path
+                break
+        if heading_path:
+            parts.append("section: " + " > ".join(heading_path))
         for block in blocks:
             normalized = normalize_retrieval_text(block.text)
             if not normalized:
