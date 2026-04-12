@@ -388,6 +388,7 @@ class RagPipeline(PipelineContextMixin, PipelineRetrievalMixin, PipelineRuntimeM
         self.structured_chunker = StructuredMarkdownChunker(
             chunk_size=settings.structured_chunk_size,
             overlap=settings.structured_chunk_overlap,
+            min_chunk_chars=settings.structured_chunk_min_chars,
         )
         if settings.embedding_backend == "tei":
             self.embedder = BGETEIEmbedder(

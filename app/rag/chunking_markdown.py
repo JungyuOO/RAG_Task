@@ -12,9 +12,10 @@ from app.rag.utils import stable_hash
 class StructuredMarkdownChunker(StructuredMarkdownChunkerSupport):
     """마크다운 구조를 인식해 공식 문서형 콘텐츠를 의미 단위로 청킹한다."""
 
-    def __init__(self, *, chunk_size: int, overlap: int, max_block_chars: int = 2000) -> None:
+    def __init__(self, *, chunk_size: int, overlap: int, min_chunk_chars: int = 0, max_block_chars: int = 2000) -> None:
         self.chunk_size = chunk_size
         self.overlap = overlap
+        self.min_chunk_chars = min_chunk_chars
         self.max_block_chars = max_block_chars
 
     def split(self, documents: list[Document], markdown_text: str | None = None) -> list[Chunk]:
@@ -144,6 +145,7 @@ class StructuredMarkdownChunker(StructuredMarkdownChunkerSupport):
                 page_lines.append((stripped, page_number))
             page_entries.append(page_lines)
 
+        self._drop_toc_pages(page_entries)
         self._apply_page_boundary_policies(page_entries)
 
         annotated_lines: list[tuple[str, int]] = []
@@ -153,6 +155,38 @@ class StructuredMarkdownChunker(StructuredMarkdownChunkerSupport):
         if not annotated_lines:
             return []
         return self._parse_annotated_markdown_blocks(annotated_lines)
+
+    _TOC_CONTENTS_MARKERS = ("table of contents", "contents", "목차")
+    _NUMBERED_HEADING_RE = re.compile(r"^\d+(?:\.\d+){1,4}\.?\s+")
+    _DOT_LEADER_RE = re.compile(r"^(?:\.\s*){6,}$")
+    _PAGE_NUMBER_RE = re.compile(r"^\d{1,4}$")
+
+    def _drop_toc_pages(self, page_entries: list[list[tuple[str, int]]]) -> None:
+        for idx, lines in enumerate(page_entries):
+            if self._is_toc_page(lines):
+                page_entries[idx] = []
+
+    def _is_toc_page(self, lines: list[tuple[str, int]]) -> bool:
+        meaningful = [raw.strip() for raw, _page in lines if raw and raw.strip()]
+        if not meaningful:
+            return False
+
+        lowered = [line.casefold() for line in meaningful]
+        if any(marker in line for line in lowered for marker in self._TOC_CONTENTS_MARKERS):
+            return True
+
+        if any(line.startswith("```") for line in meaningful):
+            return False
+        if any(re.match(r"^\|?[\s:|\-]{3,}\|?$", line) for line in meaningful):
+            return False
+
+        numbered = sum(1 for line in meaningful if self._NUMBERED_HEADING_RE.match(line.lstrip("# ").strip()))
+        dot_leaders = sum(1 for line in meaningful if self._DOT_LEADER_RE.match(line))
+        page_numbers = sum(1 for line in meaningful if self._PAGE_NUMBER_RE.match(line))
+
+        if numbered < 2:
+            return False
+        return dot_leaders >= 1 or page_numbers >= 2
 
     def _apply_page_boundary_policies(self, page_entries: list[list[tuple[str, int]]]) -> None:
         policies = self._page_boundary_policies()

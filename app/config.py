@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     rag_cache_dir: Path
     rag_extract_dir: Path
     save_extracted_markdown: bool = True
+    save_extracted_html: bool = True
+    save_extracted_metadata: bool = True
 
     embedding_backend: str = "ollama"
 
@@ -50,7 +52,7 @@ class Settings(BaseSettings):
     tei_embedding_model: str = "bge-m3"
     tei_timeout: float = 120.0
     embedding_batch_size: int = 16
-    embedding_parallel_workers: int = 4
+    embedding_parallel_workers: int = 8
     embedding_batch_char_limit: int = 24000
     startup_auto_index_enabled: bool = False
 
@@ -59,10 +61,12 @@ class Settings(BaseSettings):
     ollama_embedding_model: str = "bge-m3"
     ollama_timeout: float = 120.0
 
-    structured_chunk_size: int = 900
-    structured_chunk_overlap: int = 120
+    structured_chunk_size: int = 1000
+    structured_chunk_overlap: int = 160
+    structured_chunk_min_chars: int = 300
     retrieval_top_k: int = 5
     candidate_pool_size: int = 15
+    pgvector_prefilter_limit: int = 0
     grounded_page_top_n: int = 5
     grounded_chunk_top_n: int = 5
     memory_window_turns: int = 12
@@ -101,6 +105,11 @@ class Settings(BaseSettings):
     db_name: str
     db_user: str
     db_password: str
+
+    ocp_api_base_url: str = ""
+    ocp_api_token: str = ""
+    ocp_api_verify_ssl: bool = True
+    ocp_default_namespace: str = ""
 
     cache_max_entries: int = 500
     cache_ttl_hours: int = 72
