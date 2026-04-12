@@ -1,0 +1,52 @@
+{
+  "dataset_version": "1.0",
+  "title": "newv1.0.1 golden dataset",
+  "case_count": 1,
+  "passed": 0,
+  "failed": 1,
+  "results": [
+    {
+      "case_id": "official-421-auth-oauth-rbac",
+      "question": "OpenShift 4.21 공식 인증 문서 기준으로 OAuth server와 RBAC 역할 차이를 요약해줘.",
+      "expected_group": "official_ocp",
+      "expected_answer_shape": "summary",
+      "detected_answer_shape": "checklist",
+      "checks": {
+        "completed": true,
+        "group_match": true,
+        "source_match": true,
+        "keywords_present": true,
+        "forbidden_markers_absent": true,
+        "answer_shape_match": false,
+        "citations_present": true
+      },
+      "matched_source_tokens": [
+        "Authentication_And_Authorization",
+        "4.21"
+      ],
+      "matched_keywords": [
+        "RBAC",
+        "authentication",
+        "authorization"
+      ],
+      "forbidden_hits": [],
+      "observed_groups": [
+        "official_ocp"
+      ],
+      "observed_files": [
+        "OpenShift_Container_Platform-4.21-Authentication_And_Authorization-en-US.pdf",
+        "OpenShift_Container_Platform-4.21-Architecture-en-US.pdf",
+        "OpenShift_Container_Platform-4.21-Authentication_And_Authorization-en-US.pdf",
+        "OpenShift_Container_Platform-4.21-Authentication_And_Authorization-en-US.pdf"
+      ],
+      "elapsed_sec": 59.82,
+      "answer_preview": "공식 문서에서는 다음과 같이 설명합니다. [source:OpenShift_Container_Platform-4.21-Authentication_And_Authorization-en-US.pdf:p35:L1-999]\n\n- RBAC OVERVIEW Role-based access control (RBAC) objects determine whether a user is allowed to perform a given action within a project. [source:OpenShift_Container_Platform-4.21-Authentication_And_Authorization-en-US.pdf:p97:L1-999]\n- Cluster administrators can use the cluster "
+    }
+  ],
+  "failure_summary": {
+    "failed_case_count": 1,
+    "failure_buckets": {
+      "answer_shape_match": 1
+    }
+  }
+}
