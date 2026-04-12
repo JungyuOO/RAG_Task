@@ -4,19 +4,158 @@ import asyncio
 import json
 import logging
 import time
+import html
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 
-from app.api.routes_shared import delete_markdown_artifacts, fitz, list_source_pdfs, resolve_library_pdf, save_library_uploads
+from app.api.routes_shared import delete_markdown_artifacts, fitz, resolve_library_pdf, save_library_uploads
 from app.api.schemas import BuildIndexResponse, DeleteLibraryResponse, LibraryProgressResponse, LibraryStatusResponse, TaskStatusResponse
 from app.dependencies import AppContainer, get_container
-from app.rag.utils import extracted_html_path, extracted_markdown_path
+from app.rag.utils import extracted_html_candidates, extracted_html_path, extracted_markdown_candidates, extracted_markdown_path
 
 router = APIRouter()
 logger = logging.getLogger("rag.startup")
+
+
+def _resolve_library_target(container: AppContainer, file_name: str, source_path: str | None) -> Path:
+    if source_path:
+        candidate = Path(source_path)
+        if candidate.exists():
+            return candidate.resolve()
+
+        normalized = str(source_path).replace("\\", "/")
+        root = container.settings.rag_source_dir
+        for anchor in ("corpus/pdfs/", "pdfs/"):
+            if anchor in normalized:
+                relative = normalized.split(anchor, 1)[-1]
+                mapped = (root / Path(relative)).resolve()
+                if mapped.exists():
+                    return mapped
+    return resolve_library_pdf(container.settings, file_name)
+
+
+def _render_markdown_preview_html(file_name: str, markdown_text: str) -> str:
+    lines = str(markdown_text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    body: list[str] = []
+    in_code = False
+    code_lines: list[str] = []
+    paragraph: list[str] = []
+    list_items: list[str] = []
+
+    def flush_paragraph() -> None:
+        nonlocal paragraph
+        if paragraph:
+            body.append("<p>" + html.escape(" ".join(part.strip() for part in paragraph if part.strip())) + "</p>")
+            paragraph = []
+
+    def flush_list() -> None:
+        nonlocal list_items
+        if list_items:
+            body.append("<ul>" + "".join(f"<li>{html.escape(item)}</li>" for item in list_items) + "</ul>")
+            list_items = []
+
+    def flush_code() -> None:
+        nonlocal code_lines
+        if code_lines:
+            body.append("<pre><code>" + html.escape("\n".join(code_lines).strip()) + "</code></pre>")
+            code_lines = []
+
+    for raw_line in lines:
+        line = raw_line.rstrip("\n")
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            flush_paragraph()
+            flush_list()
+            if in_code:
+                flush_code()
+                in_code = False
+            else:
+                in_code = True
+            continue
+
+        if in_code:
+            code_lines.append(line)
+            continue
+
+        if not stripped:
+            flush_paragraph()
+            flush_list()
+            continue
+
+        page_match = re.match(r"^##\s*Page\s+(\d+)\s*$", stripped, flags=re.IGNORECASE)
+        if page_match:
+            flush_paragraph()
+            flush_list()
+            page_number = page_match.group(1)
+            body.append(f'<div class="md-page-anchor" id="page-{page_number}"></div>')
+            body.append(f'<div class="md-page-label">Page {page_number}</div>')
+            continue
+
+        heading_match = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+        if heading_match:
+            flush_paragraph()
+            flush_list()
+            level = min(len(heading_match.group(1)), 6)
+            body.append(f"<h{level}>{html.escape(heading_match.group(2).strip())}</h{level}>")
+            continue
+
+        list_match = re.match(r"^(?:[-*]|\d+\.)\s+(.+)$", stripped)
+        if list_match:
+            flush_paragraph()
+            list_items.append(list_match.group(1).strip())
+            continue
+
+        paragraph.append(stripped)
+
+    flush_paragraph()
+    flush_list()
+    flush_code()
+
+    rendered_body = "\n".join(body) if body else "<p>표시할 내용이 없습니다.</p>"
+    return (
+        "<!doctype html><html lang=\"ko\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        f"<title>{html.escape(file_name)}</title>"
+        "<style>"
+        ":root{color-scheme:light;}"
+        "body{margin:0;font-family:'Pretendard Variable','Inter','Segoe UI',sans-serif;padding:24px;background:#f3f6fb;color:#182538;}"
+        "main{max-width:980px;margin:0 auto;background:#fff;border:1px solid #dde4ef;border-radius:20px;padding:28px;"
+        "box-shadow:0 16px 48px rgba(8,18,40,.08);}"
+        ".doc-shell{display:flex;flex-direction:column;gap:22px;}"
+        ".doc-header{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:14px;padding-bottom:18px;border-bottom:1px solid #e5ebf5;}"
+        ".doc-title{font-size:22px;font-weight:700;line-height:1.3;color:#101828;letter-spacing:-.02em;word-break:break-word;}"
+        ".doc-subtitle{margin-top:6px;font-size:13px;line-height:1.7;color:#526071;}"
+        ".doc-badge{display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;background:#edf3ff;border:1px solid #d8e5ff;"
+        "color:#2457d6;font-size:11px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;}"
+        ".doc-body{display:flex;flex-direction:column;gap:2px;}"
+        ".md-page-anchor{position:relative;top:-12px;height:0;}"
+        ".md-page-label{margin:24px 0 12px;font:600 11px/1.4 'JetBrains Mono',monospace;text-transform:uppercase;"
+        "letter-spacing:.08em;color:#667085;}"
+        "h1,h2,h3,h4,h5,h6{font-family:'Pretendard Variable','Inter','Segoe UI',sans-serif;color:#111827;margin:22px 0 10px;line-height:1.35;}"
+        "h1{font-size:28px;}h2{font-size:22px;}h3{font-size:18px;}"
+        "p,li{font-size:14px;line-height:1.78;color:#1f2937;}"
+        "p{margin:0 0 14px;} li+li{margin-top:6px;}"
+        "pre{overflow:auto;background:#0f172a;color:#e5e7eb;padding:18px;border-radius:14px;border:1px solid #1f2937;box-shadow:inset 0 1px 0 rgba(255,255,255,.03);}"
+        "code{font:12px/1.7 'JetBrains Mono','Consolas',monospace;}"
+        "ul{padding-left:20px;margin:0 0 16px;}"
+        "@media (max-width:768px){body{padding:14px;}main{padding:20px;border-radius:16px;}.doc-title{font-size:18px;}}"
+        "</style></head><body><main>"
+        "<div class=\"doc-shell\">"
+        "<div class=\"doc-header\">"
+        "<div><div class=\"doc-title\">" + html.escape(file_name) + "</div>"
+        "<div class=\"doc-subtitle\">공식/로컬 마크다운 원문을 앱 안에서 렌더링한 미리보기입니다.</div></div>"
+        "<div class=\"doc-badge\">Markdown preview</div>"
+        "</div>"
+        "<div class=\"doc-body\">"
+        + rendered_body +
+        "</div></div>"
+        "</main></body></html>"
+    )
 
 
 @router.get("/")
@@ -43,7 +182,7 @@ async def get_library_status(request: Request, container: AppContainer = Depends
     total_files = int(
         reindex_state.get("total_files")
         or startup_state.get("total_files")
-        or len(list_source_pdfs(container.settings))
+        or container.indexing_service.list_library_documents().get("total_files", 0)
     )
     return LibraryProgressResponse(
         source_dir=str(container.settings.rag_source_dir),
@@ -54,36 +193,32 @@ async def get_library_status(request: Request, container: AppContainer = Depends
 
 
 @router.get("/api/library/preview")
-async def preview_library_file(file_name: str = Query(..., min_length=1), container: AppContainer = Depends(get_container)) -> FileResponse:
-    target_path = resolve_library_pdf(container.settings, file_name)
-    return FileResponse(target_path, media_type="application/pdf", headers={"Content-Disposition": "inline"})
+async def preview_library_file(file_name: str = Query(..., min_length=1), source_path: str | None = Query(None), container: AppContainer = Depends(get_container)) -> FileResponse:
+    target_path = _resolve_library_target(container, file_name, source_path)
+    media_type = "application/pdf" if target_path.suffix.lower() == ".pdf" else "text/markdown; charset=utf-8"
+    return FileResponse(target_path, media_type=media_type, headers={"Content-Disposition": "inline"})
 
 
 @router.get("/api/library/preview-html")
 async def preview_library_html(
     file_name: str = Query(..., min_length=1),
+    source_path: str | None = Query(None),
     container: AppContainer = Depends(get_container),
 ) -> Response:
-    target_path = resolve_library_pdf(container.settings, file_name)
-    html_path = extracted_html_path(container.settings.rag_extract_dir, target_path)
-    if html_path.exists():
+    target_path = _resolve_library_target(container, file_name, source_path)
+    if target_path.suffix.lower() == ".md":
+        markdown_text = target_path.read_text(encoding="utf-8", errors="ignore")
+        return HTMLResponse(_render_markdown_preview_html(target_path.name, markdown_text))
+    html_candidates = extracted_html_candidates(container.settings.rag_extract_dir, target_path)
+    html_path = next((path for path in html_candidates if path.exists()), None)
+    if html_path is not None:
         return FileResponse(html_path, media_type="text/html; charset=utf-8")
 
-    markdown_path = extracted_markdown_path(container.settings.rag_extract_dir, target_path)
-    if markdown_path.exists():
+    markdown_candidates = extracted_markdown_candidates(container.settings.rag_extract_dir, target_path)
+    markdown_path = next((path for path in markdown_candidates if path.exists()), None)
+    if markdown_path is not None:
         markdown_text = markdown_path.read_text(encoding="utf-8")
-        fallback_html = (
-            "<!doctype html><html lang=\"ko\"><head><meta charset=\"utf-8\">"
-            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-            f"<title>{target_path.name}</title>"
-            "<style>body{font-family:'Segoe UI',sans-serif;padding:24px;background:#f6f8fc;color:#182538}"
-            "main{max-width:1100px;margin:0 auto;background:#fff;border:1px solid #dde4ef;border-radius:16px;padding:20px}"
-            "pre{white-space:pre-wrap;word-break:break-word;font:13px/1.55 'Consolas','Courier New',monospace;margin:0}</style>"
-            "</head><body><main><pre>"
-            + markdown_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            + "</pre></main></body></html>"
-        )
-        return HTMLResponse(fallback_html)
+        return HTMLResponse(_render_markdown_preview_html(target_path.name, markdown_text))
 
     raise HTTPException(status_code=404, detail="HTML preview artifact not found.")
 
@@ -145,7 +280,8 @@ async def get_highlighted_page(
 @router.get("/api/library/download")
 async def download_library_file(file_name: str = Query(..., min_length=1), container: AppContainer = Depends(get_container)) -> FileResponse:
     target_path = resolve_library_pdf(container.settings, file_name)
-    return FileResponse(target_path, media_type="application/pdf", filename=target_path.name)
+    media_type = "application/pdf" if target_path.suffix.lower() == ".pdf" else "text/markdown; charset=utf-8"
+    return FileResponse(target_path, media_type=media_type, filename=target_path.name)
 
 
 @router.delete("/api/library")
@@ -234,7 +370,10 @@ async def reindex_all(request: Request, container: AppContainer = Depends(get_co
     if reindex_state.get("status") == "indexing":
         raise HTTPException(status_code=409, detail="A reindex job is already running.")
 
-    source_files = list_source_pdfs(container.settings)
+    source_files = [
+        Path(doc["source_path"])
+        for doc in container.indexing_service.list_library_documents().get("indexed_documents", [])
+    ]
     file_positions = {str(path): index for index, path in enumerate(source_files)}
     reindex_state.update(
         status="indexing",
@@ -298,7 +437,10 @@ async def list_chunks(
     container: AppContainer = Depends(get_container),
 ):
     lookup_source_path = source_path or str(resolve_library_pdf(container.settings, file_name))
-    all_items = container.pipeline.index_repository.list_all_chunks(lookup_source_path)
+    all_items = container.pipeline.index_repository.list_all_chunks(
+        lookup_source_path,
+        strict=bool(source_path),
+    )
     total = len(all_items)
     offset = max(page - 1, 0) * page_size
     page_items = all_items[offset : offset + page_size]
@@ -309,7 +451,7 @@ async def list_chunks(
         chunks.append(
             {
                 "chunk_id": chunk.get("chunk_id", ""),
-                "text": chunk.get("text", ""),
+                "text": metadata.get("display_text") or chunk.get("text", ""),
                 "page_number": chunk.get("page_number") or metadata.get("page_start"),
                 "token_count": len(chunk.get("tokens", [])),
                 "html_anchor": metadata.get("html_anchor", ""),
@@ -336,7 +478,11 @@ async def get_chunk_detail(
     container: AppContainer = Depends(get_container),
 ):
     lookup_source_path = source_path or str(resolve_library_pdf(container.settings, file_name))
-    item = container.pipeline.index_repository.get_chunk(lookup_source_path, chunk_id)
+    item = container.pipeline.index_repository.get_chunk(
+        lookup_source_path,
+        chunk_id,
+        strict=bool(source_path),
+    )
     if item:
         chunk = item["chunk"]
         return {

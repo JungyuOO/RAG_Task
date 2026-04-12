@@ -36,8 +36,9 @@ function _compareVersionsDesc(a, b) {
 }
 
 function _extractVersion(doc) {
+  if (doc && doc.version_tag) return String(doc.version_tag);
   const sourcePath = doc.source_path || doc.file_name || "";
-  const match = sourcePath.match(/ocp-(\d+\.\d+)/);
+  const match = sourcePath.match(/ocp(?:-html-single)?-(\d+\.\d+)/);
   return match ? match[1] : null;
 }
 
@@ -364,7 +365,7 @@ function _makeDocRow(doc) {
     '<button class="secondary mini-button delete-button" type="button">삭제</button>' +
     "</div></td>";
 
-  tr.querySelector(".preview-button").addEventListener("click", () => openPdf(doc.file_name));
+  tr.querySelector(".preview-button").addEventListener("click", () => openLibrarySource(doc.file_name, 1, "", doc.source_path || ""));
   tr.querySelector(".chunks-button").addEventListener("click", () => openChunkViewer(doc.file_name, 1, doc.source_path || ""));
   tr.querySelector(".delete-button").addEventListener("click", () => deleteLibraryFile(doc.file_name));
   return tr;
@@ -402,12 +403,11 @@ function _makeSection(label, docs) {
 }
 
 function _renderOfficialSections(officialDocs) {
-  const filtered = officialDocs.filter((doc) => _extractVersion(doc) === "4.20");
-  if (!filtered.length) {
+  if (!officialDocs.length) {
     libraryList.innerHTML = '<div class="empty">등록된 공식 문서가 없습니다.</div>';
     return;
   }
-  _makeSection("OCP 4.20", filtered);
+  _makeSection("OCP 공식 문서", officialDocs);
 }
 
 function renderLibrary(documents) {

@@ -38,16 +38,21 @@ const closePreviewBtn = document.getElementById("closePreviewBtn");
 const screens = {
   chat: document.getElementById("screen-chat"),
   library: document.getElementById("screen-library"),
+  ocp: document.getElementById("screen-ocp"),
 };
 
 const screenMeta = {
   chat: {
-    title: "채팅",
-    copy: "문서 근거 기반 응답과 일반 fallback 응답을 함께 확인할 수 있습니다.",
+    title: "Chat",
+    copy: "Review grounded answers, fallback answers, and source context in one place.",
   },
   library: {
-    title: "자료실",
-    copy: "문서 목록과 업로드 상태를 관리합니다.",
+    title: "Library",
+    copy: "Manage indexed documents and upload status.",
+  },
+  ocp: {
+    title: "OCP Explorer",
+    copy: "Inspect cluster state and resource YAML in read-only mode.",
   },
 };
 
@@ -66,7 +71,6 @@ let previewAvailable = false;
 let previewOpen = false;
 let chatPinnedToBottom = true;
 let currentContextPayload = null;
-let selectedVersion = null; // null = 전체 (no version filter)
 
 function generateClientOwnerId() {
   if (window.crypto && typeof window.crypto.randomUUID === "function") {
@@ -94,15 +98,6 @@ function setLibraryStatus(message, tone = "idle", label = "Library Status") {
   statusBox.textContent = message;
   if (statusLabel) statusLabel.textContent = label;
   if (libraryStatusPanel) libraryStatusPanel.dataset.tone = tone;
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
 }
 
 function normalizeAssistantText(value) {
@@ -223,10 +218,47 @@ function formatAssistantProse(text) {
   value = value.replace(/(\[source:[^\]]+\])(?=\S)/g, "$1\n\n");
   value = value.replace(/(?<!\n)(\d+\.\s+)/g, "\n\n$1");
   value = value.replace(/(?<!\n)([-*]\s+)/g, "\n\n$1");
-  value = value.replace(/([.!?]|다\.|요\.)(\s+)(?=[A-Z가-힣0-9])/g, "$1\n\n");
-  value = value.replace(/(?<!\n)(또한,|반면,|한편,|먼저,|다음으로,|마지막으로)/g, "\n\n$1");
+  value = value.replace(/([.!?])(\s+)(?=[A-Za-z0-9])/g, "$1\n\n");
+  value = value.replace(/(?<!\n)(For example,|In summary,|Also,|However,|Operationally,)/g, "\n\n$1");
   value = value.replace(/\n{3,}/g, "\n\n");
   return value.trim();
+}
+
+function normalizeFencedMarkdown(text) {
+  const raw = String(text || "");
+  if (!raw.includes("```")) return raw;
+
+  const segments = raw.split("```");
+  if (segments.length < 3) return raw;
+
+  let rebuilt = segments[0];
+  for (let index = 1; index < segments.length; index += 2) {
+    const fenceSegment = String(segments[index] || "");
+    const trailingProse = String(segments[index + 1] || "");
+    let language = "";
+    let code = fenceSegment;
+
+    const newlineIndex = fenceSegment.indexOf("\n");
+    if (newlineIndex >= 0) {
+      const firstLine = fenceSegment.slice(0, newlineIndex).trim();
+      if (/^[a-z0-9_-]{1,20}$/i.test(firstLine)) {
+        language = firstLine;
+        code = fenceSegment.slice(newlineIndex + 1);
+      }
+    } else {
+      const inlineMatch = fenceSegment.trim().match(/^([a-z0-9_-]{1,20})\s+([\s\S]+)$/i);
+      if (inlineMatch) {
+        language = inlineMatch[1];
+        code = inlineMatch[2];
+      }
+    }
+
+    rebuilt = rebuilt.replace(/\s*$/, "");
+    rebuilt += `\n\`\`\`${language}\n${String(code || "").trim()}\n\`\`\`\n`;
+    rebuilt += trailingProse.replace(/^\s*/, "\n");
+  }
+
+  return rebuilt.trim();
 }
 
 function renderAssistantProseBlock(block, rawText) {
@@ -249,7 +281,7 @@ function renderAssistantProseBlock(block, rawText) {
 
 function renderAssistantText(body, value, options = {}) {
   const final = options.final !== false;
-  const normalized = normalizeAssistantText(value).replace(/\r\n/g, "\n").trim();
+  const normalized = normalizeFencedMarkdown(normalizeAssistantText(value)).replace(/\r\n/g, "\n").trim();
   if (!final) {
     body.textContent = normalized;
     return;
@@ -290,9 +322,9 @@ function renderAssistantText(body, value, options = {}) {
     }
 
     if (
-      index + 1 < lines.length
-      && isMarkdownTableRow(lines[index])
-      && isMarkdownTableSeparator(lines[index + 1])
+      index + 1 < lines.length &&
+      isMarkdownTableRow(lines[index]) &&
+      isMarkdownTableSeparator(lines[index + 1])
     ) {
       const tableLines = [lines[index], lines[index + 1]];
       index += 2;
@@ -329,9 +361,9 @@ function renderAssistantText(body, value, options = {}) {
       if (isCodeFence(lines[index])) break;
       if (getHeadingLevel(lines[index])) break;
       const nextStartsTable =
-        index + 1 < lines.length
-        && isMarkdownTableRow(lines[index])
-        && isMarkdownTableSeparator(lines[index + 1]);
+        index + 1 < lines.length &&
+        isMarkdownTableRow(lines[index]) &&
+        isMarkdownTableSeparator(lines[index + 1]);
       if (nextStartsTable || isBulletListItem(lines[index]) || isOrderedListItem(lines[index])) break;
       textLines.push(lines[index]);
       index += 1;
@@ -378,9 +410,9 @@ async function extractErrorMessage(response) {
       const data = await response.json();
       return data.detail || data.message || JSON.stringify(data);
     } catch (error) {
-      return "요청에 실패했습니다. (" + response.status + ")";
+      return "Request failed. (" + response.status + ")";
     }
   }
   const text = await response.text();
-  return text ? text.slice(0, 300) : "요청에 실패했습니다. (" + response.status + ")";
+  return text ? text.slice(0, 300) : "Request failed. (" + response.status + ")";
 }
