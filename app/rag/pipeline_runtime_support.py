@@ -239,6 +239,18 @@ class PipelineRuntimeMixin:
             turn_context=turn_context,
         )
 
+    @staticmethod
+    def _build_retrieval_diagnostics(state: dict) -> dict:
+        return {
+            "index_load_strategy": str(state.get("index_load_strategy") or ""),
+            "source_filter_strategy": str(state.get("source_filter_strategy") or ""),
+            "index_items_loaded": int(state.get("index_items_loaded") or 0),
+            "index_items_filtered": int(state.get("index_items_filtered") or 0),
+            "candidate_pool_size": int(state.get("candidate_pool_size") or 0),
+            "top_score": float(state.get("top_score") or 0.0),
+            "use_retrieved_context": bool(state.get("use_retrieved_context")),
+        }
+
     async def inspect_retrieval(
         self,
         session_id: str,
@@ -246,7 +258,7 @@ class PipelineRuntimeMixin:
         allowed_source_paths: set[str] | None = None,
     ) -> dict:
         state = await self._prepare_retrieval_state(session_id, user_message, allowed_source_paths)
-        return self.answer_service.build_context_payload(
+        payload = self.answer_service.build_context_payload(
             state["rewritten_query"],
             state["response_mode"],
             state["top_score"],
@@ -257,6 +269,8 @@ class PipelineRuntimeMixin:
             [],
             preview_finalized=False,
         )
+        payload["retrieval_diagnostics"] = self._build_retrieval_diagnostics(state)
+        return payload
 
     def _interleave_context_items_by_source(self, items: list[dict]) -> list[dict]:
         source_groups: dict[str, list[dict]] = {}
@@ -277,15 +291,32 @@ class PipelineRuntimeMixin:
         chunk_ids: list[str] = []
         for item in context_items:
             chunk = item["chunk"]
+            metadata = chunk.get("metadata", {}) or {}
             chunk_ids.append(chunk["chunk_id"])
             citation = f"{Path(chunk['source_path']).name}"
-            page_start = chunk["metadata"].get("page_start")
-            page_end = chunk["metadata"].get("page_end")
+            page_start = metadata.get("page_start")
+            page_end = metadata.get("page_end")
             if page_start and page_end:
                 citation += f" p.{page_start}" if page_start == page_end else f" p.{page_start}-{page_end}"
             elif chunk["page_number"]:
                 citation += f" p.{chunk['page_number']}"
-            blocks.append(f"[{citation}]\n{chunk['text']}")
+            section_title = str(metadata.get("section_title") or "")
+            section_path = str(metadata.get("section_path") or "")
+            source_url = str(metadata.get("source_url") or "")
+            viewer_path = str(metadata.get("viewer_path") or "")
+            meta_lines: list[str] = []
+            if section_title:
+                meta_lines.append(f"Section: {section_title}")
+            if section_path:
+                meta_lines.append(f"Section Path: {section_path}")
+            if viewer_path:
+                meta_lines.append(f"Viewer Path: {viewer_path}")
+            if source_url:
+                meta_lines.append(f"Source URL: {source_url}")
+            prefix = f"[{citation}]"
+            if meta_lines:
+                prefix += "\n" + "\n".join(meta_lines)
+            blocks.append(f"{prefix}\n{chunk['text']}")
         return blocks, chunk_ids
 
     def _finalize_answer(self, **kwargs) -> tuple[str, list[dict], dict]:
@@ -300,11 +331,12 @@ class PipelineRuntimeMixin:
         versions = []
         if source_dir.exists():
             for folder in sorted(source_dir.iterdir()):
-                if folder.is_dir() and folder.name.startswith("ocp-"):
-                    version = folder.name.removeprefix("ocp-")
-                    if version:
-                        versions.append(version)
-        return versions or ["4.15", "4.16", "4.17", "4.18", "4.19", "4.20", "4.21"]
+                if not folder.is_dir():
+                    continue
+                match = re.fullmatch(r"ocp(?:-html-single)?-(\d+\.\d+)(?:-[a-z-]+)?", folder.name)
+                if match:
+                    versions.append(match.group(1))
+        return sorted(dict.fromkeys(versions))
 
     async def stream_chat(
         self,

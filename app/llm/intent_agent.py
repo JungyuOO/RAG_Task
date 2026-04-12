@@ -40,6 +40,12 @@ class IntentAgent(BaseAgent):
         "again",
         "continue",
     )
+    EXPLAIN_MARKERS = ("설명", "차이", "관계", "명령어", "커맨드", "방법", "어떻게", "생성할 때", "기본적으로", "보통")
+    UNSUPPORTED_BEGINNER_CONCEPT_PATTERNS = (
+        ("storageclass", "pv"),
+        ("storageclass", "pvc"),
+        ("pv", "pvc"),
+    )
 
     def __init__(self, llm_client) -> None:
         super().__init__(llm_client, system_prompt=INTENT_SYSTEM_PROMPT)
@@ -82,6 +88,8 @@ class IntentAgent(BaseAgent):
             return {"intent": "general", "confidence": 0.2, "doc_type": None}
         if any(marker in lowered for marker in self.GREETING_MARKERS):
             return {"intent": "greeting", "confidence": 0.95, "doc_type": None}
+        if self._looks_like_unsupported_beginner_concept(lowered):
+            return {"intent": "general", "confidence": 0.9, "doc_type": None}
 
         procedure_state = context.get("procedure_state") or {}
         if procedure_state and any(marker in lowered for marker in self.STEP_MARKERS):
@@ -110,6 +118,11 @@ class IntentAgent(BaseAgent):
             "deployment",
             "service",
             "route",
+            "pod",
+            "pvc",
+            "pv",
+            "storageclass",
+            "ingress",
             "oauth",
             "token requests",
             "identity provider",
@@ -118,6 +131,10 @@ class IntentAgent(BaseAgent):
             "authorization",
             "rbac",
             "mtu",
+            "kubectl",
+            "oc ",
+            "명령어",
+            "커맨드",
             "install-config",
             "compare",
             "difference",
@@ -125,8 +142,18 @@ class IntentAgent(BaseAgent):
         has_rag_hint = any(marker in lowered for marker in strong_rag_hints)
         if has_rag_hint:
             return True
+        if any(marker in lowered for marker in self.EXPLAIN_MARKERS) and any(resource in lowered for resource in ("pod", "route", "service", "deployment", "storageclass", "pv", "pvc", "ingress")):
+            return True
         if any(marker in lowered for marker in self.FOLLOWUP_RAG_MARKERS) and context.get("selected_sources"):
             return True
+        return False
+
+    def _looks_like_unsupported_beginner_concept(self, lowered: str) -> bool:
+        if not any(marker in lowered for marker in ("관계", "차이", "비교")):
+            return False
+        for left, right in self.UNSUPPORTED_BEGINNER_CONCEPT_PATTERNS:
+            if left in lowered and right in lowered:
+                return True
         return False
 
     @staticmethod

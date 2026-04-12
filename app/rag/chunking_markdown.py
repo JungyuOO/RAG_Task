@@ -174,6 +174,8 @@ class StructuredMarkdownChunker(StructuredMarkdownChunkerSupport):
 
     def _blocks_from_markdown(self, markdown_text: str) -> list[MarkdownBlock]:
         text = _normalize_markdown_text(markdown_text)
+        if "Copy linkLink copied to clipboard!" in text and "## Page " in text:
+            text = self._preprocess_html_single_markdown(text)
         if not text:
             return []
 

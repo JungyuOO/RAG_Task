@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -14,7 +15,7 @@ from app.rag.bge_embedding_server import EmbeddingPayloadTooLargeError
 from app.rag.chunking_markdown import StructuredMarkdownChunker
 from app.rag.ingestion_pdf import DocumentIngestor
 from app.rag.types import Document
-from app.rag.utils import extracted_markdown_path, stable_hash
+from app.rag.utils import extracted_markdown_path, extracted_metadata_path, stable_hash
 from app.rag.version_manager import VersionManager
 from app.storage import CacheRepository, IndexRepository
 
@@ -59,8 +60,98 @@ class IndexingService:
             return "operation_manual"
         return "official"
 
+    @staticmethod
+    def _coerce_int(value: object, default: int = 0) -> int:
+        try:
+            return int(value or default)
+        except (TypeError, ValueError):
+            return default
+
+    def _source_path_key(self, source_path: Path | str) -> str:
+        normalized = str(source_path).replace("\\", "/")
+        source_root = str(self.settings.rag_source_dir).replace("\\", "/")
+
+        try:
+            return str(Path(source_path).relative_to(self.settings.rag_source_dir)).replace("\\", "/")
+        except Exception:
+            pass
+
+        for sep in (source_root + "/", "pdfs/", "corpus/pdfs/"):
+            if sep in normalized:
+                return normalized.split(sep, 1)[-1]
+        return normalized
+
     def _encode_chunk(self, text: str) -> list[float]:
         return self.embedder.encode_passage(text)
+
+    @staticmethod
+    def _chunk_retrieval_text(chunk) -> str:
+        metadata = getattr(chunk, "metadata", {}) or {}
+        retrieval_text = str(metadata.get("retrieval_text") or "").strip()
+        return retrieval_text or str(chunk.text or "").strip()
+
+    def _filter_empty_chunks(self, chunks: list) -> list:
+        filtered: list = []
+        dropped = 0
+        for chunk in chunks:
+            retrieval_text = self._chunk_retrieval_text(chunk)
+            display_text = str(getattr(chunk, "text", "") or "").strip()
+            if retrieval_text or display_text:
+                filtered.append(chunk)
+            else:
+                dropped += 1
+        if dropped:
+            logger.warning("[ChunkFilter] dropped empty chunks=%d", dropped)
+        return filtered
+
+    @staticmethod
+    def _is_low_signal_chunk(chunk) -> bool:
+        metadata = getattr(chunk, "metadata", {}) or {}
+        if metadata.get("is_toc"):
+            return True
+
+        text = str(getattr(chunk, "text", "") or "").strip()
+        retrieval_text = str(metadata.get("retrieval_text") or "").strip()
+        normalized = (retrieval_text or text).replace("\r\n", "\n")
+        if not normalized.strip():
+            return True
+
+        lowered = normalized.casefold()
+        if any(marker in lowered for marker in ("table of contents", "legal notice", "creative commons")):
+            return True
+
+        lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+        if not lines:
+            return True
+
+        numbered_heading_lines = sum(1 for line in lines if re.match(r"^\d+(?:\.\d+){1,4}\.?\s+", line))
+        page_number_lines = sum(1 for line in lines if re.fullmatch(r"\d{1,4}", line))
+        chapter_lines = sum(1 for line in lines if line.upper().startswith("CHAPTER "))
+        dot_lines = sum(1 for line in lines if re.fullmatch(r"(?:\.\s*){6,}", line))
+        short_lines = sum(1 for line in lines if len(line) <= 120)
+
+        return bool(
+            len(lines) >= 6
+            and short_lines >= max(4, int(len(lines) * 0.6))
+            and (
+                numbered_heading_lines >= 2
+                or chapter_lines >= 1
+                or page_number_lines >= 2
+                or dot_lines >= 1
+            )
+        )
+
+    def _filter_low_signal_chunks(self, chunks: list) -> list:
+        filtered: list = []
+        dropped = 0
+        for chunk in chunks:
+            if self._is_low_signal_chunk(chunk):
+                dropped += 1
+                continue
+            filtered.append(chunk)
+        if dropped:
+            logger.warning("[ChunkFilter] dropped low-signal chunks=%d", dropped)
+        return filtered
 
     def _embed_batch_size(self) -> int:
         return max(1, int(self.settings.embedding_batch_size))
@@ -73,8 +164,8 @@ class IndexingService:
             return 0
         return max(0, int(self.settings.embedding_batch_char_limit))
 
-    @staticmethod
     def _split_embed_batches(
+        self,
         chunks: list[Any],
         miss_indices: list[int],
         batch_size: int,
@@ -86,7 +177,7 @@ class IndexingService:
         batch_chars = 0
 
         for miss_idx in miss_indices:
-            text = chunks[miss_idx].text
+            text = self._chunk_retrieval_text(chunks[miss_idx])
             text_chars = len(text)
             would_exceed_count = len(batch_idx) >= batch_size
             would_exceed_chars = bool(
@@ -164,9 +255,8 @@ class IndexingService:
         progress_stage: str = "embed",
         progress_meta_fn=None,
     ) -> tuple[list[list[float]], int, int, float]:
-        """Embed uncached chunks in bounded batches and update the embedding cache."""
         total = len(chunks)
-        cache_keys = [stable_hash(chunk.text) for chunk in chunks]
+        cache_keys = [stable_hash(self._chunk_retrieval_text(chunk)) for chunk in chunks]
 
         vectors: list[list[float] | None] = [None] * total
         miss_indices: list[int] = []
@@ -229,13 +319,32 @@ class IndexingService:
         t0 = time.perf_counter()
         logger.info("[Timing][rebuild] 시작 (파일 %d개)", len(source_paths))
 
-        cache_clear_start = time.perf_counter()
-        self.embedding_cache_repository.clear()
-        logger.info("[Timing][rebuild] embedding cache cleared: %.2fs", time.perf_counter() - cache_clear_start)
+        source_key_map = {self._source_path_key(path): path for path in source_paths}
+        source_keys = set(source_key_map)
+        library = self.list_library_documents()
+        indexed_keys = {
+            self._source_path_key(doc["source_path"])
+            for doc in library["indexed_documents"]
+            if doc["indexed_chunks"] > 0
+        }
+        completed_keys = source_keys & indexed_keys
+        should_resume = 0 < len(completed_keys) < len(source_keys)
 
-        clear_start = time.perf_counter()
-        self.index_repository.save([], [])
-        logger.info("[Timing][rebuild] 기존 인덱스 초기화 완료: %.2fs", time.perf_counter() - clear_start)
+        if should_resume:
+            source_paths = [path for key, path in source_key_map.items() if key not in completed_keys]
+            logger.info(
+                "[Timing][rebuild] resume detected: completed=%d remaining=%d",
+                len(completed_keys),
+                len(source_paths),
+            )
+        else:
+            cache_clear_start = time.perf_counter()
+            self.embedding_cache_repository.clear()
+            logger.info("[Timing][rebuild] embedding cache cleared: %.2fs", time.perf_counter() - cache_clear_start)
+
+            clear_start = time.perf_counter()
+            self.index_repository.save([], [])
+            logger.info("[Timing][rebuild] 기존 인덱스 초기화 완료: %.2fs", time.perf_counter() - clear_start)
 
         indexed_files = 0
         indexed_chunks = 0
@@ -257,7 +366,7 @@ class IndexingService:
                 )
 
             result = self.index_single_file(source_path, progress_callback=_progress)
-            indexed_chunks += result.get("indexed_chunks", 0)
+            indexed_chunks += int(result.get("indexed_chunks", 0))
             if result.get("skipped"):
                 skipped_files += 1
             else:
@@ -274,7 +383,6 @@ class IndexingService:
         }
 
     def index_markdown_file(self, source_path: Path, doc_type: str = "operation_manual") -> dict:
-        """Index a markdown document directly without PDF extraction."""
         markdown_text = source_path.read_text(encoding="utf-8")
         if not markdown_text.strip():
             return {"indexed_chunks": 0, "indexed_pages": 0, "skipped": True}
@@ -289,6 +397,12 @@ class IndexingService:
             metadata={"loader": "markdown", "doc_type": doc_type, "document_group": document_group},
         )
         chunks = self.structured_chunker.split([document], markdown_text=markdown_text)
+        self._apply_extracted_structure_metadata(chunks, self.load_extracted_metadata(source_path))
+        chunks = self._filter_empty_chunks(chunks)
+        chunks = self._filter_low_signal_chunks(chunks)
+        if not chunks:
+            logger.warning("[IndexMarkdown] no non-empty chunks after filtering: %s", source_path.name)
+            return {"indexed_chunks": 0, "indexed_pages": 1, "skipped": True}
 
         version_tag = self.version_manager.detect_version_from_path(source_path)
         for chunk in chunks:
@@ -318,11 +432,18 @@ class IndexingService:
         doc_type = self._doc_type_for_source_path(source_path)
 
         markdown_text = self.load_extracted_markdown(source_path)
+        extracted_metadata = self.load_extracted_metadata(source_path)
         if not markdown_text and source_path.suffix.lower() == ".md":
-            markdown_text = documents[0].text
+            markdown_text = source_path.read_text(encoding="utf-8", errors="ignore")
 
         strategy = "structured_markdown"
         chunks = self.structured_chunker.split(documents, markdown_text=markdown_text)
+        self._apply_extracted_structure_metadata(chunks, extracted_metadata)
+        chunks = self._filter_empty_chunks(chunks)
+        chunks = self._filter_low_signal_chunks(chunks)
+        if not chunks:
+            logger.warning("[Timing][%s] no non-empty chunks after filtering", source_path.name)
+            return {"indexed_chunks": 0, "indexed_pages": len(documents), "skipped": True}
         t2 = time.perf_counter()
         logger.info(
             "[Timing][%s] 청킹 완료: %.2fs (전략=%s, doc_type=%s), 청크 %d개",
@@ -388,7 +509,11 @@ class IndexingService:
         chunks = []
         for source_path, source_documents in documents_by_path.items():
             markdown_text = self.load_extracted_markdown(Path(source_path))
+            extracted_metadata = self.load_extracted_metadata(Path(source_path))
             source_chunks = self.structured_chunker.split(source_documents, markdown_text=markdown_text)
+            self._apply_extracted_structure_metadata(source_chunks, extracted_metadata)
+            source_chunks = self._filter_empty_chunks(source_chunks)
+            source_chunks = self._filter_low_signal_chunks(source_chunks)
             loaders = [doc.metadata.get("loader") for doc in source_documents if doc.metadata.get("loader")]
             representative_loader = loaders[0] if loaders else None
             document_group = self._document_group_for_source_path(Path(source_path))
@@ -404,6 +529,147 @@ class IndexingService:
         if not markdown_path.exists():
             return None
         return markdown_path.read_text(encoding="utf-8")
+
+    def load_extracted_metadata(self, source_path: Path) -> dict | None:
+        metadata_path = extracted_metadata_path(self.settings.rag_extract_dir, source_path)
+        if not metadata_path.exists():
+            return None
+        try:
+            return json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def _apply_extracted_structure_metadata(self, chunks: list, extracted_metadata: dict | None) -> None:
+        if not chunks or not isinstance(extracted_metadata, dict):
+            return
+
+        common_metadata = {
+            key: value
+            for key, value in extracted_metadata.items()
+            if key not in {"pages", "blocks"} and isinstance(value, (str, int, float, bool, list))
+        }
+
+        pages = extracted_metadata.get("pages")
+        if not isinstance(pages, list):
+            for chunk in chunks:
+                chunk.metadata.update(common_metadata)
+            return
+
+        page_map: dict[int, dict] = {}
+        for page in pages:
+            if not isinstance(page, dict):
+                continue
+            page_number = self._coerce_int(page.get("page_number"), 0)
+            if page_number > 0:
+                page_map[page_number] = page
+
+        if not page_map:
+            for chunk in chunks:
+                chunk.metadata.update(common_metadata)
+            return
+
+        for chunk in chunks:
+            metadata = chunk.metadata
+            metadata.update(common_metadata)
+            page_start = self._coerce_int(metadata.get("page_start"), self._coerce_int(chunk.page_number, 0))
+            page_end = self._coerce_int(metadata.get("page_end"), page_start)
+            matched_pages = [
+                page_map[page_number]
+                for page_number in range(page_start, page_end + 1)
+                if page_number in page_map
+            ]
+            if not matched_pages:
+                continue
+
+            page_anchors: list[str] = []
+            block_ids: list[str] = []
+            block_anchors: list[str] = []
+            block_types: set[str] = {
+                value.strip()
+                for value in str(metadata.get("block_types", "")).split(",")
+                if value.strip()
+            }
+            table_headers: list[str] = []
+            block_code_languages: list[str] = []
+            block_code_resource_kinds: list[str] = []
+            list_item_count_max = 0
+            table_row_count_max = 0
+            table_column_count_max = 0
+            has_cli_block = False
+            section_title = str(metadata.get("section_title") or "")
+            section_path = str(metadata.get("section_path") or "")
+
+            for page in matched_pages:
+                html_anchor = str(page.get("html_anchor") or "")
+                if html_anchor and html_anchor not in page_anchors:
+                    page_anchors.append(html_anchor)
+                page_section_title = str(page.get("section_title") or "")
+                page_section_path = str(page.get("section_path") or "")
+                if not section_title and page_section_title:
+                    section_title = page_section_title
+                if not section_path and page_section_path:
+                    section_path = page_section_path
+                for block in page.get("blocks", []) or []:
+                    if not isinstance(block, dict):
+                        continue
+                    block_id = str(block.get("block_id") or "")
+                    block_anchor = str(block.get("html_anchor") or "")
+                    block_type = str(block.get("block_type") or "")
+                    if block_id and block_id not in block_ids:
+                        block_ids.append(block_id)
+                    if block_anchor and block_anchor not in block_anchors:
+                        block_anchors.append(block_anchor)
+                    if block_type:
+                        block_types.add(block_type)
+                    attributes = block.get("attributes") if isinstance(block.get("attributes"), dict) else {}
+                    for header in attributes.get("headers", []) or []:
+                        header_text = str(header or "").strip()
+                        if header_text and header_text not in table_headers:
+                            table_headers.append(header_text)
+                    language = str(attributes.get("language") or "").strip()
+                    if language and language not in block_code_languages:
+                        block_code_languages.append(language)
+                    resource_kind = str(attributes.get("resource_kind") or "").strip()
+                    if resource_kind and resource_kind not in block_code_resource_kinds:
+                        block_code_resource_kinds.append(resource_kind)
+                    list_item_count_max = max(list_item_count_max, self._coerce_int(attributes.get("item_count"), 0))
+                    table_row_count_max = max(table_row_count_max, self._coerce_int(attributes.get("row_count"), 0))
+                    table_column_count_max = max(table_column_count_max, self._coerce_int(attributes.get("column_count"), 0))
+                    has_cli_block = has_cli_block or bool(attributes.get("has_cli"))
+                    if not section_title and block.get("section_title"):
+                        section_title = str(block.get("section_title"))
+                    if not section_path and block.get("section_path"):
+                        section_path = str(block.get("section_path"))
+
+            if page_anchors:
+                metadata["html_anchor"] = page_anchors[0]
+                metadata["page_html_anchors"] = page_anchors
+            if block_ids:
+                metadata["block_ids"] = block_ids[:12]
+            if block_anchors:
+                metadata["block_html_anchors"] = block_anchors[:12]
+                metadata["primary_block_anchor"] = block_anchors[0]
+            if block_types:
+                metadata["block_types"] = ",".join(sorted(block_types))
+            if table_headers:
+                metadata["table_headers"] = table_headers[:12]
+            if block_code_languages:
+                metadata["block_code_languages"] = block_code_languages[:8]
+            if block_code_resource_kinds:
+                metadata["block_code_resource_kinds"] = block_code_resource_kinds[:8]
+            if list_item_count_max:
+                metadata["list_item_count"] = list_item_count_max
+            if table_row_count_max:
+                metadata["table_row_count"] = table_row_count_max
+            if table_column_count_max:
+                metadata["table_column_count"] = table_column_count_max
+            if has_cli_block:
+                metadata["has_cli_block"] = True
+            if section_title:
+                metadata["section_title"] = section_title
+                metadata["nearest_heading"] = metadata.get("nearest_heading") or section_title
+            if section_path:
+                metadata["section_path"] = section_path
 
     _LIBRARY_EXTS = {".pdf", ".md"}
 
@@ -445,6 +711,10 @@ class IndexingService:
                     "indexed_pages": 0,
                     "indexed_chunks": 0,
                     "loaders": [],
+                    "source_url": "",
+                    "viewer_path": "",
+                    "locale": "",
+                    "version_tag": "",
                 }
 
             document_group = self._document_group_for_source_path(path)
@@ -459,6 +729,10 @@ class IndexingService:
                     "loaders": aggregated["loaders"],
                     "doc_type": doc_type,
                     "document_group": document_group,
+                    "source_url": aggregated.get("source_url", ""),
+                    "viewer_path": aggregated.get("viewer_path", ""),
+                    "locale": aggregated.get("locale", ""),
+                    "version_tag": aggregated.get("version_tag", ""),
                 }
             )
 

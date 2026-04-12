@@ -39,9 +39,11 @@ class AnswerCitationMixin:
                         seen,
                         source_path=source_path,
                         page_number=page_number,
-                        score=float(item["rerank_score"]),
+                        score=float(item.get("rerank_score", item.get("final_retrieval_score", item.get("score", 0.0)))),
                         chunk_id=chunk["chunk_id"],
                         origin="answer_text",
+                        html_anchor=str(chunk.get("metadata", {}).get("html_anchor") or f"page-{page_number}"),
+                        block_anchor=str(chunk.get("metadata", {}).get("primary_block_anchor") or ""),
                     )
 
         if payload:
@@ -57,6 +59,8 @@ class AnswerCitationMixin:
                 score=float(item["score"]),
                 chunk_id=None,
                 origin="grounded_page",
+                html_anchor=str(item.get("html_anchor") or f"page-{int(item['page_number'])}"),
+                block_anchor=str(item.get("block_anchor") or ""),
             )
         return payload
 
@@ -86,6 +90,8 @@ class AnswerCitationMixin:
         score: float,
         chunk_id: str | None,
         origin: str,
+        html_anchor: str = "",
+        block_anchor: str = "",
     ) -> None:
         key = (source_path, page_number)
         if key in seen:
@@ -99,6 +105,8 @@ class AnswerCitationMixin:
                 "score": round(score, 4),
                 "chunk_id": chunk_id,
                 "origin": origin,
+                "html_anchor": html_anchor or f"page-{page_number}",
+                "block_anchor": block_anchor,
             }
         )
 
@@ -107,6 +115,11 @@ class AnswerCitationMixin:
             return []
 
         citations: list[tuple[str, int, int]] = []
+        source_tag_pattern = re.compile(r"\[source:([^:\]]+):p(\d+):L(\d+)-(\d+)\]", flags=re.IGNORECASE)
+        for match in source_tag_pattern.finditer(answer):
+            file_name = Path(match.group(1).strip()).name
+            page_number = int(match.group(2))
+            citations.append((file_name, page_number, page_number))
         grouped_pattern = re.compile(
             r"\[([^\[\]\n]+?\.pdf)\]\s*((?:p\.\d+(?:-\d+)?)(?:\s*,\s*p\.\d+(?:-\d+)?)*)",
             flags=re.IGNORECASE,
@@ -154,6 +167,11 @@ class AnswerCitationMixin:
         if not context_items or not answer_citations:
             return preferred_preview_source, fallback_pages
 
+        chunk_lookup = {
+            str(item["chunk"].get("chunk_id") or ""): item["chunk"]
+            for item in context_items
+            if item.get("chunk")
+        }
         preview_pages: list[dict] = []
         seen_pages: set[tuple[str, int]] = set()
         chosen_source: str | None = None
@@ -166,11 +184,15 @@ class AnswerCitationMixin:
             page_key = (source_path, int(citation["page_number"]))
             if page_key in seen_pages:
                 continue
+            chunk = chunk_lookup.get(str(citation.get("chunk_id") or ""))
+            metadata = chunk.get("metadata", {}) if isinstance(chunk, dict) else {}
             preview_pages.append(
                 {
                     "source_path": source_path,
                     "page_number": int(citation["page_number"]),
                     "score": round(float(citation["score"]), 4),
+                    "html_anchor": str(metadata.get("html_anchor") or f"page-{int(citation['page_number'])}"),
+                    "block_anchor": str(metadata.get("primary_block_anchor") or ""),
                 }
             )
             seen_pages.add(page_key)
@@ -252,4 +274,3 @@ class AnswerCitationMixin:
             "preview_finalized": preview_finalized,
             "items": self.retrieval_service.build_context_items_payload(context_items),
         }
-

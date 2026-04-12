@@ -32,6 +32,7 @@ class PdfExtractor(PdfExtractionSupport, PdfMergeSupport):
         with fitz.open(path) as pdf:
             is_slide = self._is_slide_pdf(pdf)
             footer_pattern = self._detect_footer_pattern(pdf) if not is_slide else None
+            header_patterns = self._detect_header_patterns(pdf) if not is_slide else set()
             total_pages = len(pdf)
             t_open = time.perf_counter()
             _logger.info("[Timing][PDF:%s] 파일 열기+분석: %.2fs, 총 %d 페이지 (슬라이드=%s)",
@@ -44,7 +45,7 @@ class PdfExtractor(PdfExtractionSupport, PdfMergeSupport):
                     structured_markdown = self._extract_slide_page(page)
                     loader = "pdf_slide"
                 else:
-                    structured_markdown = self._extract_structured_page(page, footer_pattern)
+                    structured_markdown = self._extract_structured_page(page, footer_pattern, header_patterns)
                     loader = "pdf_text"
                 page_elapsed = time.perf_counter() - tp
 
@@ -91,7 +92,12 @@ class PdfExtractor(PdfExtractionSupport, PdfMergeSupport):
         return documents, markdown_sections
 
     def export_markdown(self, path: Path, documents: list[Document], markdown_sections: list[dict[str, str | int]]) -> None:
+        self.export_artifacts(path, documents, markdown_sections)
+
+    def export_artifacts(self, path: Path, documents: list[Document], markdown_sections: list[dict[str, str | int]]) -> None:
         self._export_pdf_markdown(path, documents, markdown_sections)
+        self._export_pdf_html(path, documents, markdown_sections)
+        self._export_pdf_metadata(path, documents, markdown_sections)
 
     def _is_slide_pdf(self, pdf) -> bool:
         if len(pdf) == 0:

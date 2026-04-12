@@ -50,9 +50,29 @@ class BGETEIEmbedder:
             )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 413:
+            response_text = (exc.response.text or "").strip()
+            response_lower = response_text.casefold()
+            if exc.response.status_code == 413 or (
+                exc.response.status_code == 400
+                and "cannot be empty" not in response_lower
+                and any(
+                    marker in response_lower
+                    for marker in (
+                        "too large",
+                        "payload",
+                        "max",
+                        "length",
+                        "token",
+                        "truncate",
+                        "batch",
+                        "input validation error",
+                    )
+                )
+            ):
                 raise EmbeddingPayloadTooLargeError(
-                    f"TEI rejected embedding payload: input_count={len(texts)}"
+                    "TEI rejected embedding payload: "
+                    f"status={exc.response.status_code} input_count={len(texts)} "
+                    f"body_preview={response_text[:300]!r}"
                 ) from exc
             raise
 

@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     llm_generate_temperature: float = 0.0
     llm_generate_max_tokens: int = 512
     llm_prompt_recent_turns: int = 10
-    llm_prompt_context_items: int = 5
+    llm_prompt_context_items: int = 3
     llm_prompt_context_char_limit: int = 8000
 
     rag_source_dir: Path
@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     candidate_pool_size: int = 15
     pgvector_prefilter_limit: int = 0
     grounded_page_top_n: int = 5
-    grounded_chunk_top_n: int = 5
+    grounded_chunk_top_n: int = 3
     memory_window_turns: int = 12
 
     # Retrieval acceptance thresholds tuned against the current corpus.

@@ -22,6 +22,8 @@ class AnswerGenerator(AnswerFormatMixin, AnswerCitationMixin, InlineCitationMixi
     def public_context_payload(payload: dict) -> dict:
         public_payload = dict(payload or {})
         public_payload.pop("_stored_procedure_state", None)
+        if isinstance(public_payload.get("items"), list):
+            public_payload["items"] = public_payload["items"][:3]
         return public_payload
 
     @staticmethod
@@ -139,6 +141,7 @@ class AnswerGenerator(AnswerFormatMixin, AnswerCitationMixin, InlineCitationMixi
         t_citation = time.perf_counter()
         if use_retrieved_context and policy_decision.allow_citations and not self.should_suppress_citations(answer):
             answer = self.inject_inline_citations(answer, selected_context_items)
+            answer = self.collapse_single_citation_answer(answer)
         answer_citations = (
             self.build_answer_citation_payload(answer, selected_context_items, grounded_pages, preferred_preview_source)
             if policy_decision.allow_citations

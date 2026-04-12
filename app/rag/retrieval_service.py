@@ -33,6 +33,11 @@ class RetrievalService:
             return "customer_generated"
         return "official_ocp"
 
+    @staticmethod
+    def _is_html_single_source(item: dict) -> bool:
+        source_path = str(item["chunk"].get("source_path") or "").replace("\\", "/").casefold()
+        return "/ocp-html-single-" in source_path and source_path.endswith(".md")
+
     def build_context_items_payload(self, context_items: list[dict]) -> list[dict]:
         return [
             {
@@ -50,9 +55,11 @@ class RetrievalService:
                 "code_language": item["chunk"]["metadata"].get("code_language", ""),
                 "code_subtype": item["chunk"]["metadata"].get("code_subtype", ""),
                 "code_signals": item["chunk"]["metadata"].get("code_signals", []),
+                "html_anchor": item["chunk"]["metadata"].get("html_anchor", ""),
+                "block_anchor": item["chunk"]["metadata"].get("primary_block_anchor", ""),
                 "score": round(self.primary_score(item), 4),
                 "final_retrieval_score": round(self.primary_score(item), 4),
-                "rerank_score": round(item["rerank_score"], 4),
+                "rerank_score": round(item.get("rerank_score", item.get("final_retrieval_score", item.get("score", 0.0))), 4),
                 "ce_score": round(item.get("ce_score", item.get("rerank_score", 0.0)), 4),
                 "retrieval_score": round(item.get("retrieval_score", item.get("score", 0.0)), 4),
                 "base_score": round(item.get("score", 0.0), 4),
@@ -396,6 +403,39 @@ class RetrievalService:
     ) -> list[dict]:
         items = index_items
 
+        def _is_low_signal_front_matter(item: dict) -> bool:
+            chunk = item.get("chunk") or {}
+            metadata = chunk.get("metadata") or {}
+            if metadata.get("is_toc"):
+                return True
+
+            text = str(chunk.get("text", "") or "").strip().casefold()
+            if not text:
+                return True
+
+            legal_markers = (
+                "legal notice",
+                "copyright",
+                "creative commons",
+                "all rights reserved",
+                "red hat, the red hat logo",
+            )
+            if any(marker in text for marker in legal_markers):
+                return True
+
+            section_title = str(metadata.get("section_title", "") or "").casefold()
+            section_path = str(metadata.get("section_path", "") or "").casefold()
+            heading_text = " ".join([section_title, section_path]).strip()
+            heading_markers = (
+                "table of contents",
+                "contents",
+                "legal notice",
+                "abstract",
+            )
+            return any(marker in heading_text for marker in heading_markers)
+
+        items = [item for item in items if not _is_low_signal_front_matter(item)]
+
         if uploaded_source_paths:
             normalized_uploaded = set()
             for path in uploaded_source_paths:
@@ -468,6 +508,14 @@ class RetrievalService:
                     continue
                 filtered.append(item)
             items = filtered
+
+        official_html_single = [item for item in items if self.document_group(item) == "official_ocp" and self._is_html_single_source(item)]
+        if official_html_single:
+            if document_group_preference == "mixed":
+                customer_items = [item for item in items if self.document_group(item) == "customer_generated"]
+                items = official_html_single + customer_items
+            elif document_group_preference in {None, "", "auto", "official_ocp"}:
+                items = official_html_single
 
         return items
 

@@ -44,6 +44,10 @@ class LibraryDocument(BaseModel):
     loaders: list[str]
     doc_type: str = "official"
     document_group: str = "official_ocp"
+    source_url: str = ""
+    viewer_path: str = ""
+    locale: str = ""
+    version_tag: str = ""
 
 
 class StartupIndexingStatus(BaseModel):
@@ -61,6 +65,13 @@ class LibraryStatusResponse(BaseModel):
     source_dir: str
     total_files: int
     indexed_documents: list[LibraryDocument]
+    startup_indexing: StartupIndexingStatus = StartupIndexingStatus()
+    reindexing: StartupIndexingStatus = StartupIndexingStatus()
+
+
+class LibraryProgressResponse(BaseModel):
+    source_dir: str
+    total_files: int
     startup_indexing: StartupIndexingStatus = StartupIndexingStatus()
     reindexing: StartupIndexingStatus = StartupIndexingStatus()
 
@@ -88,6 +99,46 @@ class TaskStatusResponse(BaseModel):
     error: str = ""
     created_at: str
     updated_at: str
+
+
+class OcpResourceSummary(BaseModel):
+    name: str
+    namespace: str
+    kind: str
+    created_at: str = ""
+    phase: str = ""
+    node_name: str = ""
+    ready_replicas: int = 0
+    replicas: int = 0
+    type: str = ""
+    cluster_ip: str = ""
+    host: str = ""
+    to: str = ""
+
+
+class OcpResourceListResponse(BaseModel):
+    resource: str
+    namespace: str
+    count: int
+    items: list[OcpResourceSummary]
+
+
+class OcpNamespaceListResponse(BaseModel):
+    count: int
+    items: list[str]
+
+
+class OcpResourceYamlResponse(BaseModel):
+    resource: str
+    namespace: str
+    name: str
+    object: dict
+
+
+class OcpStatusResponse(BaseModel):
+    enabled: bool
+    base_url: str = ""
+    default_namespace: str = ""
 
 
 @dataclass(slots=True)

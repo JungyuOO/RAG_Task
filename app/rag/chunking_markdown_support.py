@@ -11,6 +11,35 @@ class StructuredMarkdownChunkerSupport:
     TOC_SECTION_MARKERS = ("table of contents", "contents", "목차")
     OVERVIEW_SECTION_MARKERS = ("overview", "introduction", "about", "개요", "소개")
     PROCEDURE_MARKERS = ("step", "steps", "procedure", "procedures", "절차", "단계", "순서")
+    _HTML_SINGLE_TEXT_FENCE_RE = re.compile(r"```text\s*\n(.*?)\n```", re.DOTALL | re.IGNORECASE)
+
+    @staticmethod
+    def _looks_like_structured_code_text(body: str) -> bool:
+        normalized = str(body or "").strip()
+        lowered = normalized.casefold()
+        if not normalized:
+            return False
+        if "\n" in normalized and len(normalized.splitlines()) >= 4:
+            return True
+        if any(marker in lowered for marker in ("apiversion:", "kind:", "metadata:", "spec:", "$ oc ", " oc ", "kubectl ", "-o yaml", "{", "}")):
+            return True
+        if re.search(r"^\$?\s*(?:oc|kubectl)\s+", normalized, flags=re.IGNORECASE):
+            return True
+        return False
+
+    def _preprocess_html_single_markdown(self, text: str) -> str:
+        normalized = str(text or "")
+        normalized = normalized.replace("Copy linkLink copied to clipboard!", "").replace("Link copied to clipboard!", "")
+
+        def _replace_text_fence(match: re.Match[str]) -> str:
+            body = str(match.group(1) or "").strip()
+            if self._looks_like_structured_code_text(body):
+                return f"```text\n{body}\n```"
+            return body
+
+        normalized = self._HTML_SINGLE_TEXT_FENCE_RE.sub(_replace_text_fence, normalized)
+        normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+        return normalized
 
     def _parse_annotated_markdown_blocks(self, annotated_lines: list[tuple[str, int]]) -> list[MarkdownBlock]:
         blocks: list[MarkdownBlock] = []
@@ -33,7 +62,10 @@ class StructuredMarkdownChunkerSupport:
 
             page_start = min(pages)
             page_end = max(pages)
-            if len(lines) == 1 and (lines[0].startswith("#") or (len(lines[0]) <= 40 and lines[0].endswith(":"))):
+            if len(lines) == 1 and (
+                lines[0].startswith("#")
+                or (len(lines[0]) <= 40 and lines[0].endswith(":") and not self._looks_like_yaml_field_heading(lines[0]))
+            ):
                 normalized = normalize_text(lines[0].lstrip("#").strip())
                 if normalized:
                     heading_level = len(lines[0]) - len(lines[0].lstrip("#")) if lines[0].startswith("#") else 1
@@ -114,7 +146,10 @@ class StructuredMarkdownChunkerSupport:
             ]
             if not lines:
                 continue
-            if len(lines) == 1 and (lines[0].startswith("#") or (len(lines[0]) <= 40 and lines[0].endswith(":"))):
+            if len(lines) == 1 and (
+                lines[0].startswith("#")
+                or (len(lines[0]) <= 40 and lines[0].endswith(":") and not self._looks_like_yaml_field_heading(lines[0]))
+            ):
                 normalized = normalize_text(lines[0].lstrip("#").strip())
                 if normalized:
                     heading_level = len(lines[0]) - len(lines[0].lstrip("#")) if lines[0].startswith("#") else 1
@@ -244,6 +279,11 @@ class StructuredMarkdownChunkerSupport:
     def _is_list_line(self, line: str) -> bool:
         return bool(re.match(r"^(?:[-*]\s+|\d+\.\s+)", line))
 
+    @staticmethod
+    def _looks_like_yaml_field_heading(line: str) -> bool:
+        stripped = str(line or "").strip()
+        return bool(re.fullmatch(r"[A-Za-z0-9_.-]+:\s*", stripped))
+
     def _is_table_block(self, lines: list[str]) -> bool:
         if len(lines) < 2:
             return False
@@ -279,7 +319,7 @@ class StructuredMarkdownChunkerSupport:
         retrieval_text = self._build_retrieval_text(blocks)
         page_start = blocks[0].page_start
         page_end = blocks[-1].page_end
-        chunk_id = stable_hash(f"{doc_id}:{order}:{page_start}:{page_end}:{raw_chunk_text[:40]}")
+        chunk_id = stable_hash(f"{doc_id}:{order}:{page_start}:{page_end}:{raw_chunk_text}")
         section_path_parts = next((list(block.heading_path) for block in reversed(blocks) if block.heading_path), [])
         nearest_heading = section_path_parts[-1] if section_path_parts else ""
         metadata = {

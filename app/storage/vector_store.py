@@ -41,8 +41,37 @@ class IndexRepository:
         for anchor in ("pdfs/", "corpus/pdfs/", "source/"):
             if anchor in normalized:
                 rel = normalized.split(anchor, 1)[-1]
-                return str(self.rag_source_dir / rel)
+                return str(self.rag_source_dir / rel).replace("\\", "/")
         return stored
+
+    def _source_path_candidates(self, source_path: str) -> list[str]:
+        candidates = {
+            str(source_path),
+            str(source_path).replace("\\", "/"),
+        }
+        if self.rag_source_dir is None:
+            return sorted(candidates)
+
+        normalized = str(source_path).replace("\\", "/")
+        source_root = str(self.rag_source_dir).replace("\\", "/")
+        relative_path = ""
+        for anchor in (source_root + "/", "pdfs/", "corpus/pdfs/"):
+            if anchor in normalized:
+                relative_path = normalized.split(anchor, 1)[-1]
+                break
+
+        if relative_path:
+            local_path = self.rag_source_dir / Path(relative_path)
+            candidates.add(str(local_path))
+            candidates.add(str(local_path).replace("\\", "/"))
+            candidates.add(relative_path)
+            candidates.add(relative_path.replace("/", "\\"))
+            candidates.add(f"data/corpus/pdfs/{relative_path}".replace("\\", "/"))
+            candidates.add(f"data\\corpus\\pdfs\\{relative_path.replace('/', '\\')}")
+            candidates.add(f"/app/data/corpus/pdfs/{relative_path}".replace("\\", "/"))
+            candidates.add(f"/data/corpus/pdfs/{relative_path}".replace("\\", "/"))
+
+        return sorted(candidate for candidate in candidates if candidate)
 
     def save(self, chunks: list[Chunk], vectors: list[list[float]]) -> None:
         self.backend.save(chunks, vectors)
@@ -81,6 +110,61 @@ class IndexRepository:
             return self._cache
         return raw
 
+    def search_dense_candidates(
+        self,
+        query_vector: list[float],
+        *,
+        limit: int,
+        source_paths: list[str] | None = None,
+        target_versions: list[str] | None = None,
+        doc_type: str | None = None,
+        document_group_preference: str | None = None,
+    ) -> list[dict]:
+        raw = self.backend.search_by_embedding(
+            query_vector,
+            limit=limit,
+            source_paths=source_paths,
+            target_versions=target_versions,
+            doc_type=doc_type,
+            document_group_preference=document_group_preference,
+        )
+        if self.rag_source_dir is not None:
+            for item in raw:
+                item["chunk"]["source_path"] = self._normalize_source_path(
+                    item["chunk"]["source_path"]
+                )
+        return raw
+
+    def list_chunks(self, source_path: str, *, page: int, page_size: int, strict: bool = False) -> tuple[list[dict], int]:
+        rows, total = self.backend.list_chunks(
+            source_paths=[source_path] if strict else self._source_path_candidates(source_path),
+            offset=max(page - 1, 0) * page_size,
+            limit=page_size,
+        )
+        if self.rag_source_dir is not None:
+            for item in rows:
+                item["chunk"]["source_path"] = self._normalize_source_path(item["chunk"]["source_path"])
+        return rows, total
+
+    def list_all_chunks(self, source_path: str, *, strict: bool = False) -> list[dict]:
+        rows, _total = self.backend.list_chunks(
+            source_paths=[source_path] if strict else self._source_path_candidates(source_path),
+            offset=0,
+            limit=100000,
+        )
+        if self.rag_source_dir is not None:
+            for item in rows:
+                item["chunk"]["source_path"] = self._normalize_source_path(item["chunk"]["source_path"])
+        return rows
+
+    def get_chunk(self, source_path: str, chunk_id: str, *, strict: bool = False) -> dict | None:
+        row = self.backend.get_chunk(
+            source_paths=[source_path] if strict else self._source_path_candidates(source_path),
+            chunk_id=chunk_id,
+        )
+        if row and self.rag_source_dir is not None:
+            row["chunk"]["source_path"] = self._normalize_source_path(row["chunk"]["source_path"])
+        return row
 
     def upsert_document(self, source_path: str, chunks: list[Chunk], vectors: list[list[float]]) -> None:
         self.backend.upsert_document(source_path, chunks, vectors)

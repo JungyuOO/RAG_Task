@@ -85,6 +85,94 @@ def normalize_text(text: str) -> str:
     return cleaned.strip()
 
 
+def normalize_retrieval_text(text: str) -> str:
+    normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n").replace("\x00", " ")
+    lines: list[str] = []
+    for raw_line in normalized.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if re.fullmatch(r"-\s*(loader|chars|source_path|extracted_pages)\s*:.*", line, flags=re.IGNORECASE):
+            continue
+        if re.fullmatch(r"#{1,6}\s*page\s+\d+\s*", line, flags=re.IGNORECASE):
+            continue
+        if re.fullmatch(r"page\s+\d+\s*", line, flags=re.IGNORECASE):
+            continue
+        if re.fullmatch(r"-{3,}", line):
+            continue
+        if line.startswith("```"):
+            continue
+        line = re.sub(r"^>\s*", "", line)
+        line = re.sub(r"^#{1,6}\s*", "", line)
+        line = re.sub(r"^(?:[-*]\s+|\d+\.\s+)", "", line)
+        if "|" in line:
+            if re.fullmatch(r"\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?$", line):
+                continue
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            line = " ".join(cell for cell in cells if cell)
+        line = line.replace("`", " ")
+        line = re.sub(r"\s+", " ", line).strip()
+        if line:
+            lines.append(line)
+    return normalize_text(" ".join(lines))
+
+
+def normalize_markdown_display_text(text: str) -> str:
+    normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n").replace("\x00", " ")
+    output_lines: list[str] = []
+    in_code_block = False
+    last_blank = False
+
+    for raw_line in normalized.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            output_lines.append(stripped)
+            in_code_block = not in_code_block
+            last_blank = False
+            continue
+
+        if in_code_block:
+            output_lines.append(line.rstrip())
+            last_blank = False
+            continue
+
+        if re.fullmatch(r"-\s*(loader|chars|source_path|extracted_pages)\s*:.*", stripped, flags=re.IGNORECASE):
+            continue
+        if re.fullmatch(r"#{1,6}\s*page\s+\d+\s*", stripped, flags=re.IGNORECASE):
+            continue
+        if re.fullmatch(r"page\s+\d+\s*", stripped, flags=re.IGNORECASE):
+            continue
+        if re.fullmatch(r"-{3,}", stripped):
+            continue
+
+        if not stripped:
+            if not last_blank and output_lines:
+                output_lines.append("")
+                last_blank = True
+            continue
+
+        if "|" in stripped:
+            if re.fullmatch(r"\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?$", stripped):
+                cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+                cleaned = "| " + " | ".join(cell or "---" for cell in cells if cell or len(cells) > 1) + " |"
+            else:
+                cells = [re.sub(r"\s+", " ", cell.strip()) for cell in stripped.strip("|").split("|")]
+                cleaned = "| " + " | ".join(cell for cell in cells if cell) + " |"
+            output_lines.append(cleaned)
+            last_blank = False
+            continue
+
+        cleaned = re.sub(r"[ \t]+", " ", stripped)
+        output_lines.append(cleaned)
+        last_blank = False
+
+    while output_lines and not output_lines[-1].strip():
+        output_lines.pop()
+    return "\n".join(output_lines).strip()
+
+
 def _compact_domain_token(value: str) -> str:
     return re.sub(r"[\s_\-./]", "", value.casefold())
 
@@ -212,6 +300,22 @@ def extracted_markdown_path(extract_dir: Path, source_path: Path) -> Path:
     return extract_dir / extracted_markdown_file_name(source_path)
 
 
+def extracted_html_file_name(source_path: Path) -> str:
+    return f"{source_path.stem}-{stable_hash(str(source_path))[:8]}.html"
+
+
+def extracted_html_path(extract_dir: Path, source_path: Path) -> Path:
+    return extract_dir / extracted_html_file_name(source_path)
+
+
+def extracted_metadata_file_name(source_path: Path) -> str:
+    return f"{source_path.stem}-{stable_hash(str(source_path))[:8]}.json"
+
+
+def extracted_metadata_path(extract_dir: Path, source_path: Path) -> Path:
+    return extract_dir / extracted_metadata_file_name(source_path)
+
+
 def extracted_markdown_candidates(extract_dir: Path, source_path: Path) -> list[Path]:
     stem = source_path.stem
     glob_matches = list(extract_dir.glob(f"{stem}-????????.md"))
@@ -221,6 +325,34 @@ def extracted_markdown_candidates(extract_dir: Path, source_path: Path) -> list[
     candidates: list[Path] = []
     for candidate_source in (source_path, source_path.resolve()):
         candidate_path = extracted_markdown_path(extract_dir, candidate_source)
+        if candidate_path not in candidates:
+            candidates.append(candidate_path)
+    return candidates
+
+
+def extracted_html_candidates(extract_dir: Path, source_path: Path) -> list[Path]:
+    stem = source_path.stem
+    glob_matches = list(extract_dir.glob(f"{stem}-????????.html"))
+    if glob_matches:
+        return glob_matches
+
+    candidates: list[Path] = []
+    for candidate_source in (source_path, source_path.resolve()):
+        candidate_path = extracted_html_path(extract_dir, candidate_source)
+        if candidate_path not in candidates:
+            candidates.append(candidate_path)
+    return candidates
+
+
+def extracted_metadata_candidates(extract_dir: Path, source_path: Path) -> list[Path]:
+    stem = source_path.stem
+    glob_matches = list(extract_dir.glob(f"{stem}-????????.json"))
+    if glob_matches:
+        return glob_matches
+
+    candidates: list[Path] = []
+    for candidate_source in (source_path, source_path.resolve()):
+        candidate_path = extracted_metadata_path(extract_dir, candidate_source)
         if candidate_path not in candidates:
             candidates.append(candidate_path)
     return candidates
