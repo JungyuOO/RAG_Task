@@ -86,6 +86,50 @@ class RetrievalFollowupFastpathTests(unittest.TestCase):
 
         self.assertEqual(matches[0]["chunk"]["chunk_id"], "c2")
 
+    def test_followup_fast_query_prefers_active_slot_resources(self) -> None:
+        result = RetrievalStateBuilder._build_followup_fast_query_result(
+            "that yaml please",
+            {
+                "active_slot": {
+                    "lane": "document",
+                    "resources": ["deployment"],
+                    "code_resource_kind": "deployment",
+                    "selected_versions": ["4.20"],
+                },
+                "last_explicit_resources": ["pod"],
+            },
+            "that yaml please",
+        )
+
+        self.assertEqual(result["resources"][0], "deployment")
+        self.assertEqual(result["target_versions"], ["4.20"])
+        self.assertIn("yaml", result["format_constraints"])
+
+    def test_document_followup_with_active_document_slot_and_reference_uses_fastpath(self) -> None:
+        policy = TurnPolicyDecision(
+            turn_type="document_followup",
+            response_mode="rag",
+            use_retrieval=True,
+            use_memory_rewrite=False,
+            allow_preview=True,
+            allow_citations=True,
+        )
+
+        should_skip = RetrievalStateBuilder._should_skip_expand_with_llm(
+            policy,
+            {
+                "active_slot": {
+                    "lane": "document",
+                    "sources": ["cli_tools.md"],
+                    "resources": ["pod"],
+                },
+            },
+            "that yaml please",
+        )
+
+        self.assertTrue(should_skip)
+
+
 
 if __name__ == "__main__":
     unittest.main()

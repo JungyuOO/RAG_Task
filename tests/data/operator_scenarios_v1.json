@@ -101,6 +101,20 @@
       ]
     },
     {
+      "id": "ocp-system-pod-total-count",
+      "kind": "ocp",
+      "turns": [
+        {
+          "message": "system? pod ? ? ???",
+          "expected_route": "ocp_status",
+          "required_keywords": [
+            "Pod"
+          ],
+          "max_latency_sec": 10.0
+        }
+      ]
+    },
+    {
       "id": "ocp-warning-events",
       "kind": "ocp",
       "turns": [

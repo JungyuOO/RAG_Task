@@ -114,6 +114,22 @@ class OcpQueryPlannerTests(unittest.TestCase):
         self.assertIsNotNone(plan)
         self.assertEqual(plan.resources, ["pods"])
 
+    def test_system_pod_count_question_does_not_use_system_as_filter_pattern(self) -> None:
+        planner = RuleFirstOcpPlanner(ocp_api_client=_OcpClientStub())
+
+        plan = asyncio.run(planner.build_plan("시스템에 파드 몇개 떠있어", {}))
+
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.resources, ["pods"])
+        self.assertEqual(plan.pattern, "")
+
+    def test_non_followup_namespace_question_does_not_inherit_last_ocp_resource(self) -> None:
+        planner = RuleFirstOcpPlanner(ocp_api_client=_OcpClientStub())
+
+        plan = asyncio.run(planner.build_plan("namespace에 뭐 있어", {"last_ocp_resource": "pods"}))
+
+        self.assertIsNone(plan)
+
     def test_yaml_followup_accepts_explicit_pod_name_from_user_message(self) -> None:
         planner = RuleFirstOcpPlanner(ocp_api_client=_OcpClientStub())
         topic_state = {
