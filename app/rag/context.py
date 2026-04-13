@@ -85,8 +85,16 @@ class TurnContextResolver:
             entities = [self._normalize(str(value)) for value in topic.get("entities", []) if value]
             last_user_focus = self._normalize(str(topic.get("last_user_focus") or ""))
             topic_summary = topic.get("summary", {}) or {}
+            active_slot = topic_summary.get("active_slot", {}) or {}
             topic_versions = [str(value).strip() for value in topic_summary.get("selected_versions", []) if value]
             topic_group = str(topic_summary.get("last_document_group_preference") or "auto")
+            slot_resources = [
+                self._normalize(str(value))
+                for value in active_slot.get("resources", []) or []
+                if value
+            ]
+            slot_filter = self._normalize(str(active_slot.get("filter_keyword") or ""))
+            slot_namespace = self._normalize(str(active_slot.get("namespace") or ""))
             score = 0.0
             reasons: list[str] = []
             if label and label in normalized_message:
@@ -112,6 +120,22 @@ class TurnContextResolver:
             if current_topic_id and topic_id == current_topic_id:
                 score += 0.12
                 reasons.append("current")
+            if slot_filter and slot_filter in normalized_message:
+                score += 0.18
+                reasons.append("slot_filter")
+            if slot_namespace and slot_namespace in normalized_message:
+                score += 0.12
+                reasons.append("slot_namespace")
+            slot_resource_hits = 0
+            for resource in slot_resources[:3]:
+                if resource and resource in normalized_message:
+                    score += 0.14
+                    slot_resource_hits += 1
+            if slot_resource_hits:
+                reasons.append(f"slot_resources:{slot_resource_hits}")
+            if current_topic_id and topic_id == current_topic_id and active_slot and any(marker in normalized_message for marker in self.REFERENT_MARKERS):
+                score += 0.18
+                reasons.append("slot_followup")
             if explicit_version:
                 if explicit_version in topic_versions:
                     score += 0.28
