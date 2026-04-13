@@ -189,11 +189,29 @@ class PipelineRuntimeMixin:
         has_followup_marker = any(marker in lowered for marker in self.REWRITE_FOLLOWUP_MARKERS)
         has_selected_sources = bool(rewrite_context.get("selected_sources"))
         has_versions = bool(rewrite_context.get("selected_versions"))
+        active_slot = rewrite_context.get("active_slot") or {}
+        has_slot_context = bool(
+            active_slot.get("lane")
+            or active_slot.get("sources")
+            or active_slot.get("resources")
+            or active_slot.get("namespace")
+        )
+        slot_resource_tokens = [
+            str(value).casefold().strip()
+            for value in [
+                *(active_slot.get("resources", []) or []),
+                active_slot.get("code_resource_kind"),
+                active_slot.get("ocp_resource"),
+                active_slot.get("filter_keyword"),
+            ]
+            if value
+        ]
+        mentions_slot_resource = any(token and token in lowered for token in slot_resource_tokens)
         if has_fastpath_hint:
             return True
-        if has_followup_marker and (has_selected_sources or has_versions):
+        if has_followup_marker and (has_selected_sources or has_versions or has_slot_context):
             return True
-        if (has_selected_sources or has_versions) and len(lowered) <= 96 and not has_followup_marker:
+        if (has_selected_sources or has_versions or has_slot_context) and len(lowered) <= 96 and not has_followup_marker and mentions_slot_resource:
             return True
         return False
 

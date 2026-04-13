@@ -699,9 +699,16 @@ class PipelineRetrievalMixin:
         if turn_type == "conversational_ack":
             return "문서와 관련된 질문이 있으면 이어서 질문해 주세요."
         if turn_type == "greeting":
-            return "안녕하세요. 무엇을 도와드릴까요?"
+            return "안녕하세요! 무엇을 도와드릴까요?"
         if turn_type == "general_chat":
-            return "죄송합니다. 업로드한 문서와 관련된 질문만 답변할 수 있습니다. 문서 내용에 대해 질문해 주세요."
+            return (
+                "제가 바로 도와드릴 수 있는 범위는 다음과 같습니다.\n\n"
+                "- 공식 문서 기반 명령어 / 절차 질문\n"
+                "- 현재 demo namespace 기준 Pod / Event / YAML 조회\n"
+                "- 문서 기준 명령어와 실제 OCP 결과를 함께 보여주는 mixed 질문\n"
+                "- 고객사 메뉴얼 업로드 후 고객사 메뉴얼 기준 질의\n\n"
+                "예: `pod 확인하는 명령어 뭐야?`, `지금 pandas 관련 pod 보여줘`, `현재 상태 확인 명령어랑 실제 결과 같이 알려줘`"
+            )
         if turn_type == "document_query":
             if top_score >= self.settings.retrieval_retry_min_score:
                 return "관련 내용을 찾기 어려웠습니다. 질문을 조금 더 구체적으로 적어 주세요.\n예: `스토리지 문서에서 PV 설명해줘`, `Service 종류를 서로 비교해줘`"
