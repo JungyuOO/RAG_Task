@@ -37,6 +37,8 @@ class PromptComposer:
         return {
             "active_topic": topic.get("topic_label") or summary.get("topic_label") or "",
             "active_document_group": summary.get("last_document_group_preference", "auto"),
+            "active_lane": summary.get("active_lane", ""),
+            "active_slot": summary.get("active_slot", {}),
             "active_entities": topic.get("entities", [])[:6],
             "selected_sources": topic.get("sources", [])[:3],
             "selected_versions": summary.get("selected_versions", [])[:3],
@@ -57,6 +59,12 @@ class PromptComposer:
             "last_example_source_pages": summary.get("last_example_source_pages", [])[:6],
             "last_example_anchor": summary.get("last_example_anchor", {}),
             "last_document_group_preference": summary.get("last_document_group_preference", "auto"),
+            "last_doc_type": summary.get("last_doc_type", ""),
+            "last_namespace": summary.get("last_namespace", ""),
+            "last_ocp_resource": summary.get("last_ocp_resource", ""),
+            "last_ocp_resource_names": summary.get("last_ocp_resource_names", [])[:12],
+            "last_ocp_result_items": summary.get("last_ocp_result_items", [])[:20],
+            "last_ocp_filter_keyword": summary.get("last_ocp_filter_keyword", ""),
         }
 
     def build_rewrite_context_from_topic(self, topic: dict | None, topic_turns: list) -> dict | None:
@@ -88,6 +96,8 @@ class PromptComposer:
         return {
             "conversation_history": conversation_history,
             "active_topic": str(topic_state.get("active_topic") or ""),
+            "active_lane": str(topic_state.get("active_lane") or ""),
+            "active_slot": topic_state.get("active_slot", {}),
             "active_entities": topic_state.get("active_entities", [])[:6],
             "selected_sources": topic_state.get("selected_sources", [])[:3],
             "selected_versions": topic_state.get("selected_versions", [])[:3],
@@ -132,6 +142,8 @@ class PromptComposer:
             "recent_documents": summary.get("recent_documents", [])[:3],
             "recent_pages": summary.get("recent_pages", [])[:4],
             "active_topic": topic_state.get("active_topic", ""),
+            "active_lane": topic_state.get("active_lane", ""),
+            "active_slot": topic_state.get("active_slot", {}),
             "selected_sources": topic_state.get("selected_sources", [])[:3],
             "selected_pages": topic_state.get("selected_pages", [])[:4],
             "last_retrieval_mode": topic_state.get("last_retrieval_mode", ""),
