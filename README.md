@@ -300,12 +300,13 @@ app/
 1. `pod 확인하는 명령어 뭐야?`
 2. `그럼 지금 내 ocp 쪽 namespace에서는 어떻게 확인해`
 3. `지금 pandas 관련 pod 보여줘`
-4. `현재 상태 확인 명령어랑 실제 결과 같이 알려줘`
+4. `dev-pandas-bot-587d7d6465-cdffw 이거 yaml 알려줘`
 5. `그 pod yaml이랑 공식 문서의 pod yaml은 뭐가 달라?`
 
 기대 포인트:
 - `문서 기준 명령어`
 - `현재 OCP 결과`
+- explicit pod name 지정 후 실제 YAML 응답
 - compare 응답 시 `공식 문서 기준 / 현재 OCP 기준 / 비교 가이드`
 
 ### 6.2 고객사 메뉴얼 시연

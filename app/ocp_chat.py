@@ -17,6 +17,7 @@ class OcpQueryPlan:
     target_name: str = ""
     candidate_names: list[str] = field(default_factory=list)
     pattern: str = ""
+    status_filter: str = ""
     warning_only: bool = False
     status_check: bool = False
     followup: bool = False
@@ -34,11 +35,17 @@ class OcpQueryPlan:
 class RuleFirstOcpPlanner:
     ALL_RESOURCES = ("pods", "deployments", "services", "routes", "events")
     RESOURCE_ALIASES = {
-        "pods": ("pod", "pods", "파드"),
+        "pods": ("pod", "pods", "파드", "팟"),
         "deployments": ("deployment", "deployments", "디플로이먼트", "배포", "deploy"),
         "services": ("service", "services", "서비스"),
         "routes": ("route", "routes", "라우트"),
         "events": ("event", "events", "이벤트"),
+    }
+    STATUS_FILTER_ALIASES = {
+        "running": ("running", "run", "실행중", "정상"),
+        "succeeded": ("succeeded", "success", "completed", "완료", "성공"),
+        "pending": ("pending", "대기"),
+        "failed": ("failed", "failure", "error", "오류", "실패"),
     }
     EXPLANATION_MARKERS = ("설명", "차이", "difference", "가이드", "guide", "절차", "what is", "how do", "이란", "란 무엇")
     GUIDE_MARKERS = ("명령어", "커맨드", "cli", "kubectl", "oc ", "방법", "생성할 때", "확인해야", "기본적으로", "보통", "관계")
@@ -56,7 +63,7 @@ class RuleFirstOcpPlanner:
     WARNING_MARKERS = ("warning", "경고")
     STATUS_CHECK_MARKERS = ("정상", "ready", "running", "상태", "health")
     COMPLEX_QUERY_MARKERS = ("같이", "함께", "동시에", "and", "plus", "비교")
-    LIVE_RUNTIME_HINTS = ("ocp", "api", "namespace", "네임스페이스", "실제", "현재", "지금", "결과")
+    LIVE_RUNTIME_HINTS = ("ocp", "api", "실제", "현재", "지금", "결과")
     DOC_TO_LIVE_BRIDGE_HINTS = ("어떻게", "확인해", "확인하지", "명령어", "command", "cli", "보려면")
     STOPWORDS = {
         "현재", "지금", "상태", "요약", "정리", "보여줘", "보여", "알려줘", "알려", "뭐야", "무엇", "리소스", "요소",
@@ -66,6 +73,7 @@ class RuleFirstOcpPlanner:
         "route", "routes", "service", "services", "pod", "pods", "deployment", "deployments",
         "몇", "몇개", "몇개야", "몇개지", "몇 개", "개", "개야", "갯수", "개수", "같이", "함께", "동시에", "그리고",
         "확인", "확인하", "보려면", "무슨", "어떤", "명령어", "커맨드", "명령어랑", "결과", "실제",
+        "시스템", "시스템에", "떠있어", "떠있나", "떠", "떠있", "있어", "있나", "뭐있어", "뭐", "있는거", "네가", "응답", "응답할", "있는게", "수", "도와줄",
     }
 
     def __init__(self, *, ocp_api_client: Any, llm_client: Any | None = None) -> None:
@@ -104,20 +112,28 @@ class RuleFirstOcpPlanner:
 
     def _build_rule_plan(self, user_message: str, topic_state: dict) -> OcpQueryPlan | None:
         lowered = user_message.casefold()
+        if self._has_help_intent(lowered):
+            return None
+        active_slot = topic_state.get("active_slot") or {}
+        slot_lane = str(active_slot.get("lane") or "").casefold()
         explicit_resources = self._detect_resources(lowered)
         followup = any(marker in lowered for marker in self.FOLLOWUP_MARKERS)
-        has_status_signal = any(marker in lowered for marker in self.OPERATION_MARKERS)
-        last_resource = str(topic_state.get("last_ocp_resource") or "")
+        count_or_inventory_query = self._has_count_or_inventory_intent(user_message, lowered)
+        has_status_signal = count_or_inventory_query or any(marker in lowered for marker in self.OPERATION_MARKERS)
+        status_filter = self._extract_status_filter(lowered)
+        last_resource = str(active_slot.get("ocp_resource") or topic_state.get("last_ocp_resource") or "")
         inherited_resources = [
             str(value).strip().lower()
-            for value in (topic_state.get("last_explicit_resources") or [])
+            for value in ([*(active_slot.get("resources", []) or []), *(topic_state.get("last_explicit_resources") or [])])
             if value
         ]
         live_runtime_followup = any(marker in lowered for marker in self.LIVE_RUNTIME_HINTS)
         if not explicit_resources and not followup and not has_status_signal and not last_resource:
             return None
-        namespace = self._extract_namespace(user_message) or str(topic_state.get("last_namespace") or "") or getattr(self.ocp_api_client, "default_namespace", "")
-        resources = explicit_resources or ([last_resource] if last_resource else [])
+        namespace = self._extract_namespace(user_message) or str(active_slot.get("namespace") or topic_state.get("last_namespace") or "") or getattr(self.ocp_api_client, "default_namespace", "")
+        resources = list(explicit_resources)
+        if not resources and last_resource and (followup or live_runtime_followup):
+            resources = [last_resource]
         if not resources and has_status_signal and inherited_resources and live_runtime_followup:
             resource = inherited_resources[0]
             if resource and not resource.endswith("s"):
@@ -125,27 +141,42 @@ class RuleFirstOcpPlanner:
             resources = [resource] if resource else []
         pattern = self._extract_pattern(user_message, namespace, resources)
         if followup and not pattern:
-            pattern = str(topic_state.get("last_ocp_filter_keyword") or "")
-        has_ocp_runtime_context = bool(last_resource or topic_state.get("last_ocp_result_items"))
+            pattern = str(active_slot.get("filter_keyword") or topic_state.get("last_ocp_filter_keyword") or "")
+        has_ocp_runtime_context = (
+            slot_lane in {"ocp", "mixed"}
+            or bool(active_slot.get("ocp_resource") or active_slot.get("ocp_result_count") or active_slot.get("ocp_resource_names"))
+            or bool(topic_state.get("last_ocp_result_items"))
+        )
         if self._is_yaml_request(lowered) and not resources and not last_resource:
             return None
-        if self._is_yaml_request(lowered) and not has_ocp_runtime_context and not live_runtime_followup:
-            return None
         if self._is_yaml_request(lowered):
-            resources = [resource for resource in (resources or [str((topic_state.get("last_ocp_result_items") or [{}])[0].get("resource") or "")]) if resource]
+            inferred_resource = str((topic_state.get("last_ocp_result_items") or [{}])[0].get("resource") or active_slot.get("ocp_resource") or "")
+            resources = [resource for resource in (resources or [inferred_resource]) if resource]
             resource = resources[0] if resources else ""
             candidate_names = self._candidate_names(topic_state, resource)
             target_name = self._resolve_target_name(user_message, resource, candidate_names)
+            has_explicit_target = bool(target_name)
+            if not followup and not live_runtime_followup and not has_explicit_target:
+                return None
+            if not has_ocp_runtime_context and not live_runtime_followup and not has_explicit_target:
+                return None
             return OcpQueryPlan("yaml", resources[:1], namespace, target_name, candidate_names, pattern, followup=followup, confidence=0.94 if resources else 0.72)
         if self._is_relationship_request(lowered):
             resource = "services" if not resources or resources[0] in {"services", "routes"} else resources[0]
             candidate_names = self._candidate_names(topic_state, resource)
             target_name = self._resolve_target_name(user_message, resource, candidate_names)
-            return OcpQueryPlan("relationship", [resource], namespace, target_name, candidate_names, pattern, followup=followup, confidence=0.86 if resource else 0.68)
+            return OcpQueryPlan("relationship", [resource], namespace, target_name, candidate_names, pattern, "", followup=followup, confidence=0.86 if resource else 0.68)
         warning_only = any(marker in lowered for marker in self.WARNING_MARKERS)
         status_check = any(marker in lowered for marker in self.STATUS_CHECK_MARKERS)
-        if not resources and not warning_only and (pattern or status_check):
-            resources = ["pods"]
+        if not resources and not warning_only:
+            if count_or_inventory_query and (("namespace" in lowered) or ("??????" in lowered)) and (followup or live_runtime_followup or has_ocp_runtime_context):
+                resources = list(self.ALL_RESOURCES)
+            elif status_check:
+                resources = ["pods"]
+            elif pattern:
+                resources = ["pods"]
+        if not resources and not warning_only and not status_check and not pattern:
+            return None
         complex_query = len(resources) > 1 or self._has_complex_query_marker(lowered)
         simple_resource_query = len(resources) == 1 and not complex_query
         return OcpQueryPlan(
@@ -155,6 +186,7 @@ class RuleFirstOcpPlanner:
             "",
             [],
             pattern=pattern,
+            status_filter=status_filter,
             warning_only=warning_only,
             status_check=status_check,
             followup=followup,
@@ -188,17 +220,18 @@ class RuleFirstOcpPlanner:
             return None
         resources = self._normalize_resource_list(data.get("resources") or rule_plan.resources)
         plan = OcpQueryPlan(
-            mode,
-            resources or list(rule_plan.resources),
-            str(data.get("namespace") or rule_plan.namespace or topic_state.get("last_namespace") or ""),
-            str(data.get("target_name") or rule_plan.target_name or ""),
-            list(data.get("candidate_names") or rule_plan.candidate_names or []),
-            str(data.get("pattern") or rule_plan.pattern or ""),
-            bool(data.get("warning_only", rule_plan.warning_only)),
-            bool(data.get("status_check", rule_plan.status_check)),
-            bool(data.get("followup", rule_plan.followup)),
-            "agent_fallback",
-            max(float(data.get("confidence", rule_plan.confidence) or 0.0), rule_plan.confidence),
+            mode=mode,
+            resources=resources or list(rule_plan.resources),
+            namespace=str(data.get("namespace") or rule_plan.namespace or topic_state.get("last_namespace") or ""),
+            target_name=str(data.get("target_name") or rule_plan.target_name or ""),
+            candidate_names=list(data.get("candidate_names") or rule_plan.candidate_names or []),
+            pattern=str(data.get("pattern") or rule_plan.pattern or ""),
+            status_filter=str(data.get("status_filter") or rule_plan.status_filter or ""),
+            warning_only=bool(data.get("warning_only", rule_plan.warning_only)),
+            status_check=bool(data.get("status_check", rule_plan.status_check)),
+            followup=bool(data.get("followup", rule_plan.followup)),
+            parse_strategy="agent_fallback",
+            confidence=max(float(data.get("confidence", rule_plan.confidence) or 0.0), rule_plan.confidence),
         )
         if plan.mode == "yaml" and not plan.target_name:
             candidate_names = self._candidate_names(topic_state, plan.resource)
@@ -266,6 +299,7 @@ class RuleFirstOcpPlanner:
         keywords = normalize_query_keywords(message)
         ignore = set(self.STOPWORDS)
         generic_prefixes = ("확인", "보여", "알려", "어떻", "지금", "현재", "그럼")
+        generic_scope_tokens = {"system", "cluster", "namespace", "namespaces", "current", "demo"}
         if namespace:
             ignore.add(namespace.casefold())
         for resource in resources:
@@ -277,14 +311,49 @@ class RuleFirstOcpPlanner:
             lowered = token.casefold()
             if lowered.startswith(generic_prefixes):
                 continue
+            if lowered in generic_scope_tokens:
+                continue
+            if any(lowered in aliases for aliases in self.STATUS_FILTER_ALIASES.values()):
+                continue
             if lowered not in ignore and len(token) >= 2 and not self._looks_like_count_token(token):
                 return token
         return ""
 
     @staticmethod
+    def _has_help_intent(lowered: str) -> bool:
+        return bool(
+            re.search(r"응답할\s*수\s*있는", lowered)
+            or re.search(r"할\s*수\s*있는", lowered)
+            or re.search(r"도와줄\s*수\s*있", lowered)
+            or any(marker in lowered for marker in ("무슨 질문", "어떤 질문"))
+        )
+
+    @staticmethod
+    def _has_count_or_inventory_intent(message: str, lowered: str) -> bool:
+        return bool(
+            re.search(r"몇\s*개", message)
+            or any(marker in lowered for marker in ("개수", "갯수", "얼마나", "목록", "리스트", "보여줘", "show", "list", "떠있", "뭐 있어", "뭐있어"))
+        )
+
+
+    def _extract_status_filter(self, lowered: str) -> str:
+        for canonical, aliases in self.STATUS_FILTER_ALIASES.items():
+            if any(alias in lowered for alias in aliases):
+                return canonical
+        return ""
+
+    @staticmethod
     def _looks_like_count_token(token: str) -> bool:
         lowered = str(token or "").casefold().strip()
-        return bool(lowered) and (lowered in {"몇", "몇개", "몇개야", "몇개지", "개", "개야", "count"} or lowered.endswith("개야") or lowered.endswith("개지"))
+        return bool(lowered) and (
+            lowered in {"몇", "몇개", "몇개야", "몇개지", "개", "개야", "count"}
+            or lowered.endswith("개야")
+            or lowered.endswith("개지")
+            or lowered.endswith("개있어")
+            or lowered.endswith("개있나")
+            or lowered.endswith("몇개있어")
+            or lowered.endswith("몇개있나")
+        )
 
     def _candidate_names(self, topic_state: dict, resource: str) -> list[str]:
         names = [str(value) for value in topic_state.get("last_ocp_resource_names", []) if value]
@@ -351,6 +420,7 @@ class OcpChatService:
     DOC_COMMAND_HINTS = ("명령어", "커맨드", "command", "commands", "cli", "kubectl", "oc ", "보려면", "쳐야", "알려줘")
     LIVE_ONLY_HINTS = ("현재 ocp", "현재 상태", "실제 결과", "같이 알려", "같이 보여", "namespace에서는", "네임스페이스에서는")
     LIVE_CONTEXT_MARKERS = ("지금", "현재", "실제", "결과", "pandas", "warning", "이벤트")
+    HELP_MARKERS = ("무슨 질문", "무엇을 물어", "응답할 수", "도와줄 수", "할 수 있는게", "할 수 있어", "어떤 질문")
 
     def __init__(self, *, ocp_api_client: Any, session_repository: Any, answer_service: Any, llm_client: Any | None = None) -> None:
         self.ocp_api_client = ocp_api_client
@@ -362,27 +432,65 @@ class OcpChatService:
     def should_handle(self, session_id: str, user_message: str) -> bool:
         return self.detect_query_mode(session_id, user_message) == "ocp"
 
+    @staticmethod
+    def _should_treat_plan_as_live_query(plan: OcpQueryPlan, lowered: str, topic_state: dict) -> bool:
+        if not plan.resources:
+            return False
+        if plan.mode in {"yaml", "relationship"}:
+            return True
+        if plan.pattern or plan.status_filter or plan.warning_only or plan.status_check:
+            return True
+        if any(marker in lowered for marker in ("몇 개", "몇개", "개수", "갯수", "얼마나", "목록", "리스트", "show", "list", "count")):
+            return True
+        if any(marker in lowered for marker in ("현재", "지금", "실제", "결과", "ocp", "api")):
+            return True
+        if topic_state.get("last_ocp_result_items") and any(marker in lowered for marker in ("그중", "그 ", "그거", "해당", "방금", "아까")):
+            return True
+        return False
+
     def detect_query_mode(self, session_id: str, user_message: str) -> str:
         topic_state = self.session_repository.topic_state(session_id)
+        active_slot = topic_state.get("active_slot") or {}
+        active_lane = str(active_slot.get("lane") or topic_state.get("active_lane") or "").casefold()
         lowered = normalize_text(user_message).casefold()
         if not lowered:
             return "document"
+        if any(marker in lowered for marker in self.HELP_MARKERS):
+            return "document"
         has_doc_command_hint = any(marker in lowered for marker in self.DOC_COMMAND_HINTS)
-        has_live_context = bool(topic_state.get("last_ocp_result_items") or topic_state.get("last_ocp_resource"))
-        has_live_followup = any(marker in lowered for marker in self.planner.LIVE_STATUS_MARKERS) and bool(topic_state.get("last_explicit_resources"))
+        has_live_context = active_lane in {"ocp", "mixed"} or bool(topic_state.get("last_ocp_result_items") or topic_state.get("last_ocp_resource") or active_slot.get("ocp_resource"))
+        has_document_context = active_lane in {"document", "mixed"} or bool(topic_state.get("selected_sources") or active_slot.get("sources"))
+        if self.planner._has_count_or_inventory_intent(user_message, lowered) and (("namespace" in lowered) or ("??????" in lowered)):
+            if self.planner._detect_resources(lowered):
+                return "ocp"
+        has_followup = any(marker in lowered for marker in self.planner.FOLLOWUP_MARKERS)
+        has_live_followup = any(marker in lowered for marker in self.planner.LIVE_STATUS_MARKERS) and bool(topic_state.get("last_explicit_resources") or active_slot.get("resources") or has_live_context)
         has_doc_to_live_bridge = has_live_followup and any(marker in lowered for marker in self.planner.DOC_TO_LIVE_BRIDGE_HINTS)
         is_mixed_request = self.planner.is_mixed_request(user_message, topic_state)
-        if has_doc_to_live_bridge and not topic_state.get("last_ocp_result_items") and not topic_state.get("last_ocp_resource"):
+        if has_doc_to_live_bridge and not has_live_context:
             return "mixed"
-        if self.planner._is_yaml_request(lowered) and has_live_context and not is_mixed_request:
-            return "ocp"
+        if self.planner._is_yaml_request(lowered):
+            candidate_resource = str(active_slot.get("ocp_resource") or topic_state.get("last_ocp_resource") or "")
+            candidate_names = self.planner._candidate_names(topic_state, candidate_resource) if candidate_resource else []
+            explicit_target = bool(self.planner._resolve_target_name(user_message, candidate_resource, candidate_names)) if candidate_resource else False
+            if not has_followup and not explicit_target and not any(marker in lowered for marker in self.LIVE_ONLY_HINTS):
+                return "document"
+            if has_live_context and not is_mixed_request:
+                return "ocp"
+            if has_document_context and not has_live_context:
+                return "document"
         if has_doc_command_hint and not has_live_context and not any(marker in lowered for marker in self.LIVE_ONLY_HINTS) and not any(marker in lowered for marker in self.LIVE_CONTEXT_MARKERS):
             return "document"
         if is_mixed_request:
             return "mixed"
         if self.planner._is_explanation_request(lowered):
             return "document"
-        return "ocp" if self.planner._build_rule_plan(user_message, topic_state) is not None else "document"
+        plan = self.planner._build_rule_plan(user_message, topic_state)
+        if plan is None:
+            return "document"
+        if not self._should_treat_plan_as_live_query(plan, lowered, topic_state):
+            return "document"
+        return "ocp"
 
     async def _build_plan(self, session_id: str, user_message: str) -> OcpQueryPlan | None:
         return await self.planner.build_plan(user_message, self.session_repository.topic_state(session_id))
@@ -491,7 +599,7 @@ class OcpChatService:
         if len(resources) == 1:
             resource = resources[0]
             payload = await self.ocp_api_client.list_resources(resource, namespace=plan.namespace or None)
-            items = self._filter_items(resource, payload.get("items", []), pattern=plan.pattern, warning_only=plan.warning_only)
+            items = self._filter_items(resource, payload.get("items", []), pattern=plan.pattern, warning_only=plan.warning_only, status_filter=plan.status_filter)
             result_items = [self._serialize_result_item(resource, payload.get("namespace", plan.namespace), item) for item in items]
             adjusted_plan = OcpQueryPlan(**{**plan.to_dict(), "namespace": payload.get("namespace", plan.namespace)})
             answer = await self._compose_grounded_ocp_answer(
@@ -504,7 +612,7 @@ class OcpChatService:
         grouped_payloads = []
         for resource in resources:
             payload = await self.ocp_api_client.list_resources(resource, namespace=plan.namespace or None)
-            items = self._filter_items(resource, payload.get("items", []), pattern=plan.pattern, warning_only=plan.warning_only)
+            items = self._filter_items(resource, payload.get("items", []), pattern=plan.pattern, warning_only=plan.warning_only, status_filter=plan.status_filter)
             grouped_payloads.append((resource, payload.get("namespace", plan.namespace), items))
         result_items: list[dict] = []
         grouped_items: dict[str, list[dict]] = {}
@@ -537,9 +645,10 @@ class OcpChatService:
         payload = await self.ocp_api_client.get_resource_yaml(plan.resource, name=plan.target_name, namespace=plan.namespace or None)
         yaml_text = self._to_yaml(payload.get("object") or {})
         lines = yaml_text.splitlines()
-        visible = "\n".join(lines[:140]) if len(lines) > 140 else yaml_text
+        max_visible_lines = 400
+        visible = "\n".join(lines[:max_visible_lines]) if len(lines) > max_visible_lines else yaml_text
         answer = f"{payload['namespace']} namespace의 {payload['resource']} `{payload['name']}` YAML입니다.\n\n```yaml\n{visible}\n```"
-        if len(lines) > 140:
+        if len(lines) > max_visible_lines:
             answer += "\n\n응답 길이 때문에 앞부분만 표시했습니다."
         result_items = [self._serialize_result_item(payload["resource"], payload["namespace"], {"name": payload["name"], "kind": payload["resource"][:-1].title()})]
         adjusted_plan = OcpQueryPlan(**{**plan.to_dict(), "namespace": payload["namespace"], "resources": [payload["resource"]]})
@@ -604,10 +713,13 @@ class OcpChatService:
             return fallback
         return answer or fallback
 
-    def _filter_items(self, resource: str, items: list[dict], *, pattern: str, warning_only: bool) -> list[dict]:
+    def _filter_items(self, resource: str, items: list[dict], *, pattern: str, warning_only: bool, status_filter: str = "") -> list[dict]:
         filtered = list(items or [])
         if warning_only and resource == "events":
             filtered = [item for item in filtered if str(item.get("type") or "").casefold() == "warning"]
+        if status_filter and resource == "pods":
+            status_needle = status_filter.casefold()
+            filtered = [item for item in filtered if str(item.get("phase") or "").casefold() == status_needle]
         if pattern:
             needle = pattern.casefold()
             filtered = [item for item in filtered if needle in " ".join(str(item.get(field) or "") for field in ("name", "kind", "phase", "type", "host", "to", "cluster_ip", "node_name")).casefold()]

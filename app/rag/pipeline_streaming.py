@@ -683,6 +683,9 @@ class ChatTurnOrchestrator(StreamingTurnSupport):
         examples: list[dict] = []
         if not answer:
             return examples
+        query_interpretation = query_interpretation or {}
+        if bool(query_interpretation.get("generic_command_query")):
+            return examples
         expected_shape = self._expected_response_shape(query_interpretation, user_message)
         if expected_shape in {"table", "code"}:
             return examples

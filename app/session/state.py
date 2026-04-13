@@ -17,6 +17,8 @@ DEFAULT_SUMMARY = {
 DEFAULT_TOPIC_STATE = {
     "active_topic": "",
     "active_document_group": "auto",
+    "active_lane": "",
+    "active_slot": {},
     "active_entities": [],
     "selected_sources": [],
     "selected_versions": [],
@@ -49,6 +51,8 @@ DEFAULT_TOPIC_STATE = {
 DEFAULT_TOPIC_THREAD_SUMMARY = {
     "topic_label": "",
     "summary": "",
+    "active_lane": "",
+    "active_slot": {},
     "entities": [],
     "sources": [],
     "selected_versions": [],
@@ -371,9 +375,43 @@ def build_topic_state(turns: list[ChatTurn]) -> dict:
         if entity and entity not in deduped_entities:
             deduped_entities.append(entity)
 
+    if last_answer_route.startswith("ocp_"):
+        active_lane = "ocp"
+    elif last_answer_route == "mixed_doc_ocp":
+        active_lane = "mixed"
+    elif last_answer_route:
+        active_lane = "document"
+    else:
+        active_lane = ""
+
+    active_slot = {
+        "lane": active_lane,
+        "answer_route": last_answer_route,
+        "intent": last_intent,
+        "response_shape": last_response_shape,
+        "document_group_preference": last_document_group_preference or "auto",
+        "doc_type": last_doc_type,
+        "selected_versions": selected_versions[:3],
+        "resources": last_explicit_resources[:4],
+        "code_resource_kind": last_code_resource_kind,
+        "sources": selected_sources[:3],
+        "pages": selected_pages[:5],
+        "grounded_chunk_ids": last_grounded_chunk_ids[:6],
+        "grounded_section_paths": last_grounded_section_paths[:4],
+        "example_anchor": last_example_anchor,
+        "namespace": last_namespace,
+        "ocp_resource": last_ocp_resource,
+        "ocp_resource_names": last_ocp_resource_names[:12],
+        "ocp_result_count": len(last_ocp_result_items),
+        "filter_keyword": last_ocp_filter_keyword,
+        "user_focus": last_user_focus,
+    }
+
     return {
         "active_topic": active_topic,
         "active_document_group": last_document_group_preference or "auto",
+        "active_lane": active_lane,
+        "active_slot": active_slot,
         "active_entities": deduped_entities[:6],
         "selected_sources": selected_sources[:3],
         "selected_versions": selected_versions[:3],
@@ -435,6 +473,8 @@ def build_topic_thread_summary(topic_label: str, turns: list[ChatTurn]) -> dict:
     return {
         "topic_label": topic_label or structured_summary.get("topic") or "",
         "summary": summary_text,
+        "active_lane": topic_state.get("active_lane", ""),
+        "active_slot": topic_state.get("active_slot", {}),
         "entities": topic_state.get("active_entities", [])[:6],
         "sources": structured_summary.get("recent_documents", [])[:3],
         "selected_versions": topic_state.get("selected_versions", [])[:3],
@@ -546,6 +586,8 @@ def build_rewrite_context_payload(recent: list[ChatTurn], summary: dict, topic_s
     return {
         "conversation_history": conversation_history,
         "active_topic": str(topic_state.get("active_topic") or summary.get("topic") or ""),
+        "active_lane": str(topic_state.get("active_lane") or ""),
+        "active_slot": topic_state.get("active_slot", {}),
         "active_entities": [str(entity) for entity in topic_state.get("active_entities", []) if entity][:6],
         "selected_sources": [str(source) for source in topic_state.get("selected_sources", []) if source][:3],
         "selected_versions": [str(v) for v in topic_state.get("selected_versions", []) if v][:3],

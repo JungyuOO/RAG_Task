@@ -116,15 +116,24 @@ class RetrievalStateBuilder:
     @staticmethod
     def _should_skip_expand_with_llm(policy: TurnPolicyDecision, topic_state: dict, user_message: str) -> bool:
         lowered = str(user_message or "").casefold()
-        has_followup_signal = any(marker in lowered for marker in ("그 ", "그때", "그다음", "그 다음", "다시", "이어서", "이번에는", "방금", "that", "again", "continue"))
-        compare_or_summary_signal = any(marker in lowered for marker in ("비교", "차이", "요약", "정리", "summary", "compare", "difference"))
+        has_followup_signal = any(marker in lowered for marker in ("? ", "??", "???", "? ??", "??", "???", "????", "??", "that", "again", "continue"))
+        compare_or_summary_signal = any(marker in lowered for marker in ("??", "??", "??", "??", "summary", "compare", "difference"))
+        active_slot = topic_state.get("active_slot") or {}
+        slot_lane = str(active_slot.get("lane") or "").casefold()
+        has_slot_anchor = bool(
+            active_slot.get("sources")
+            or active_slot.get("resources")
+            or active_slot.get("code_resource_kind")
+            or active_slot.get("grounded_chunk_ids")
+        )
         has_topic_anchor = (
             bool(topic_state.get("selected_sources"))
             or bool(topic_state.get("selected_versions"))
             or bool(topic_state.get("active_topic"))
+            or has_slot_anchor
         )
         if policy.turn_type == "document_followup":
-            return has_followup_signal or compare_or_summary_signal
+            return slot_lane in {"document", "mixed"} and (has_followup_signal or compare_or_summary_signal)
         if has_topic_anchor and (has_followup_signal or compare_or_summary_signal):
             return True
         return False
@@ -133,22 +142,27 @@ class RetrievalStateBuilder:
     def _build_followup_fast_query_result(rewritten_query: str, topic_state: dict, user_message: str) -> dict:
         lowered = str(user_message or "").casefold()
         resources: list[str] = []
+        active_slot = topic_state.get("active_slot") or {}
+        for resource in active_slot.get("resources", []) or []:
+            normalized = str(resource).casefold().strip()
+            if normalized and normalized not in resources:
+                resources.append(normalized)
         for resource in topic_state.get("last_explicit_resources", []) or []:
             normalized = str(resource).casefold().strip()
             if normalized and normalized not in resources:
                 resources.append(normalized)
-        anchor = topic_state.get("last_example_anchor") or {}
+        anchor = active_slot.get("example_anchor") or topic_state.get("last_example_anchor") or {}
         anchor_resource = str(anchor.get("resource_kind") or "").casefold().strip()
         if anchor_resource and anchor_resource not in resources:
             resources.append(anchor_resource)
-        last_code_resource_kind = str(topic_state.get("last_code_resource_kind") or "").casefold().strip()
+        last_code_resource_kind = str(active_slot.get("code_resource_kind") or topic_state.get("last_code_resource_kind") or "").casefold().strip()
         if last_code_resource_kind and last_code_resource_kind not in resources:
             resources.append(last_code_resource_kind)
 
         format_constraints: list[str] = []
         if any(marker in lowered for marker in ("yaml", "manifest")):
             format_constraints.append("yaml")
-        if any(marker in lowered for marker in ("명령어", "command", "cli", "oc ", "kubectl")):
+        if any(marker in lowered for marker in ("???", "command", "cli", "oc ", "kubectl")):
             format_constraints.append("cli")
 
         refined_terms: list[str] = []
@@ -162,7 +176,7 @@ class RetrievalStateBuilder:
             "refined_query": refined_query,
             "alternative_queries": [],
             "translated_keywords": [],
-            "target_versions": list(topic_state.get("selected_versions", []) or []),
+            "target_versions": list(active_slot.get("selected_versions", []) or topic_state.get("selected_versions", []) or []),
             "resources": resources,
             "actions": [],
             "format_constraints": format_constraints,

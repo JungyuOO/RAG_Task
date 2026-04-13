@@ -525,7 +525,18 @@ class RetrievalAgent(BaseAgent):
         return any(marker in lowered for marker in explicit_markers)
 
     def _inherit_resources_from_topic(self, normalized_message: str, normalized_keywords: list[str], topic_state: dict) -> list[str]:
-        if not (topic_state.get("last_explicit_resources") or topic_state.get("last_code_resource_kind") or (topic_state.get("last_example_anchor") or {}).get("resource_kind")):
+        active_slot = topic_state.get("active_slot") or {}
+        slot_resources = [str(value).lower().strip() for value in active_slot.get("resources", []) or [] if value]
+        slot_code_resource_kind = str(active_slot.get("code_resource_kind") or "").lower().strip()
+        slot_example_anchor = active_slot.get("example_anchor") or {}
+        if not (
+            slot_resources
+            or slot_code_resource_kind
+            or (slot_example_anchor or {}).get("resource_kind")
+            or topic_state.get("last_explicit_resources")
+            or topic_state.get("last_code_resource_kind")
+            or (topic_state.get("last_example_anchor") or {}).get("resource_kind")
+        ):
             return []
         referential_markers = ("그거", "그건", "그 yaml", "그 코드", "그 예시", "다시", "that", "this", "those", "it", "again", "also")
         code_markers = ("yaml", "manifest", "code", "example", "sample", "demo", "예시", "코드")
@@ -539,15 +550,15 @@ class RetrievalAgent(BaseAgent):
         if not should_inherit:
             return []
         resources: list[str] = []
-        anchor = topic_state.get("last_example_anchor") or {}
+        anchor = slot_example_anchor or topic_state.get("last_example_anchor") or {}
         anchor_resource = str(anchor.get("resource_kind") or "").lower().strip()
         if anchor_resource:
             resources.append(anchor_resource)
-        for resource in topic_state.get("last_explicit_resources", []) or []:
+        for resource in [*slot_resources, *(topic_state.get("last_explicit_resources", []) or [])]:
             normalized_resource = str(resource).lower().strip()
             if normalized_resource and normalized_resource not in resources:
                 resources.append(normalized_resource)
-        last_code_resource_kind = str(topic_state.get("last_code_resource_kind") or "").lower().strip()
+        last_code_resource_kind = slot_code_resource_kind or str(topic_state.get("last_code_resource_kind") or "").lower().strip()
         if last_code_resource_kind and last_code_resource_kind not in resources:
             resources.append(last_code_resource_kind)
         return resources

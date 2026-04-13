@@ -15,6 +15,9 @@ class OperatorScenarioDatasetTests(unittest.TestCase):
         self.assertGreaterEqual(sum(1 for s in scenarios if len(s.get("turns", [])) >= 5), 3)
         kinds = {str(s.get("kind") or "") for s in scenarios}
         self.assertTrue({"document", "ocp", "mixed"}.issubset(kinds))
+        scenario_ids = {str(s.get("id") or "") for s in scenarios}
+        self.assertIn("ocp-system-pod-total-count", scenario_ids)
+        self.assertIn("multiturn-doc-followup", scenario_ids)
 
 
 if __name__ == "__main__":

@@ -1,13 +1,3 @@
-<!--
-  README_PPT.md — 발표용 슬라이드
-  ────────────────────────────────────────────────
-  · GitHub 에서 열면 `---` 가로줄로 슬라이드가 자연스럽게 구분됩니다.
-  · 실제 슬라이드로 보려면 아래 PDF / PPTX 링크를 사용하세요.
-  · 직접 재빌드: `npx @marp-team/marp-cli README_PPT.md --pdf --pptx --allow-local-files`
--->
-
-> 📑 **슬라이드로 보기**: [README_PPT.pdf](./README_PPT.pdf) (GitHub 에서 바로 열림) · [README_PPT.pptx](./README_PPT.pptx) (PowerPoint 다운로드)
-
 ---
 marp: true
 theme: default
@@ -17,7 +7,19 @@ header: "RAG Task — OCP 문서 기반 질의응답 시스템"
 footer: "2026-04-13 · 김준규"
 ---
 
+<!--
+  README_PPT.md — 발표용 슬라이드
+  ────────────────────────────────────────────────
+  · GitHub 에서 열면 `---` 가로줄로 슬라이드가 자연스럽게 구분됩니다.
+  · 실제 슬라이드로 보려면 README_PPT.pdf / README_PPT.pptx 사용.
+  · 재빌드: npx @marp-team/marp-cli README_PPT.md --pdf --allow-local-files
+-->
+
+
 <!-- _class: lead -->
+<!-- _paginate: false -->
+<!-- _header: "" -->
+<!-- _footer: "" -->
 
 # RAG Task
 ## OCP 문서 기반 멀티턴 질의응답 시스템
@@ -25,6 +27,10 @@ footer: "2026-04-13 · 김준규"
 프레임워크 없이 직접 구현한 Retrieval-Augmented Generation
 
 `2026-04-13` · 발표자: **김준규**
+
+<br>
+
+> 📑 **슬라이드로 보기 (GitHub):** [README_PPT.pdf](./README_PPT.pdf) · [README_PPT.pptx](./README_PPT.pptx)
 
 ---
 
