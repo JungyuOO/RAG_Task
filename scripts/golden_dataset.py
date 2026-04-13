@@ -19,6 +19,9 @@ class GoldenCase:
     expected_source_tokens: tuple[str, ...]
     required_keywords: tuple[str, ...]
     forbidden_markers: tuple[str, ...]
+    ground_truth: str = ""
+    source_path: str = ""
+    source_heading: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +65,9 @@ def _parse_case(payload: dict) -> GoldenCase:
         expected_source_tokens=_require_string_list(payload.get("expected_source_tokens"), "expected_source_tokens"),
         required_keywords=_require_string_list(payload.get("required_keywords"), "required_keywords"),
         forbidden_markers=_require_string_list(payload.get("forbidden_markers"), "forbidden_markers"),
+        ground_truth=str(payload.get("ground_truth") or "").strip(),
+        source_path=str(payload.get("source_path") or "").strip(),
+        source_heading=str(payload.get("source_heading") or "").strip(),
     )
 
 
