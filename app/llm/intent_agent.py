@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from app.llm.base_agent import BaseAgent
 from app.rag.utils import normalize_domain_terms, normalize_query_keywords
@@ -41,6 +42,7 @@ class IntentAgent(BaseAgent):
         "continue",
     )
     EXPLAIN_MARKERS = ("설명", "차이", "관계", "명령어", "커맨드", "방법", "어떻게", "생성할 때", "기본적으로", "보통")
+    HELP_MARKERS = ("무슨 질문", "무엇을 물어", "무엇을 질문", "무슨 걸 할 수")
     UNSUPPORTED_BEGINNER_CONCEPT_PATTERNS = (
         ("storageclass", "pv"),
         ("storageclass", "pvc"),
@@ -88,6 +90,13 @@ class IntentAgent(BaseAgent):
             return {"intent": "general", "confidence": 0.2, "doc_type": None}
         if any(marker in lowered for marker in self.GREETING_MARKERS):
             return {"intent": "greeting", "confidence": 0.95, "doc_type": None}
+        if (
+            any(marker in lowered for marker in self.HELP_MARKERS)
+            or "응답할 수" in lowered
+            or re.search(r"할\s*수\s*있는", lowered)
+            or re.search(r"도와줄\s*수\s*있", lowered)
+        ):
+            return {"intent": "general", "confidence": 0.95, "doc_type": None}
         if self._looks_like_unsupported_beginner_concept(lowered):
             return {"intent": "general", "confidence": 0.9, "doc_type": None}
 
