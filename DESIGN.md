@@ -1,266 +1,428 @@
-# Design System Inspired by Cohere
+# Custom Design System (based on Hashicorp)
 
 ## 1. Visual Theme & Atmosphere
 
-Cohere's interface is a polished enterprise command deck — confident, clean, and designed to make AI feel like serious infrastructure rather than a consumer toy. The experience lives on a bright white canvas where content is organized into generously rounded cards (22px radius) that create an organic, cloud-like containment language. This is a site that speaks to CTOs and enterprise architects: professional without being cold, sophisticated without being intimidating.
+HashiCorp's website is enterprise infrastructure made tangible — a design system that must communicate the complexity of cloud infrastructure management while remaining approachable. The visual language splits between two modes: a clean white light-mode for informational sections and a dramatic dark-mode (`#15181e`, `#0d0e12`) for hero areas and product showcases, creating a day/night duality that mirrors the "build in light, deploy in dark" developer workflow.
 
-The design language bridges two worlds with a dual-typeface system: CohereText, a custom display serif with tight tracking, gives headlines the gravitas of a technology manifesto, while Unica77 Cohere Web handles all body and UI text with geometric Swiss precision. This serif/sans pairing creates a "confident authority meets engineering clarity" personality that perfectly reflects an enterprise AI platform.
+The typography is anchored by a custom brand font (HashiCorp Sans, loaded as `__hashicorpSans_96f0ca`) that carries substantial weight — literally. Headings use 600–700 weights with tight line-heights (1.17–1.19), creating dense, authoritative text blocks that communicate enterprise confidence. The hero headline at 82px weight 600 with OpenType `"kern"` enabled is not decorative — it's infrastructure-grade typography.
 
-Color is used with extreme restraint — the interface is almost entirely black-and-white with cool gray borders (`#d9d9dd`, `#e5e7eb`). Purple-violet appears only in photographic hero bands, gradient sections, and the interactive blue (`#1863dc`) that signals hover and focus states. This chromatic restraint means that when color DOES appear — in product screenshots, enterprise photography, and the deep purple section — it carries maximum visual weight.
+What distinguishes HashiCorp is its multi-product color system. Each product in the portfolio has its own brand color — Terraform purple (`#7b42bc`), Vault yellow (`#ffcf25`), Waypoint teal (`#14c6cb`), Vagrant blue (`#1868f2`) — and these colors appear throughout as accent tokens via a CSS custom property system (`--mds-color-*`). This creates a design system within a design system: the parent brand is black-and-white with blue accents, while each child product injects its own chromatic identity.
+
+The component system uses the `mds` (Markdown Design System) prefix, indicating a systematic, token-driven approach where colors, spacing, and states are all managed through CSS variables. Shadows are remarkably subtle — dual-layer micro-shadows using `rgba(97, 104, 117, 0.05)` that are nearly invisible but provide just enough depth to separate interactive surfaces from the background.
 
 **Key Characteristics:**
-- Bright white canvas with cool gray containment borders
-- 22px signature border-radius — the distinctive "Cohere card" roundness
-- Dual custom typeface: CohereText (display serif) + Unica77 (body sans)
-- Enterprise-grade chromatic restraint: black, white, cool grays, minimal purple-blue accent
-- Deep purple/violet hero sections providing dramatic contrast
-- Ghost/transparent buttons that shift to blue on hover
-- Enterprise photography showing diverse real-world applications
-- CohereMono for code and technical labels with uppercase transforms
+- Dual-mode: clean white sections + dramatic dark (`#15181e`) hero/product areas
+- Custom HashiCorp Sans font with 600–700 weights and `"kern"` feature
+- Multi-product color system via `--mds-color-*` CSS custom properties
+- Product brand colors: Terraform purple, Vault yellow, Waypoint teal, Vagrant blue
+- Uppercase letter-spaced captions (13px, weight 600, 1.3px letter-spacing)
+- Micro-shadows: dual-layer at 0.05 opacity — depth through whisper, not shout
+- Token-driven `mds` component system with semantic variable names
+- Tight border Radius: 8px–8px, nothing pill-shaped or circular
+- System-ui fallback stack for secondary text
 
 ## 2. Color Palette & Roles
 
-### Primary
-- **Cohere Black** (`#000000`): Primary headline text and maximum-emphasis elements.
-- **Near Black** (`#212121`): Standard body link color — slightly softer than pure black.
-- **Deep Dark** (`#17171c`): A blue-tinted near-black for navigation and dark-section text.
+### Brand Primary
+- **Black** (`#171717`): Primary brand color, text on light surfaces, `--mds-color-hcp-brand`
+- **Dark Charcoal** (`#15181e`): Dark mode backgrounds, hero sections
+- **Near Black** (`#0d0e12`): Deepest dark mode surface, form inputs on dark
 
-### Secondary & Accent
-- **Interaction Blue** (`#1863dc`): The primary interactive accent — appears on button hover, focus states, and active links. The sole chromatic action color.
-- **Ring Blue** (`#4c6ee6` at 50%): Tailwind ring color for keyboard focus indicators.
-- **Focus Purple** (`#9b60aa`): Input focus border color — a muted violet.
+### Neutral Scale
+- **Light Gray** (`#f1f2f3`): Light backgrounds, subtle surfaces
+- **Mid Gray** (`#d5d7db`): Borders, button text on dark
+- **Cool Gray** (`#b2b6bd`): Border accents (at 0.1–0.4 opacity)
+- **Dark Gray** (`#656a76`): Helper text, secondary labels, `--mds-form-helper-text-color`
+- **Charcoal** (`#3b3d45`): Secondary text on light, button borders
+- **Near White** (`#efeff1`): Primary text on dark surfaces
 
-### Surface & Background
-- **Pure White** (`#ffffff`): The primary page background and card surface.
-- **Snow** (`#fafafa`): Subtle elevated surfaces and light-section backgrounds.
-- **Lightest Gray** (`#f2f2f2`): Card borders and the softest containment lines.
+### Product Brand Colors
+- **Terraform Purple** (`#7b42bc`): `--mds-color-terraform-button-background`
+- **Vault Yellow** (`#ffcf25`): `--mds-color-vault-button-background`
+- **Waypoint Teal** (`#14c6cb`): `--mds-color-waypoint-button-background-focus`
+- **Waypoint Teal Hover** (`#12b6bb`): `--mds-color-waypoint-button-background-hover`
+- **Vagrant Blue** (`#1868f2`): `--mds-color-vagrant-brand`
+- **Purple Accent** (`#911ced`): `--mds-color-palette-purple-300`
+- **Visited Purple** (`#a737ff`): `--mds-color-foreground-action-visited`
 
-### Neutrals & Text
-- **Muted Slate** (`#93939f`): De-emphasized footer links and tertiary text — a cool-toned gray with a slight blue-violet tint.
-- **Border Cool** (`#d9d9dd`): Standard section and list-item borders — a cool, slightly purple-tinted gray.
-- **Border Light** (`#e5e7eb`): Lighter border variant — Tailwind's standard gray-200.
+### Semantic Colors
+- **Action Blue** (`#1060ff`): Primary action links on dark
+- **Link Blue** (`#2264d6`): Primary links on light
+- **Bright Blue** (`#2b89ff`): Active links, hover accent
+- **Amber** (`#bb5a00`): `--mds-color-palette-amber-200`, warning states
+- **Amber Light** (`#fbeabf`): `--mds-color-palette-amber-100`, warning backgrounds
+- **Vault Faint Yellow** (`#fff9cf`): `--mds-color-vault-radar-gradient-faint-stop`
+- **Orange** (`#a9722e`): `--mds-color-unified-core-orange-6`
+- **Red** (`#731e25`): `--mds-color-unified-core-red-7`, error states
+- **Navy** (`#101a59`): `--mds-color-unified-core-blue-7`
 
-### Gradient System
-- **Purple-Violet Hero Band**: Deep purple gradient sections that create dramatic contrast against the white canvas. These appear as full-width bands housing product screenshots and key messaging.
-- **Dark Footer Gradient**: The page transitions through deep purple/charcoal to the black footer, creating a "dusk" effect.
+### Shadows
+- **Micro Shadow** (`rgba(97, 104, 117, 0.05) 0px 1px 1px, rgba(97, 104, 117, 0.05) 0px 2px 2px`): Default card/button elevation
+- **Focus Outline**: `3px solid var(--mds-color-focus-action-external)` — systematic focus ring
 
 ## 3. Typography Rules
 
-### Font Family
-- **Display**: `CohereText`, with fallbacks: `Space Grotesk, Inter, ui-sans-serif, system-ui`
-- **Body / UI**: `Unica77 Cohere Web`, with fallbacks: `Inter, Arial, ui-sans-serif, system-ui`
-- **Code**: `CohereMono`, with fallbacks: `Arial, ui-sans-serif, system-ui`
-- **Icons**: `CohereIconDefault` (custom icon font)
+### Font Families
+- **Primary Brand**: `__hashicorpSans_96f0ca` (HashiCorp Sans), with fallback: `__hashicorpSans_Fallback_96f0ca`
+- **System UI**: `system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial`
 
 ### Hierarchy
 
 | Role | Font | Size | Weight | Line Height | Letter Spacing | Notes |
 |------|------|------|--------|-------------|----------------|-------|
-| Display / Hero | CohereText | 72px (4.5rem) | 400 | 1.00 (tight) | -1.44px | Maximum impact, serif authority |
-| Display Secondary | CohereText | 60px (3.75rem) | 400 | 1.00 (tight) | -1.2px | Large section headings |
-| Section Heading | Unica77 | 48px (3rem) | 400 | 1.20 (tight) | -0.48px | Feature section titles |
-| Sub-heading | Unica77 | 32px (2rem) | 400 | 1.20 (tight) | -0.32px | Card headings, feature names |
-| Feature Title | Unica77 | 24px (1.5rem) | 400 | 1.30 | normal | Smaller section titles |
-| Body Large | Unica77 | 18px (1.13rem) | 400 | 1.40 | normal | Intro paragraphs |
-| Body / Button | Unica77 | 16px (1rem) | 400 | 1.50 | normal | Standard body, button text |
-| Button Medium | Unica77 | 14px (0.88rem) | 500 | 1.71 (relaxed) | normal | Smaller buttons, emphasized labels |
-| Caption | Unica77 | 14px (0.88rem) | 400 | 1.40 | normal | Metadata, descriptions |
-| Uppercase Label | Unica77 / CohereMono | 14px (0.88rem) | 400 | 1.40 | 0.28px | Uppercase section labels |
-| Small | Unica77 | 12px (0.75rem) | 400 | 1.40 | normal | Smallest text, footer links |
-| Code Micro | CohereMono | 8px (0.5rem) | 400 | 1.40 | 0.16px | Tiny uppercase code labels |
+| Display Hero | HashiCorp Sans | 82px (5.13rem) | 600 | 1.17 (tight) | normal | `"kern"` enabled |
+| Section Heading | HashiCorp Sans | 52px (3.25rem) | 600 | 1.19 (tight) | normal | `"kern"` enabled |
+| Feature Heading | HashiCorp Sans | 42px (2.63rem) | 700 | 1.19 (tight) | -0.42px | Negative tracking |
+| Sub-heading | HashiCorp Sans | 34px (2.13rem) | 600–700 | 1.18 (tight) | normal | Feature blocks |
+| Card Title | HashiCorp Sans | 26px (1.63rem) | 700 | 1.19 (tight) | normal | Card and panel headings |
+| Small Title | HashiCorp Sans | 19px (1.19rem) | 700 | 1.21 (tight) | normal | Compact headings |
+| Body Emphasis | HashiCorp Sans | 17px (1.06rem) | 600–700 | 1.18–1.35 | normal | Bold body text |
+| Body Large | system-ui | 20px (1.25rem) | 400–600 | 1.50 | normal | Hero descriptions |
+| Body | system-ui | 16px (1.00rem) | 400–500 | 1.63–1.69 (relaxed) | normal | Standard body text |
+| Nav Link | system-ui | 15px (0.94rem) | 500 | 1.60 (relaxed) | normal | Navigation items |
+| Small Body | system-ui | 14px (0.88rem) | 400–500 | 1.29–1.71 | normal | Secondary content |
+| Caption | system-ui | 13px (0.81rem) | 400–500 | 1.23–1.69 | normal | Metadata, footer links |
+| Uppercase Label | HashiCorp Sans | 13px (0.81rem) | 600 | 1.69 (relaxed) | 1.3px | `text-transform: uppercase` |
 
 ### Principles
-- **Serif for declaration, sans for utility**: CohereText carries the brand voice at display scale — its serif terminals give headlines the authority of published research. Unica77 handles everything functional with Swiss-geometric neutrality.
-- **Negative tracking at scale**: CohereText uses -1.2px to -1.44px letter-spacing at 60–72px, creating dense, impactful text blocks.
-- **Single body weight**: Nearly all Unica77 usage is weight 400. Weight 500 appears only for small button emphasis. The system relies on size and spacing, not weight contrast.
-- **Uppercase code labels**: CohereMono uses uppercase with positive letter-spacing (0.16–0.28px) for technical tags and section markers.
+- **Brand/System split**: HashiCorp Sans for headings and brand-critical text; system-ui for body, navigation, and functional text. The brand font carries the weight, system-ui carries the words.
+- **Kern always on**: All HashiCorp Sans text enables OpenType `"kern"` — letterfitting is non-negotiable.
+- **Tight headings**: Every heading uses 1.17–1.21 line-height, creating dense, stacked text blocks that feel infrastructural — solid, load-bearing.
+- **Relaxed body**: Body text uses 1.50–1.69 line-height (notably generous), creating comfortable reading rhythm beneath the dense headings.
+- **Uppercase labels as wayfinding**: 13px uppercase with 1.3px letter-spacing serves as the systematic category/section marker — always HashiCorp Sans weight 600.
 
 ## 4. Component Stylings
 
 ### Buttons
 
-**Ghost / Transparent**
-- Background: transparent (`rgba(255, 255, 255, 0)`)
-- Text: Cohere Black (`#000000`)
-- No border visible
-- Hover: text shifts to Interaction Blue (`#1863dc`), opacity 0.8
-- Focus: solid 2px outline in Interaction Blue
-- The primary button style — invisible until interacted with
+**Primary Dark**
+- Background: `#15181e`
+- Text: `#d5d7db`
+- Padding: 9px 9px 9px 15px (asymmetric, more left padding)
+- Radius: 8px
+- Border: `1px solid rgba(178, 182, 189, 0.4)`
+- Shadow: `rgba(97, 104, 117, 0.05) 0px 1px 1px, rgba(97, 104, 117, 0.05) 0px 2px 2px`
+- Focus: `3px solid var(--mds-color-focus-action-external)`
+- Hover: uses `--mds-color-surface-interactive` token
 
-**Dark Solid**
-- Background: dark/black
-- Text: Pure White
-- For CTA on light surfaces
-- Pill-shaped or standard radius
+**Secondary White**
+- Background: `#ffffff`
+- Text: `#3b3d45`
+- Padding: 8px 12px
+- Radius: 8px
+- Hover: `--mds-color-surface-interactive` + low-shadow elevation
+- Focus: `3px solid transparent` outline
+- Clean, minimal appearance
 
-**Outlined**
-- Border-based containment
-- Used in secondary actions
+**Product-Colored Buttons**
+- Terraform: background `#7b42bc`
+- Vault: background `#ffcf25` (dark text)
+- Waypoint: background `#14c6cb`, hover `#12b6bb`
+- Each product button follows the same structural pattern but uses its brand color
+
+### Badges / Pills
+- Background: `#42225b` (deep purple)
+- Text: `#efeff1`
+- Padding: 3px 7px
+- Radius: 8px
+- Border: `1px solid rgb(180, 87, 255)`
+- Font: 16px
+
+### Inputs
+
+**Text Input (Dark Mode)**
+- Background: `#0d0e12`
+- Text: `#efeff1`
+- Border: `1px solid rgb(97, 104, 117)`
+- Padding: 11px
+- Radius: 8px
+- Focus: `3px solid var(--mds-color-focus-action-external)` outline
+
+**Checkbox**
+- Background: `#0d0e12`
+- Border: `1px solid rgb(97, 104, 117)`
+- Radius: 8px
+
+### Links
+- **Action Blue on Light**: `#2264d6`, hover → blue-600 variable, underline on hover
+- **Action Blue on Dark**: `#1060ff` or `#2b89ff`, underline on hover
+- **White on Dark**: `#ffffff`, transparent underline → visible underline on hover
+- **Neutral on Light**: `#3b3d45`, transparent underline → visible underline on hover
+- **Light on Dark**: `#efeff1`, similar hover pattern
+- All links use `var(--wpl-blue-600)` as hover color
 
 ### Cards & Containers
-- Background: Pure White (`#ffffff`)
-- Border: thin solid Lightest Gray (`1px solid #f2f2f2`) for subtle cards; Cool Border (`#d9d9dd`) for emphasized
-- Radius: **22px** — the signature Cohere radius for primary cards, images, and dialog containers. Also 4px, 8px, 16px, 20px for smaller elements
-- Shadow: minimal — Cohere relies on background color and borders rather than shadows
-- Special: `0px 0px 22px 22px` radius (bottom-only rounding) for section containers
-- Dialog: 8px radius for modal/dialog boxes
-
-### Inputs & Forms
-- Text: white on dark input, black on light
-- Focus border: Focus Purple (`#9b60aa`) with `1px solid`
-- Focus shadow: red ring (`rgb(179, 0, 0) 0px 0px 0px 2px`) — likely for error state indication
-- Focus outline: Interaction Blue solid 2px
+- Light mode: white background, micro-shadow elevation
+- Dark mode: `#15181e` or darker surfaces
+- Radius: 8px for cards and containers
+- Product showcase cards with gradient borders or accent lighting
 
 ### Navigation
-- Clean horizontal nav on white or dark background
-- Logo: Cohere wordmark (custom SVG)
-- Links: Dark text at 16px Unica77
-- CTA: Dark solid button
-- Mobile: hamburger collapse
+- Style: Solid & Bold -- solid dark background (foreground color), high contrast
+- Light text on dark header surface, clear visual separation from content
+- CTA button uses primary color or inverted colors
+- Mobile: hamburger menu collapse
 
-### Image Treatment
-- Enterprise photography with diverse subjects and environments
-- Purple-tinted hero photography for dramatic sections
-- Product UI screenshots on dark surfaces
-- Images with 22px radius matching card system
-- Full-bleed purple gradient sections
-
-### Distinctive Components
-
-**22px Card System**
-- The 22px border-radius is Cohere's visual signature
-- All primary cards, images, and containers use this radius
-- Creates a cloud-like, organic softness that's distinctive from the typical 8–12px
-
-**Enterprise Trust Bar**
-- Company logos displayed in a horizontal strip
-- Demonstrates enterprise adoption
-- Clean, monochrome logo treatment
-
-**Purple Hero Bands**
-- Full-width deep purple sections housing product showcases
-- Create dramatic visual breaks in the white page flow
-- Product screenshots float within the purple environment
-
-**Uppercase Code Tags**
-- CohereMono in uppercase with letter-spacing
-- Used as section markers and categorization labels
-- Creates a technical, structured information hierarchy
 
 ## 5. Layout Principles
 
 ### Spacing System
 - Base unit: 8px
-- Scale: 2px, 6px, 8px, 10px, 12px, 16px, 20px, 22px, 24px, 28px, 32px, 36px, 40px, 56px, 60px
-- Button padding varies by variant
-- Card internal padding: approximately 24–32px
-- Section vertical spacing: generous (56–60px between sections)
+- Scale: 2px, 3px, 4px, 6px, 7px, 8px, 9px, 11px, 12px, 16px, 20px, 24px, 32px, 40px, 48px
 
 ### Grid & Container
-- Max container width: up to 2560px (very wide) with responsive scaling
-- Hero: centered with dramatic typography
-- Feature sections: multi-column card grids
-- Enterprise sections: full-width purple bands
-- 26 breakpoints detected — extremely granular responsive system
+- Max content width: ~1150px (xl breakpoint)
+- Full-width dark hero sections with contained content
+- Card grids: 2–3 column layouts
+- Generous horizontal padding at desktop scale
+
+### Breakpoints
+| Name | Width | Key Changes |
+|------|-------|-------------|
+| Mobile Small | <375px | Tight single column |
+| Mobile | 375–480px | Standard mobile |
+| Small Tablet | 480–600px | Minor adjustments |
+| Tablet | 600–768px | 2-column grids begin |
+| Small Desktop | 768–992px | Full nav visible |
+| Desktop | 992–1120px | Standard layout |
+| Large Desktop | 1120–1440px | Max-width content |
+| Ultra-wide | >1440px | Centered, generous margins |
 
 ### Whitespace Philosophy
-- **Enterprise clarity**: Each section presents one clear proposition with breathing room between.
-- **Photography as hero**: Large photographic sections provide visual interest without requiring decorative design elements.
-- **Card grouping**: Related content is grouped into 22px-rounded cards, creating natural information clusters.
+- **Compact & dense**: Optimize for information density and scanning speed. Tight padding (8-12px), small gaps (4-8px between related items).
+- **Reduced section spacing**: Use ~70% of the reference spacing values for a data-focused, efficient layout.
+- **Screen real estate**: Maximize visible content per viewport -- users should see more items without scrolling.
 
 ### Border Radius Scale
-- Sharp (4px): Navigation elements, small tags, pagination
-- Comfortable (8px): Dialog boxes, secondary containers, small cards
-- Generous (16px): Featured containers, medium cards
-- Large (20px): Large feature cards
-- Signature (22px): Primary cards, hero images, main containers — THE Cohere radius
-- Pill (9999px): Buttons, tags, status indicators
+- Minimal (2px): Links, small inline elements
+- Subtle (3px): Checkboxes, small inputs
+- Standard (4px): Secondary buttons
+- Comfortable (5px): Primary buttons, badges, inputs
+- Card (8px): Cards, containers, images
 
 ## 6. Depth & Elevation
 
 | Level | Treatment | Use |
 |-------|-----------|-----|
-| Flat (Level 0) | No shadow, no border | Page background, text blocks |
-| Bordered (Level 1) | `1px solid #f2f2f2` or `#d9d9dd` | Standard cards, list separators |
-| Purple Band (Level 2) | Full-width dark purple background | Hero sections, feature showcases |
+| Flat (Level 0) | No shadow | Default surfaces, text blocks |
+| Whisper (Level 1) | `rgba(97, 104, 117, 0.05) 0px 1px 1px, rgba(97, 104, 117, 0.05) 0px 2px 2px` | Cards, buttons, interactive surfaces |
+| Focus (Level 2) | `3px solid var(--mds-color-focus-action-external)` outline | Focus rings — color-matched to context |
 
-**Shadow Philosophy**: Cohere is nearly shadow-free. Depth is communicated through **background color contrast** (white cards on purple bands, white surface on snow), **border containment** (cool gray borders), and the dramatic **light-to-dark section alternation**. When elements need elevation, they achieve it through being white-on-dark rather than through shadow casting.
+**Shadow Philosophy**: HashiCorp uses arguably the subtlest shadow system in modern web design. The dual-layer shadows at 5% opacity are nearly invisible — they exist not to create visual depth but to signal interactivity. If you can see the shadow, it's too strong. This restraint communicates the enterprise value of stability — nothing floats, nothing is uncertain.
 
 ## 7. Do's and Don'ts
 
 ### Do
-- Use 22px border-radius on all primary cards and containers — it's the visual signature
-- Use CohereText for display headings (72px, 60px) with negative letter-spacing
-- Use Unica77 for all body and UI text at weight 400
-- Keep the palette black-and-white with cool gray borders
-- Use Interaction Blue (#1863dc) only for hover/focus interactive states
-- Use deep purple sections for dramatic visual breaks and product showcases
-- Apply uppercase + letter-spacing on CohereMono for section labels
-- Maintain enterprise-appropriate photography with diverse subjects
+- Use HashiCorp Sans for headings and brand text, system-ui for body and UI text
+- Enable `"kern"` on all HashiCorp Sans text
+- Use product brand colors ONLY for their respective products (Terraform = purple, Vault = yellow, etc.)
+- Apply uppercase labels at 13px weight 600 with 1.3px letter-spacing for section markers
+- Keep shadows at the "whisper" level (0.05 opacity dual-layer)
+- Use the `--mds-color-*` token system for consistent color application
+- Maintain the tight-heading / relaxed-body rhythm (1.17–1.21 vs 1.50–1.69 line-heights)
+- Use `3px solid` focus outlines for accessibility
 
 ### Don't
-- Don't use border-radius other than 22px on primary cards — the signature radius matters
-- Don't introduce warm colors — the palette is strictly cool-toned
-- Don't use heavy shadows — depth comes from color contrast and borders
-- Don't use bold (700+) weight on body text — 400–500 is the range
-- Don't skip the serif/sans hierarchy — CohereText for headlines, Unica77 for body
-- Don't use purple as a surface color for cards — purple is reserved for full-width sections
-- Don't reduce section spacing below 40px — enterprise layouts need breathing room
-- Don't use decoration on buttons by default — ghost/transparent is the base state
+- Don't use product brand colors outside their product context (no Terraform purple on Vault content)
+- Don't increase shadow opacity above 0.1 — the whisper level is intentional
+- Don't use pill-shaped buttons (>8px radius) — the sharp, minimal radius is structural
+- Don't skip the `"kern"` feature on headings — the font requires it
+- Don't use HashiCorp Sans for small body text — it's designed for 17px+ heading use
+- Don't mix product colors in the same component — each product has one color
+- Don't use pure black (`#171717`) for dark backgrounds — use `#15181e` or `#0d0e12`
+- Don't forget the asymmetric button padding — 9px 9px 9px 15px is intentional
 
 ## 8. Responsive Behavior
 
 ### Breakpoints
 | Name | Width | Key Changes |
 |------|-------|-------------|
-| Small Mobile | <425px | Compact layout, minimal spacing |
-| Mobile | 425–640px | Single column, stacked cards |
-| Large Mobile | 640–768px | Minor spacing adjustments |
-| Tablet | 768–1024px | 2-column grids begin |
-| Desktop | 1024–1440px | Full multi-column layout |
-| Large Desktop | 1440–2560px | Maximum container width |
-
-*26 breakpoints detected — one of the most granularly responsive sites in the dataset.*
-
-### Touch Targets
-- Buttons adequately sized for touch interaction
-- Navigation links with comfortable spacing
-- Card surfaces as touch targets
+| Mobile | <768px | Single column, hamburger nav, stacked CTAs |
+| Tablet | 768–992px | 2-column grids, nav begins expanding |
+| Desktop | 992–1150px | Full layout, mega-menu nav |
+| Large | >1150px | Max-width centered, generous margins |
 
 ### Collapsing Strategy
-- **Navigation**: Full nav collapses to hamburger
-- **Feature grids**: Multi-column → 2-column → single column
-- **Hero text**: 72px → 48px → 32px progressive scaling
-- **Purple sections**: Maintain full-width, content stacks
-- **Card grids**: 3 → 2 → 1 column
-
-### Image Behavior
-- Photography scales proportionally within 22px-radius containers
-- Product screenshots maintain aspect ratio
-- Purple sections scale background proportionally
+- Hero: 82px → 52px → 42px heading sizes
+- Navigation: mega-menu → hamburger
+- Product cards: 3-column → 2-column → stacked
+- Dark sections maintain full-width but compress padding
+- Buttons: inline → full-width stacked on mobile
 
 ## 9. Agent Prompt Guide
 
 ### Quick Color Reference
-- Primary Text: "Cohere Black (#000000)"
-- Page Background: "Pure White (#ffffff)"
-- Secondary Text: "Near Black (#212121)"
-- Hover Accent: "Interaction Blue (#1863dc)"
-- Muted Text: "Muted Slate (#93939f)"
-- Card Borders: "Lightest Gray (#f2f2f2)"
-- Section Borders: "Border Cool (#d9d9dd)"
+- Light bg: `#ffffff`, `#f1f2f3`
+- Dark bg: `#15181e`, `#0d0e12`
+- Text light: `#171717`, `#3b3d45`
+- Text dark: `#efeff1`, `#d5d7db`
+- Links: `#2264d6` (light), `#1060ff` (dark), `#2b89ff` (active)
+- Helper text: `#656a76`
+- Borders: `rgba(178, 182, 189, 0.4)`, `rgb(97, 104, 117)`
+- Focus: `3px solid` product-appropriate color
 
 ### Example Component Prompts
-- "Create a hero section on Pure White (#ffffff) with CohereText at 72px weight 400, line-height 1.0, letter-spacing -1.44px. Cohere Black text. Subtitle in Unica77 at 18px weight 400, line-height 1.4."
-- "Design a feature card with 22px border-radius, 1px solid Lightest Gray (#f2f2f2) border on white. Title in Unica77 at 32px, letter-spacing -0.32px. Body in Unica77 at 16px, Muted Slate (#93939f)."
-- "Build a ghost button: transparent background, Cohere Black text in Unica77 at 16px. On hover, text shifts to Interaction Blue (#1863dc) with 0.8 opacity. Focus: 2px solid Interaction Blue outline."
-- "Create a deep purple full-width section with white text. CohereText at 60px for the heading. Product screenshot floats within using 22px border-radius."
-- "Design a section label using CohereMono at 14px, uppercase, letter-spacing 0.28px. Muted Slate (#93939f) text."
+- "Create a hero on dark background (#15181e). Headline at 82px HashiCorp Sans weight 600, line-height 1.17, kern enabled, white text. Sub-text at 20px system-ui weight 400, line-height 1.50, #d5d7db text. Two buttons: primary dark (#15181e, 5px radius, 9px 15px padding) and secondary white (#ffffff, 4px radius, 8px 12px padding)."
+- "Design a product card: white background, 8px radius, dual-layer shadow at rgba(97,104,117,0.05). Title at 26px HashiCorp Sans weight 700, body at 16px system-ui weight 400 line-height 1.63."
+- "Build an uppercase section label: 13px HashiCorp Sans weight 600, line-height 1.69, letter-spacing 1.3px, text-transform uppercase, #656a76 color."
+- "Create a product-specific CTA button: Terraform → #7b42bc background, Vault → #ffcf25 with dark text, Waypoint → #14c6cb. All: 5px radius, 500 weight text, 16px system-ui."
+- "Design a dark form: #0d0e12 input background, #efeff1 text, 1px solid rgb(97,104,117) border, 5px radius, 11px padding. Focus: 3px solid accent-color outline."
 
 ### Iteration Guide
-1. Focus on ONE component at a time
-2. Always use 22px radius for primary cards — "the Cohere card roundness"
-3. Specify the typeface — CohereText for headlines, Unica77 for body, CohereMono for labels
-4. Interactive elements use Interaction Blue (#1863dc) on hover only
-5. Keep surfaces white with cool gray borders — no warm tones
-6. Purple is for full-width sections, never card backgrounds
+1. Always start with the mode decision: light (white) for informational, dark (#15181e) for hero/product
+2. HashiCorp Sans for headings only (17px+), system-ui for everything else
+3. Shadows are at whisper level (0.05 opacity) — if visible, reduce
+4. Product colors are sacred — each product owns exactly one color
+5. Focus rings are always 3px solid, color-matched to product context
+6. Uppercase labels are the systematic wayfinding pattern — 13px, 600, 1.3px tracking
+
+
+---
+
+## Included Components
+
+The following components are part of this design system:
+
+- Button
+- Input
+- Table
+- Card
+- Badge
+- Tabs
+- Dialog
+
+
+---
+
+## Iconography & SVG Guidelines
+
+### Icon Library
+
+Use a single, consistent icon library throughout the project. Recommended options:
+
+- **Lucide React** (`lucide-react`): Default for shadcn/ui projects. 1,400+ icons, tree-shakeable, consistent 24x24 grid.
+- **Radix Icons** (`@radix-ui/react-icons`): 300+ icons, 15x15 grid, minimal and geometric.
+- **Heroicons** (`@heroicons/react`): 300+ icons by Tailwind team, outline and solid variants.
+
+Pick ONE library and use it everywhere. Do not mix icon libraries within the same project.
+
+### SVG Usage Rules
+
+- All icons must be inline SVG components (not `<img>` tags) for color and size control.
+- Icon size follows the type scale: 16px (inline), 20px (buttons), 24px (standalone).
+- Icon color inherits from `currentColor` -- never hard-code fill/stroke colors.
+- For custom/brand icons, export as SVG components with `currentColor` fills.
+- Stroke width: 1.5px-2px for outline icons. Keep consistent across the project.
+
+### Icon Sizing Scale
+
+| Context | Size | Usage |
+|---------|------|-------|
+| Inline text | 16px (1rem) | Badges, labels, breadcrumbs |
+| Button icon | 18px (1.125rem) | Icon buttons, CTA icons |
+| Standalone | 24px (1.5rem) | Navigation, card icons |
+| Feature | 32-48px | Hero sections, empty states |
+
+### SVG Optimization
+
+- Run all custom SVGs through SVGO before committing.
+- Remove unnecessary attributes: `xmlns`, `xml:space`, editor metadata.
+- Use `viewBox` instead of fixed `width`/`height` for scalability.
+
+
+---
+
+## 10. shadcn/ui Theme
+
+```css
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 240 10% 4%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 4%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 4%;
+    --primary: 0 0% 9%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 0 0% 94%;
+    --secondary-foreground: 240 10% 4%;
+    --muted: 0 0% 96%;
+    --muted-foreground: 240 10% 44%;
+    --accent: 274 85% 52%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 10% 79%;
+    --input: 240 10% 79%;
+    --ring: 0 0% 9%;
+    --radius: 0.5rem;
+    --chart-1: 0 0% 9%;
+    --chart-2: 0 0% 9%;
+    --chart-3: 0 0% 9%;
+    --chart-4: 0 0% 9%;
+    --chart-5: 0 0% 9%;
+  }
+
+  .dark {
+    --background: 0 17% 7%;
+    --foreground: 0 0% 98%;
+    --card: 0 18% 10%;
+    --card-foreground: 0 0% 98%;
+    --popover: 0 18% 12%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 0 0% 9%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 0 16% 20%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 0 11% 15%;
+    --muted-foreground: 0 0% 63%;
+    --accent: 274 85% 52%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 10% 18%;
+    --input: 0 10% 23%;
+    --ring: 0 0% 9%;
+    --chart-1: 0 0% 9%;
+    --chart-2: 0 0% 9%;
+    --chart-3: 0 0% 9%;
+    --chart-4: 0 0% 9%;
+    --chart-5: 0 0% 9%;
+  }
+}
+```
+
+
+---
+
+## Document Policies
+
+### No Emojis
+
+This design system must not use emojis in any UI element, component, label, status indicator, or documentation.
+Use SVG icons from the chosen icon library instead. Emojis render inconsistently across platforms and break visual coherence.
+
+- Status indicators: use colored dots or icon components, not emoji.
+- Section markers: use text prefixes ("DO:" / "DON'T:") or icons, not checkmark/cross emojis.
+- Navigation: use icon components, not emoji.
+
+### Format Compliance
+
+This document follows the Google Stitch DESIGN.md 9-section format:
+1. Visual Theme & Atmosphere
+2. Color Palette & Roles
+3. Typography Rules
+4. Component Stylings
+5. Layout Principles
+6. Depth & Elevation
+7. Do's and Don'ts
+8. Responsive Behavior
+9. Agent Prompt Guide
+
+Extended with:
+- Iconography & SVG Guidelines
+- shadcn/ui Theme (CSS variables block)
+- Document Policies
+
+Total target length: 250-400 lines. Keep sections concise and actionable.

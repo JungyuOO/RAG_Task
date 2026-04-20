@@ -1,0 +1,221 @@
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&family=Inter:wght@400;500;600;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 220 14% 10%;
+    --foreground: 240 3% 94%;
+    --card: 220 14% 12%;
+    --card-foreground: 240 3% 94%;
+    --popover: 222 17% 9%;
+    --popover-foreground: 240 3% 94%;
+    --primary: 218 98% 54%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 14% 16%;
+    --secondary-foreground: 240 3% 94%;
+    --muted: 220 14% 14%;
+    --muted-foreground: 222 8% 58%;
+    --accent: 218 98% 54%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 354 59% 38%;
+    --destructive-foreground: 0 0% 98%;
+    --success: 181 82% 43%;
+    --warning: 28 100% 45%;
+    --border: 222 8% 44% / 0.25;
+    --input: 222 17% 9%;
+    --ring: 218 98% 54%;
+    --radius: 0.75rem;
+  }
+
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+  }
+
+  html {
+    @apply bg-background text-foreground;
+    color-scheme: dark;
+  }
+
+  body {
+    @apply min-h-screen bg-background font-sans text-foreground antialiased;
+    background:
+      radial-gradient(circle at top right, rgba(16, 96, 255, 0.16), transparent 26%),
+      radial-gradient(circle at bottom left, rgba(20, 198, 203, 0.08), transparent 24%),
+      linear-gradient(180deg, #11151c 0%, #0d1016 100%);
+    font-feature-settings: "kern" 1, "ss01" 1;
+    margin: 0;
+  }
+
+  a {
+    color: inherit;
+  }
+
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+
+  *:focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+}
+
+.markdown-article {
+  display: grid;
+  gap: 0.875rem;
+  color: hsl(var(--foreground));
+  line-height: 1.75;
+}
+
+.markdown-article h1,
+.markdown-article h2,
+.markdown-article h3,
+.markdown-article h4,
+.markdown-article h5,
+.markdown-article h6 {
+  color: hsl(var(--foreground));
+  font-family: "Manrope", "Inter", sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  margin: 0;
+}
+
+.markdown-article p,
+.markdown-article ul,
+.markdown-article ol,
+.markdown-article blockquote {
+  margin: 0;
+}
+
+.markdown-article ul,
+.markdown-article ol {
+  padding-left: 1.35rem;
+}
+
+.markdown-article code {
+  background: rgba(12, 17, 24, 0.9);
+  border-radius: 8px;
+  padding: 2px 6px;
+}
+
+.markdown-article a {
+  color: #7dd3fc;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.markdown-article a:hover {
+  color: #bae6fd;
+}
+
+.markdown-article img {
+  max-width: 100%;
+  border-radius: 0.75rem;
+}
+
+.markdown-article blockquote {
+  border-left: 3px solid rgba(16, 96, 255, 0.55);
+  background: rgba(16, 96, 255, 0.08);
+  border-radius: 0 0.75rem 0.75rem 0;
+  padding: 0.5rem 0.875rem;
+}
+
+.markdown-article hr {
+  border: 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.2);
+  margin: 0;
+}
+
+.markdown-article__code-shell {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.markdown-article__code-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.markdown-article__code {
+  margin: 0;
+  overflow-x: auto;
+  border-radius: 0.875rem;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(8, 12, 18, 0.96);
+  padding: 1rem;
+}
+
+.markdown-article__table-wrap {
+  overflow-x: auto;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 0.875rem;
+  background: rgba(10, 14, 20, 0.65);
+}
+
+.markdown-article__table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.markdown-article__table thead {
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.markdown-article__table th,
+.markdown-article__table td {
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  border-right: 1px solid rgba(148, 163, 184, 0.12);
+  color: hsl(var(--foreground));
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-article__table th:last-child,
+.markdown-article__table td:last-child {
+  border-right: 0;
+}
+
+.markdown-article__table tr:last-child td {
+  border-bottom: 0;
+}
+
+.metric-line-chart {
+  height: 88px;
+  overflow: visible;
+  width: 100%;
+}
+
+.metric-line-chart--empty {
+  color: hsl(var(--muted-foreground));
+  display: grid;
+  font-size: 13px;
+  min-height: 88px;
+  place-items: center;
+}
+
+.metric-line-chart__capacity {
+  stroke: rgba(247, 178, 103, 0.9);
+  stroke-dasharray: 5 5;
+  stroke-width: 2;
+}
+
+.metric-line-chart__area {
+  fill: rgba(134, 242, 255, 0.14);
+}
+
+.metric-line-chart__line {
+  fill: none;
+  stroke: rgba(134, 242, 255, 0.92);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.5;
+}

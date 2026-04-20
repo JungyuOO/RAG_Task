@@ -1,0 +1,306 @@
+import { useEffect, useMemo, useState } from "react";
+
+import { PageHeader } from "@/components/layout/PageHeader";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { MarkdownArticle } from "@/components/ui/MarkdownArticle";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import type { OcpConnectionController } from "@/features/connection/hooks/useOcpConnection";
+import {
+  getLibraryCatalog,
+  getLibraryDocumentChunks,
+  getLibraryDocumentContent,
+  getLibrarySummary,
+  libraryDocumentFileUrl,
+} from "@/features/library/api/libraryApi";
+import type {
+  LibraryCatalogResponse,
+  LibraryDocumentChunksResponse,
+  LibraryDocumentContentResponse,
+  LibraryDocumentRecord,
+  LibrarySummaryResponse,
+} from "@/features/library/types";
+
+type DetailMode = "chunks" | "original";
+type LibraryPageProps = {
+  controller: OcpConnectionController;
+  onLoadingChange?: (state: { active: boolean; title: string; detail?: string }) => void;
+};
+
+function buildChunkPreview(sectionTitle: string, previewText: string) {
+  const normalizedTitle = sectionTitle.replace(/\s+/g, " ").trim();
+  const normalizedPreview = previewText.replace(/\s+/g, " ").trim();
+  if (!normalizedTitle || !normalizedPreview) return previewText.trim();
+  if (normalizedPreview.startsWith(normalizedTitle)) {
+    const next = normalizedPreview.slice(normalizedTitle.length).trim();
+    if (next) return next;
+  }
+  return previewText.trim();
+}
+
+export function LibraryPage({ controller, onLoadingChange }: LibraryPageProps) {
+  const [summary, setSummary] = useState<LibrarySummaryResponse | null>(null);
+  const [catalog, setCatalog] = useState<LibraryCatalogResponse | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [activeDocumentKey, setActiveDocumentKey] = useState("");
+  const [detailMode, setDetailMode] = useState<DetailMode>("chunks");
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [chunkData, setChunkData] = useState<LibraryDocumentChunksResponse | null>(null);
+  const [contentData, setContentData] = useState<LibraryDocumentContentResponse | null>(null);
+
+  useEffect(() => {
+    async function run() {
+      setLoading(true);
+      setError("");
+      try {
+        const [nextSummary, nextCatalog] = await Promise.all([getLibrarySummary(), getLibraryCatalog()]);
+        setSummary(nextSummary);
+        setCatalog(nextCatalog);
+      } catch (nextError) {
+        setError(nextError instanceof Error ? nextError.message : "Failed to load library data.");
+      } finally {
+        setLoading(false);
+      }
+    }
+    void run();
+  }, []);
+
+  const visibleDocuments = useMemo(() => catalog?.documents ?? [], [catalog]);
+  const activeDocument = useMemo(
+    () => visibleDocuments.find((item) => item.documentKey === activeDocumentKey) ?? null,
+    [activeDocumentKey, visibleDocuments],
+  );
+
+  useEffect(() => {
+    async function run() {
+      if (!activeDocument) {
+        setChunkData(null);
+        setContentData(null);
+        return;
+      }
+      setDetailLoading(true);
+      setError("");
+      try {
+        if (detailMode === "chunks") {
+          setContentData(null);
+          setChunkData(await getLibraryDocumentChunks(activeDocument.documentKey));
+        } else if (activeDocument.originalKind === "markdown") {
+          setChunkData(null);
+          setContentData(await getLibraryDocumentContent(activeDocument.originalKey));
+        } else {
+          setChunkData(null);
+          setContentData(null);
+        }
+      } catch (nextError) {
+        setError(nextError instanceof Error ? nextError.message : "Failed to load document detail.");
+      } finally {
+        setDetailLoading(false);
+      }
+    }
+    void run();
+  }, [activeDocument, detailMode]);
+
+  useEffect(() => {
+    const active = loading || detailLoading;
+    onLoadingChange?.({
+      active,
+      title: detailLoading ? "문서 상세 불러오는 중" : "자료실 불러오는 중",
+      detail: detailLoading
+        ? "선택한 문서의 청크 또는 원문을 가져오는 중입니다."
+        : "자료실 요약과 문서 목록을 가져오는 중입니다.",
+    });
+    return () => onLoadingChange?.({ active: false, title: "" });
+  }, [detailLoading, loading, onLoadingChange]);
+
+  function activateDocument(document: LibraryDocumentRecord, mode: DetailMode) {
+    setActiveDocumentKey(document.documentKey);
+    setDetailMode(mode);
+    setDetailOpen(true);
+  }
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        eyebrow="Library"
+        title="Document library"
+        description="공식 문서 카탈로그와 배치 색인 작업을 한 화면에서 관리합니다."
+      />
+
+      {error ? (
+        <Card className="border-destructive/40 bg-destructive/10">
+          <CardContent className="p-6 text-sm text-destructive">{error}</CardContent>
+        </Card>
+      ) : null}
+
+      <Tabs defaultValue="summary" className="w-full space-y-4">
+        <TabsList>
+          <TabsTrigger value="summary">Summary</TabsTrigger>
+          <TabsTrigger value="catalog">Catalog</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="summary">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            {[
+              { label: "Official Docs", value: String(catalog?.documents.length ?? 0), hint: "Markdown render available" },
+              { label: "Indexed Documents", value: String(summary?.indexedDocuments ?? 0), hint: `${summary?.indexedChunks ?? 0} total chunks` },
+              { label: "Connected Cluster", value: controller.profile?.clusterUrl ?? "Not connected", hint: controller.profile?.defaultNamespace || "offline" },
+              { label: "Corpus Files", value: String(summary?.corpusFiles ?? 0), hint: summary?.latestBatchStatus || "idle" },
+            ].map((item) => (
+              <Card key={item.label} className="border-border/70 bg-card/95">
+                <CardHeader className="pb-3">
+                  <CardDescription>{item.label}</CardDescription>
+                  <CardTitle className="text-base break-all">{item.value}</CardTitle>
+                </CardHeader>
+                <CardContent className="pt-0 text-sm text-muted-foreground">{item.hint}</CardContent>
+              </Card>
+            ))}
+          </div>
+          {summary?.sourceBreakdown?.length ? (
+            <Card className="mt-4 border-border/70 bg-card/95">
+              <CardHeader>
+                <CardTitle>Source breakdown</CardTitle>
+                <CardDescription>{summary.message}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {summary.sourceBreakdown.map((item) => (
+                  <div key={item.label} className="space-y-2">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="font-medium text-foreground">{item.label}</span>
+                      <span className="text-muted-foreground">{item.count}</span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full bg-secondary">
+                      <div
+                        className="h-full rounded-full bg-primary"
+                        style={{ width: `${Math.max(8, (item.count / Math.max(...summary.sourceBreakdown.map((entry) => entry.count), 1)) * 100)}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          ) : null}
+        </TabsContent>
+
+        <TabsContent value="catalog">
+          <Card className="border-border/70 bg-card/95">
+            <CardHeader>
+              <CardTitle>Catalog</CardTitle>
+              <CardDescription>문서를 골라 청크 또는 원문 뷰로 확인합니다.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {visibleDocuments.length === 0 ? (
+                <div className="text-sm text-muted-foreground">표시할 문서가 없습니다.</div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Title</TableHead>
+                      <TableHead>Path</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Chunks</TableHead>
+                      <TableHead>Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {visibleDocuments.map((document) => (
+                      <TableRow key={document.documentKey}>
+                        <TableCell className="font-medium">{document.title}</TableCell>
+                        <TableCell className="max-w-[320px] truncate">{document.relativePath}</TableCell>
+                        <TableCell>
+                          <Badge variant={document.indexed ? "success" : "warning"}>
+                            {document.indexed ? "indexed" : "not indexed"}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>{document.chunkCount}</TableCell>
+                        <TableCell className="space-x-2">
+                          <Button type="button" size="sm" variant="outline" onClick={() => activateDocument(document, "chunks")}>
+                            청크 보기
+                          </Button>
+                          <Button type="button" size="sm" variant="secondary" onClick={() => activateDocument(document, "original")}>
+                            {document.originalKind === "markdown" ? "원문 보기" : "원본 보기"}
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+      </Tabs>
+
+      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
+        <DialogContent className="max-w-5xl">
+          <DialogHeader>
+            <DialogTitle>
+              {activeDocument
+                ? `${activeDocument.title} · ${detailMode === "chunks" ? "Chunk Inspector" : "Original View"}`
+                : "Document Detail"}
+            </DialogTitle>
+            <DialogDescription>
+              {activeDocument ? activeDocument.relativePath : "문서를 선택하면 상세 정보가 여기에 표시됩니다."}
+            </DialogDescription>
+          </DialogHeader>
+
+          {!activeDocument ? (
+            <div className="text-sm text-muted-foreground">왼쪽 문서 목록에서 보고 싶은 문서를 선택하세요.</div>
+          ) : null}
+
+          {activeDocument && detailMode === "chunks" && chunkData ? (
+            <div className="space-y-3 max-h-[60vh] overflow-auto pr-1">
+              {chunkData.chunks.map((chunk, index) => (
+                <div key={chunk.chunkId} className="rounded-xl border border-border/70 bg-background/50 p-4 text-sm text-muted-foreground">
+                  <div className="font-medium text-foreground">Chunk {index + 1}</div>
+                  <div>chunk={chunk.chunkId} · page={chunk.pageNumber ?? "-"}</div>
+                  <div>block={chunk.blockTypes.join(", ") || "-"}</div>
+                  {chunk.sectionTitle ? <div>section={chunk.sectionTitle}</div> : null}
+                  <div className="mt-2 leading-6">{buildChunkPreview(chunk.sectionTitle, chunk.previewText)}</div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {activeDocument && detailMode === "original" && activeDocument.originalKind === "markdown" && contentData ? (
+            <div className="max-h-[60vh] overflow-auto pr-1">
+              <MarkdownArticle content={contentData.content} />
+            </div>
+          ) : null}
+
+          {activeDocument && detailMode === "original" && activeDocument.originalKind === "pdf" ? (
+            <iframe
+              title={`${activeDocument.title} pdf viewer`}
+              className="h-[70vh] w-full rounded-xl border border-border/70 bg-background"
+              src={libraryDocumentFileUrl(activeDocument.originalKey)}
+            />
+          ) : null}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
