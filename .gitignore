@@ -1,16 +1,25 @@
 .venv
 .playwright-cli/
 __pycache__/
+.pytest_cache/
+.pytest_tmp/
 .env
 .env.local
 tests/.tmp/
 tests/__pycache__/
 *.pyc
+tmp*/
+.tmp-tests/
+team-shadow-newv201/
+apps/web/node_modules/
+apps/web/dist/
 
 data/cache/*
 data/index/*
 data/corpus/pdfs/*
 data/extracted_markdown/*
+data/runtime_state/*
+data/normalized/*
 
 !data/cache/.gitkeep
 !data/index/.gitkeep

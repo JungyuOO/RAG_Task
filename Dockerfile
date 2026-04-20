@@ -1,4 +1,4 @@
-# ---- builder: 의존성 설치 전용 스테이지 ----
+﻿# ---- builder: 의존성 설치 전용 스테이지 ----
 # TODO: 빌드 안정화 시 패치 버전으로 고정 권장 (예: python:3.13.3-slim)
 FROM python:3.13.12-slim AS builder
 
@@ -27,7 +27,7 @@ RUN useradd -m -s /bin/bash appuser
 WORKDIR /app
 
 # 프로젝트 루트 전체 복사
-# - app/web, app/resources 정적 파일 포함 (StaticFiles 상대 경로 정상 동작)
+# - apps/web / apps/api 포함
 COPY . /app/
 
 # 볼륨 마운트 경로 사전 생성 및 소유권 설정
@@ -46,4 +46,5 @@ USER appuser
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+
