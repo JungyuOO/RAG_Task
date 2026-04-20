@@ -82,9 +82,9 @@ def collect_official_pdfs(source_dir: Path, versions: list[str]) -> list[Path]:
 def extracted_artifact_candidates(extract_dir: Path, source_path: Path) -> list[Path]:
     candidates: list[Path] = []
     patterns = (
-        f"{source_path.stem}-????????.md",
-        f"{source_path.stem}-????????.html",
-        f"{source_path.stem}-????????.json",
+        f"{source_path.stem}-*.md",
+        f"{source_path.stem}-*.html",
+        f"{source_path.stem}-*.json",
     )
     for pattern in patterns:
         for path in extract_dir.glob(pattern):
