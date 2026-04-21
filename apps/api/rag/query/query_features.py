@@ -34,29 +34,67 @@ def answer_source_budget(message: str) -> int:
 def preferred_source_paths_for_query(message: str) -> list[str]:
     lowered = str(message or "").casefold()
     rel_paths: list[str] = []
-    if any(marker in lowered for marker in ("gitops", "git ops", "argocd", "깃옵스")):
+
+    if any(marker in lowered for marker in ("gitops", "git ops", "argocd", "아르고", "깃옵스")):
         rel_paths.append("official/en/gitops.md")
-    if any(marker in lowered for marker in ("oauth", "rbac", "authentication", "authorization", "인증", "인가", "권한")):
+
+    if any(
+        marker in lowered
+        for marker in (
+            "oauth",
+            "rbac",
+            "authentication",
+            "authorization",
+            "인증",
+            "인가",
+            "권한",
+            "clusterrole",
+            "rolebinding",
+            "clusterrolebinding",
+            "serviceaccount",
+            "service account",
+        )
+    ):
         rel_paths.append("official/en/authentication_and_authorization.md")
-    if any(marker in lowered for marker in ("jenkins", "cross project", "cross volume")):
+
+    if any(marker in lowered for marker in ("jenkins", "cross project", "cross-project", "cross volume")):
         rel_paths.append("official/en/jenkins.md")
-    if any(marker in lowered for marker in ("machine api", "머신 api", "머신api")):
+
+    if any(marker in lowered for marker in ("machine api", "머신 api", "머신api", "machine management")):
         rel_paths.append("official/en/machine_management.md")
-    if any(marker in lowered for marker in ("mtu", "maximum transmission unit")):
-        rel_paths.append("official/en/advanced_networking.md")
-    if any(marker in lowered for marker in ("route", "ingress", "라우트", "load balancer", "nlb", "clb")):
+
+    if any(marker in lowered for marker in ("route", "routes", "ingress", "라우트", "load balancer", "nlb", "clb")):
         rel_paths.append("official/en/ingress_and_load_balancing.md")
-    if any(marker in lowered for marker in ("pvc", "persistent volume claim", "storageclass")):
+
+    if any(
+        marker in lowered
+        for marker in (
+            "deployment",
+            "deployments",
+            "rollout",
+            "replica",
+            "deploymentconfig",
+            "deployment config",
+            "배포",
+            "롤아웃",
+            "리플리카",
+        )
+    ):
+        rel_paths.append("official/en/building_applications.md")
+
+    if any(marker in lowered for marker in ("pod", "pods", "파드", "node", "nodes", "노드")):
+        rel_paths.append("official/en/nodes.md")
+
+    if any(marker in lowered for marker in ("pvc", "persistent volume claim", "storageclass", "storage class", "스토리지")):
         rel_paths.append("official/en/storage.md")
-    if any(marker in lowered for marker in ("etcd", "backup", "restore", "snapshot")):
+
+    if any(marker in lowered for marker in ("etcd", "backup", "restore", "snapshot", "백업", "복구", "스냅샷")):
         rel_paths.extend(
             [
                 "official/en/etcd.md",
                 "official/en/backup_and_restore.md",
             ]
         )
-    if any(marker in lowered for marker in ("pod", "pods", "파드")):
-        rel_paths.append("official/en/nodes.md")
 
     root = Path.cwd() / "data" / "corpus" / "pdfs"
     resolved: list[str] = []
