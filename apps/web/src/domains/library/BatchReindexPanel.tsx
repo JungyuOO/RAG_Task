@@ -28,7 +28,7 @@ function formatTimestamp(value: string) {
   return parsed.toLocaleString();
 }
 
-export function BatchReindexPanel() {
+export function BatchReindexPanel({ workspaceId }: { workspaceId: string }) {
   const [form, setForm] = useState<BatchIndexRequest>({
     rootPath: "data",
     sourceType: "generated-manual",
@@ -44,7 +44,7 @@ export function BatchReindexPanel() {
 
   return (
     <div className="space-y-4">
-      <Card className="border-border/70 bg-card/95">
+      <Card className="surface-soft">
         <CardHeader>
           <CardTitle>Batch reindex</CardTitle>
           <CardDescription>여러 source를 한 번에 태우고 submit, polling, retry, cancel까지 같은 화면에서 관리합니다.</CardDescription>
@@ -117,7 +117,7 @@ export function BatchReindexPanel() {
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <Button type="button" onClick={() => submit(form)} disabled={isSubmitting}>
+              <Button type="button" onClick={() => submit({ ...form, workspaceId })} disabled={isSubmitting}>
               {isSubmitting ? "job 생성 중..." : "batch reindex 시작"}
             </Button>
             <Button
@@ -139,13 +139,13 @@ export function BatchReindexPanel() {
           </div>
 
           {error ? (
-            <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            <div className="surface-danger rounded-xl px-4 py-3 text-sm text-destructive">
               {error}
             </div>
           ) : null}
 
           {job ? (
-            <Card className="border-border/70 bg-background/50">
+            <Card className="surface-muted">
               <CardHeader>
                 <CardTitle>Current job</CardTitle>
                 <CardDescription>{job.jobId}</CardDescription>
@@ -158,7 +158,7 @@ export function BatchReindexPanel() {
                     { label: "Current", value: job.currentFile || "-" },
                     { label: "Failed items", value: String(job.result?.failedFiles ?? 0) },
                   ].map((item) => (
-                    <div key={item.label} className="rounded-xl border border-border/70 bg-card/80 p-3">
+                    <div key={item.label} className="surface-muted rounded-xl p-3">
                       <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">{item.label}</div>
                       <div className="mt-2 text-sm font-medium text-foreground">{item.value}</div>
                     </div>
@@ -200,7 +200,7 @@ export function BatchReindexPanel() {
         </CardContent>
       </Card>
 
-      <Card className="border-border/70 bg-card/95">
+      <Card className="surface-soft">
         <CardHeader>
           <CardTitle>Recent jobs</CardTitle>
           <CardDescription>가장 최근의 batch reindex 이력입니다.</CardDescription>

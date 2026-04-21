@@ -1,4 +1,4 @@
-export type AppRoute = "workspaces" | "connections" | "models" | "overview" | "resources" | "library" | "chat" | "actions";
+export type AppRoute = "workspaces" | "connections" | "models" | "overview" | "resources" | "library" | "chat" | "actions" | "scm";
 
 const ROUTE_PATHS: Record<AppRoute, string> = {
   workspaces: "/workspaces",
@@ -9,6 +9,7 @@ const ROUTE_PATHS: Record<AppRoute, string> = {
   library: "/library",
   chat: "/chat",
   actions: "/actions",
+  scm: "/scm",
 };
 
 const LEGACY_PATHS: Record<string, AppRoute> = {
@@ -23,6 +24,7 @@ const LEGACY_PATHS: Record<string, AppRoute> = {
   "/library": "library",
   "/chat": "chat",
   "/actions": "actions",
+  "/scm": "scm",
 };
 
 function normalizePathname(pathname: string): string {

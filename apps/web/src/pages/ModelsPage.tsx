@@ -98,7 +98,7 @@ export function ModelsPage({ selectedWorkspace, onLoadingChange }: ModelsPagePro
       />
 
       {!selectedWorkspace ? (
-        <Card className="border-border/70 bg-background/50">
+        <Card className="surface-muted">
           <CardContent className="p-6 text-sm text-muted-foreground">
             먼저 Workspaces 화면에서 활성 workspace를 선택하세요.
           </CardContent>
@@ -106,19 +106,19 @@ export function ModelsPage({ selectedWorkspace, onLoadingChange }: ModelsPagePro
       ) : null}
 
       {error ? (
-        <Card className="border-destructive/40 bg-destructive/10">
+        <Card className="surface-danger">
           <CardContent className="p-6 text-sm text-destructive">{error}</CardContent>
         </Card>
       ) : null}
 
       {message ? (
-        <Card className="border-primary/40 bg-primary/10">
+        <Card className="surface-brand">
           <CardContent className="p-6 text-sm text-foreground">{message}</CardContent>
         </Card>
       ) : null}
 
       {selectedWorkspace ? (
-        <Card className="border-border/70 bg-card/95">
+        <Card className="surface-soft">
           <CardHeader>
             <CardTitle>{selectedWorkspace.name}</CardTitle>
             <CardDescription>workspace slug={selectedWorkspace.slug}</CardDescription>

@@ -8,12 +8,14 @@ import {
 } from "@/shared/ui/card";
 import { OcpConnectionForm } from "@/domains/connection/OcpConnectionForm";
 import type { OcpConnectionController } from "@/domains/connection/useOcpConnection";
+import type { WorkspaceRecord } from "@/domains/workspaces/types";
 
 type ConnectionPageProps = {
   controller: OcpConnectionController;
+  selectedWorkspace: WorkspaceRecord | null;
 };
 
-export function ConnectionPage({ controller }: ConnectionPageProps) {
+export function ConnectionPage({ controller, selectedWorkspace }: ConnectionPageProps) {
   return (
     <div className="mx-auto max-w-3xl space-y-8 py-4">
       <PageHeader
@@ -23,11 +25,17 @@ export function ConnectionPage({ controller }: ConnectionPageProps) {
         className="text-center md:block"
       />
 
-      <Card className="border-border/70 bg-card/95 shadow-xl">
+      {selectedWorkspace ? (
+        <div className="surface-muted rounded-2xl px-4 py-3 text-sm text-muted-foreground">
+          Active workspace: <span className="font-medium text-foreground">{selectedWorkspace.name}</span>
+        </div>
+      ) : null}
+
+      <Card className="surface-soft shadow-xl">
         <CardHeader className="space-y-2">
           <CardTitle>Cluster profile</CardTitle>
           <CardDescription>
-            Server URL, 인증 방식, 기본 namespace를 입력하세요. 연결 후에는 같은 프로필을 재사용해 빠르게 다시 접속할 수 있습니다.
+            Server URL, 인증 방식, 기본 namespace를 입력하세요. 현재 선택된 workspace 기준으로 연결 프로필이 생성되고 재사용됩니다.
           </CardDescription>
         </CardHeader>
         <CardContent>

@@ -184,7 +184,7 @@ export function OcpConnectionForm({ controller }: OcpConnectionFormProps) {
         </>
       ) : (
         <form onSubmit={handleConnect} className="space-y-6">
-          <div className="rounded-2xl border border-border/70 bg-background/50 p-4">
+          <div className="surface-muted rounded-2xl p-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <div className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">Start Here</div>
@@ -285,7 +285,7 @@ export function OcpConnectionForm({ controller }: OcpConnectionFormProps) {
             </div>
           ) : null}
 
-          <div className="flex flex-col gap-3 rounded-2xl border border-border/70 bg-background/40 p-4 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+          <div className="surface-muted flex flex-col gap-3 rounded-2xl p-4 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
             <div className="space-y-1">
               <div className="font-medium text-foreground">Connection guidance</div>
               <div>{helperText}</div>
@@ -380,7 +380,7 @@ export function OcpConnectionForm({ controller }: OcpConnectionFormProps) {
               })}
             </div>
           ) : (
-            <div className="rounded-xl border border-dashed border-border/70 bg-background/50 px-4 py-8 text-center text-sm text-muted-foreground">
+            <div className="surface-muted rounded-xl px-4 py-8 text-center text-sm text-muted-foreground">
               아직 저장된 연결 프로필이 없습니다.
             </div>
           )}

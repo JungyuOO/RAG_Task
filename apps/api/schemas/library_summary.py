@@ -13,6 +13,7 @@ class LibrarySourceBreakdownItem(BaseModel):
 class LibrarySummaryResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    workspace_id: str = ""
     source_root: str
     extract_root: str
     corpus_files: int

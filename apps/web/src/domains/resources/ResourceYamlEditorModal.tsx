@@ -342,11 +342,11 @@ export function ResourceYamlEditorModal({
         </DialogHeader>
 
         <div className="space-y-4 overflow-y-auto px-6 py-5">
-          {detailLoading ? <div className="rounded-xl border border-border/70 bg-background/50 px-4 py-3 text-sm text-muted-foreground">리소스 manifest를 불러오는 중입니다.</div> : null}
+          {detailLoading ? <div className="surface-muted rounded-xl px-4 py-3 text-sm text-muted-foreground">리소스 manifest를 불러오는 중입니다.</div> : null}
           {notice ? <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">{notice}</div> : null}
-          {editorError ? <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">{editorError}</div> : null}
+          {editorError ? <div className="surface-danger rounded-xl px-4 py-3 text-sm text-destructive">{editorError}</div> : null}
           {preview ? (
-            <div className="space-y-4 rounded-2xl border border-border/70 bg-background/50 p-4">
+            <div className="surface-muted space-y-4 rounded-2xl p-4">
               <div className="grid gap-3 md:grid-cols-4">
                 {[
                   { label: "Dry Run", value: preview.dryRunStatus },
@@ -354,7 +354,7 @@ export function ResourceYamlEditorModal({
                   { label: "Approval", value: `${preview.approvalStrategy} (${preview.requiredApprovals})` },
                   { label: "Resource", value: `${preview.namespace}/${preview.resourceName}` },
                 ].map((item) => (
-                  <div key={item.label} className="rounded-xl border border-border/70 bg-card/80 p-3">
+                  <div key={item.label} className="surface-muted rounded-xl p-3">
                     <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">{item.label}</div>
                     <div className="mt-2 text-sm font-medium text-foreground">{item.value}</div>
                   </div>
@@ -366,17 +366,17 @@ export function ResourceYamlEditorModal({
                 <div><strong>Next Step</strong>: {preview.nextStep}</div>
               </div>
               {preview.dryRunMessages.length > 0 ? (
-                <div className="rounded-xl border border-border/70 bg-card/80 px-4 py-3 text-sm text-muted-foreground">
+                <div className="surface-muted rounded-xl px-4 py-3 text-sm text-muted-foreground">
                   {preview.dryRunMessages.join(" / ")}
                 </div>
               ) : null}
               {preview.validationMessages.length > 0 ? (
-                <div className="rounded-xl border border-border/70 bg-card/80 px-4 py-3 text-sm text-muted-foreground">
+                <div className="surface-muted rounded-xl px-4 py-3 text-sm text-muted-foreground">
                   {preview.validationMessages.join(" / ")}
                 </div>
               ) : null}
               {preview.diffUnified ? (
-                <pre className="max-h-60 overflow-auto rounded-xl border border-border/70 bg-background/80 p-4 text-xs leading-6 text-muted-foreground">
+                <pre className="surface-muted max-h-60 overflow-auto rounded-xl p-4 text-xs leading-6 text-muted-foreground">
                   <code>{preview.diffUnified}</code>
                 </pre>
               ) : null}

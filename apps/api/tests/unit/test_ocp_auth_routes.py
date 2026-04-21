@@ -57,6 +57,7 @@ class OcpAuthRouteTests(unittest.TestCase):
         connect_response = self.client.post(
             "/api/v1/auth/ocp/connect",
             json={
+                "workspace_id": "workspace-customer-a",
                 "cluster_url": "https://api.cluster.example.com",
                 "auth_mode": "token",
                 "token": "sha256~abc",
@@ -68,6 +69,7 @@ class OcpAuthRouteTests(unittest.TestCase):
         payload = connect_response.json()
         self.assertTrue(payload["connected"])
         self.assertEqual(payload["connection"]["display_name"], "demo-cluster")
+        self.assertEqual(payload["connection"]["workspace_id"], "workspace-customer-a")
         self.assertNotIn("token", payload["connection"])
 
         connection_id = payload["connection"]["connection_id"]

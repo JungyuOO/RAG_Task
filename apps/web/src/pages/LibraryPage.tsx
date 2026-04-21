@@ -28,6 +28,7 @@ import {
 } from "@/shared/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/shared/ui/tabs";
 import type { OcpConnectionController } from "@/domains/connection/useOcpConnection";
+import { BatchReindexPanel } from "@/domains/library/BatchReindexPanel";
 import {
   getLibraryCatalog,
   getLibraryDocumentChunks,
@@ -42,10 +43,12 @@ import type {
   LibraryDocumentRecord,
   LibrarySummaryResponse,
 } from "@/domains/library/types";
+import type { WorkspaceRecord } from "@/domains/workspaces/types";
 
 type DetailMode = "chunks" | "original";
 type LibraryPageProps = {
   controller: OcpConnectionController;
+  selectedWorkspace: WorkspaceRecord | null;
   onLoadingChange?: (state: { active: boolean; title: string; detail?: string }) => void;
 };
 
@@ -60,7 +63,7 @@ function buildChunkPreview(sectionTitle: string, previewText: string) {
   return previewText.trim();
 }
 
-export function LibraryPage({ controller, onLoadingChange }: LibraryPageProps) {
+export function LibraryPage({ controller, selectedWorkspace, onLoadingChange }: LibraryPageProps) {
   const [summary, setSummary] = useState<LibrarySummaryResponse | null>(null);
   const [catalog, setCatalog] = useState<LibraryCatalogResponse | null>(null);
   const [error, setError] = useState("");
@@ -77,7 +80,11 @@ export function LibraryPage({ controller, onLoadingChange }: LibraryPageProps) {
       setLoading(true);
       setError("");
       try {
-        const [nextSummary, nextCatalog] = await Promise.all([getLibrarySummary(), getLibraryCatalog()]);
+        const workspaceId = selectedWorkspace?.workspaceId ?? "";
+        const [nextSummary, nextCatalog] = await Promise.all([
+          getLibrarySummary(workspaceId),
+          getLibraryCatalog(workspaceId),
+        ]);
         setSummary(nextSummary);
         setCatalog(nextCatalog);
       } catch (nextError) {
@@ -87,7 +94,7 @@ export function LibraryPage({ controller, onLoadingChange }: LibraryPageProps) {
       }
     }
     void run();
-  }, []);
+  }, [selectedWorkspace?.workspaceId]);
 
   const visibleDocuments = useMemo(() => catalog?.documents ?? [], [catalog]);
   const activeDocument = useMemo(
@@ -115,10 +122,10 @@ export function LibraryPage({ controller, onLoadingChange }: LibraryPageProps) {
     try {
       if (mode === "chunks") {
         setContentData(null);
-        setChunkData(await getLibraryDocumentChunks(document.documentKey));
+        setChunkData(await getLibraryDocumentChunks(document.documentKey, selectedWorkspace?.workspaceId ?? ""));
       } else if (document.originalKind === "markdown") {
         setChunkData(null);
-        setContentData(await getLibraryDocumentContent(document.originalKey));
+        setContentData(await getLibraryDocumentContent(document.originalKey, selectedWorkspace?.workspaceId ?? ""));
       } else {
         setChunkData(null);
         setContentData(null);
@@ -139,8 +146,14 @@ export function LibraryPage({ controller, onLoadingChange }: LibraryPageProps) {
         description="공식 문서 카탈로그와 배치 색인 작업을 한 화면에서 관리합니다."
       />
 
+      {selectedWorkspace ? (
+        <div className="surface-muted rounded-2xl px-4 py-3 text-sm text-muted-foreground">
+          Active workspace: <span className="font-medium text-foreground">{selectedWorkspace.name}</span>
+        </div>
+      ) : null}
+
       {error ? (
-        <Card className="border-destructive/40 bg-destructive/10">
+        <Card className="surface-danger">
           <CardContent className="p-6 text-sm text-destructive">{error}</CardContent>
         </Card>
       ) : null}
@@ -159,7 +172,7 @@ export function LibraryPage({ controller, onLoadingChange }: LibraryPageProps) {
               { label: "Connected Cluster", value: controller.profile?.clusterUrl ?? "Not connected", hint: controller.profile?.defaultNamespace || "offline" },
               { label: "Corpus Files", value: String(summary?.corpusFiles ?? 0), hint: summary?.latestBatchStatus || "idle" },
             ].map((item) => (
-              <Card key={item.label} className="border-border/70 bg-card/95">
+              <Card key={item.label} className="surface-soft">
                 <CardHeader className="pb-3">
                   <CardDescription>{item.label}</CardDescription>
                   <CardTitle className="text-base break-all">{item.value}</CardTitle>
@@ -169,7 +182,7 @@ export function LibraryPage({ controller, onLoadingChange }: LibraryPageProps) {
             ))}
           </div>
           {summary?.sourceBreakdown?.length ? (
-            <Card className="mt-4 border-border/70 bg-card/95">
+            <Card className="surface-soft mt-4">
               <CardHeader>
                 <CardTitle>Source breakdown</CardTitle>
                 <CardDescription>{summary.message}</CardDescription>
@@ -192,10 +205,11 @@ export function LibraryPage({ controller, onLoadingChange }: LibraryPageProps) {
               </CardContent>
             </Card>
           ) : null}
+          <BatchReindexPanel workspaceId={selectedWorkspace?.workspaceId ?? ""} />
         </TabsContent>
 
         <TabsContent value="catalog">
-          <Card className="border-border/70 bg-card/95">
+          <Card className="surface-soft">
             <CardHeader>
               <CardTitle>Catalog</CardTitle>
               <CardDescription>문서를 골라 청크 또는 원문 뷰로 확인합니다.</CardDescription>
@@ -264,7 +278,7 @@ export function LibraryPage({ controller, onLoadingChange }: LibraryPageProps) {
           {activeDocument && detailMode === "chunks" && chunkData ? (
             <div className="space-y-3 max-h-[60vh] overflow-auto pr-1">
               {chunkData.chunks.map((chunk, index) => (
-                <div key={chunk.chunkId} className="rounded-xl border border-border/70 bg-background/50 p-4 text-sm text-muted-foreground">
+                <div key={chunk.chunkId} className="surface-muted rounded-xl p-4 text-sm text-muted-foreground">
                   <div className="font-medium text-foreground">Chunk {index + 1}</div>
                   <div>chunk={chunk.chunkId} · page={chunk.pageNumber ?? "-"}</div>
                   <div>block={chunk.blockTypes.join(", ") || "-"}</div>
@@ -284,8 +298,8 @@ export function LibraryPage({ controller, onLoadingChange }: LibraryPageProps) {
           {activeDocument && detailMode === "original" && activeDocument.originalKind === "pdf" ? (
             <iframe
               title={`${activeDocument.title} pdf viewer`}
-              className="h-[70vh] w-full rounded-xl border border-border/70 bg-background"
-              src={libraryDocumentFileUrl(activeDocument.originalKey)}
+              className="surface-muted h-[70vh] w-full rounded-xl"
+              src={libraryDocumentFileUrl(activeDocument.originalKey, selectedWorkspace?.workspaceId ?? "")}
             />
           ) : null}
         </DialogContent>

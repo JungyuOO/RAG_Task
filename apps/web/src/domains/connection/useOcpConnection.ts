@@ -122,6 +122,13 @@ export function useOcpConnection(workspaceId = ""): OcpConnectionController {
     (item) => (item.workspaceId || "") === (workspaceId || ""),
   );
 
+  useEffect(() => {
+    if (!workspaceId) return;
+    if (profile && (profile.workspaceId || "") !== workspaceId) {
+      clearLocalConnection("선택된 workspace에 맞는 연결 프로필을 새로 선택하거나 생성하세요.");
+    }
+  }, [workspaceId, profile]);
+
   function clearLocalConnection(nextMessage = "저장된 세션 연결이 만료되었습니다. 다시 연결해야 합니다.") {
     setProfile(null);
     setTestResult(null);
@@ -257,6 +264,10 @@ export function useOcpConnection(workspaceId = ""): OcpConnectionController {
 
     try {
       const parsedProfile = JSON.parse(storedProfile) as OcpConnectionProfile;
+      if (workspaceId && (parsedProfile.workspaceId || "") !== workspaceId) {
+        clearLocalConnection("현재 workspace와 저장된 연결 세션이 달라서 연결 상태를 초기화했습니다.");
+        return;
+      }
       setProfile(parsedProfile);
       setActiveSavedProfileId(storedActiveSavedProfileId);
       if (storedTestResult) {
@@ -280,7 +291,7 @@ export function useOcpConnection(workspaceId = ""): OcpConnectionController {
     } catch {
       clearLocalConnection();
     }
-  }, []);
+  }, [workspaceId]);
 
   useEffect(() => {
     window.localStorage.setItem(SAVED_PROFILES_STORAGE_KEY, JSON.stringify(savedProfiles));

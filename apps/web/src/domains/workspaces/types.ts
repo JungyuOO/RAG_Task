@@ -10,7 +10,5 @@ export type WorkspaceRecord = {
 
 export type WorkspaceCreateRequest = {
   name: string;
-  slug?: string;
-  industry?: string;
   environment?: string;
 };

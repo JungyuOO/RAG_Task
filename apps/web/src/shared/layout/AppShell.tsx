@@ -20,6 +20,7 @@ type AppShellProps = {
   schedulerStatus: OcpLeaseSchedulerStatus | null;
   message: string;
   railContent?: ReactNode;
+  footerContent?: ReactNode;
   children: ReactNode;
   loadingState?: {
     active: boolean;
@@ -36,6 +37,7 @@ export function AppShell({
   schedulerStatus,
   message,
   railContent,
+  footerContent,
   children,
   loadingState,
 }: AppShellProps) {
@@ -49,6 +51,7 @@ export function AppShell({
           onNavigate={onNavigate}
           onClose={() => setSidebarOpen(false)}
           railContent={railContent}
+          footerContent={footerContent}
         />
 
         <div className="flex min-w-0 flex-1">

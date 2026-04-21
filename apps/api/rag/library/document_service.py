@@ -16,7 +16,7 @@ class LibraryDocumentService:
     def __init__(self, *, runtime: LegacyPgvectorRuntime | None = None) -> None:
         self._runtime = runtime or LegacyPgvectorRuntime()
 
-    def get_catalog(self) -> LibraryCatalogResponse:
+    def get_catalog(self, *, workspace_id: str = "") -> LibraryCatalogResponse:
         runtime = self._runtime.get()
         source_root = Path(runtime.settings.rag_source_dir).resolve()
         files = [
@@ -36,18 +36,19 @@ class LibraryDocumentService:
                 continue
             if self._should_skip_catalog_file(path, source_root):
                 continue
-            document = self._build_document_record(path, source_root, chunk_count_map)
+            document = self._build_document_record(path, source_root, chunk_count_map, workspace_id=workspace_id)
             documents.append(document)
 
         message = (
             "Official docs render as markdown and each document exposes indexed status and chunk counts."
         )
         return LibraryCatalogResponse(
+            workspace_id=workspace_id,
             documents=documents,
             message=message,
         )
 
-    def get_chunks(self, document_key: str) -> LibraryDocumentChunksResponse:
+    def get_chunks(self, document_key: str, *, workspace_id: str = "") -> LibraryDocumentChunksResponse:
         runtime = self._runtime.get()
         source_root = Path(runtime.settings.rag_source_dir).resolve()
         path = self._resolve_document_key(document_key, source_root)
@@ -74,13 +75,14 @@ class LibraryDocumentService:
             )
 
         return LibraryDocumentChunksResponse(
+            workspace_id=workspace_id,
             document_key=document_key,
             title=title,
             chunk_count=len(chunks),
             chunks=chunks[:120],
         )
 
-    def get_markdown_content(self, document_key: str) -> LibraryDocumentContentResponse:
+    def get_markdown_content(self, document_key: str, *, workspace_id: str = "") -> LibraryDocumentContentResponse:
         runtime = self._runtime.get()
         source_root = Path(runtime.settings.rag_source_dir).resolve()
         path = self._resolve_document_key(document_key, source_root)
@@ -88,12 +90,13 @@ class LibraryDocumentService:
             raise ValueError("Markdown content view is only available for markdown/text documents.")
         content = path.read_text(encoding="utf-8", errors="ignore")
         return LibraryDocumentContentResponse(
+            workspace_id=workspace_id,
             document_key=document_key,
             title=self._extract_title(path),
             content=content,
         )
 
-    def get_file_path(self, document_key: str) -> Path:
+    def get_file_path(self, document_key: str, *, workspace_id: str = "") -> Path:
         runtime = self._runtime.get()
         source_root = Path(runtime.settings.rag_source_dir).resolve()
         return self._resolve_document_key(document_key, source_root)
@@ -103,12 +106,15 @@ class LibraryDocumentService:
         path: Path,
         source_root: Path,
         chunk_count_map: dict[str, int],
+        *,
+        workspace_id: str,
     ) -> LibraryDocumentRecord:
         document_key = path.relative_to(source_root).as_posix()
         group = self._classify_group(document_key)
         original_kind, original_key = self._resolve_original(path, source_root, group)
         chunk_count = int(chunk_count_map.get(document_key, 0))
         return LibraryDocumentRecord(
+            workspace_id=workspace_id,
             document_key=document_key,
             title=self._extract_title(path),
             relative_path=document_key,

@@ -52,8 +52,8 @@ export async function createWorkspace(request: WorkspaceCreateRequest): Promise<
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       name: request.name,
-      slug: request.slug ?? "",
-      industry: request.industry ?? "",
+      slug: "",
+      industry: "",
       environment: request.environment ?? "",
     }),
   });

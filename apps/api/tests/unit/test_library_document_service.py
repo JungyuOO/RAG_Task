@@ -63,16 +63,16 @@ class LibraryDocumentServiceTests(unittest.TestCase):
 
         catalog = service.get_catalog()
 
-        self.assertEqual(len(catalog.official_documents), 1)
-        self.assertEqual(len(catalog.customer_documents), 1)
-        official = catalog.official_documents[0]
+        self.assertEqual(catalog.workspace_id, "")
+        self.assertEqual(len(catalog.documents), 2)
+        official = next(item for item in catalog.documents if item.document_key == "official/en/authentication_and_authorization.md")
         self.assertTrue(official.indexed)
         self.assertEqual(official.chunk_count, 12)
         self.assertEqual(official.original_kind, "markdown")
 
-        customer_md = catalog.customer_documents[0]
-        self.assertEqual(customer_md.original_kind, "pdf")
-        self.assertEqual(customer_md.original_key, "customer_pdf/demo_customer_manual.pdf")
+        customer_md = next(item for item in catalog.documents if item.document_key == "customer/demo_customer_manual.md")
+        self.assertEqual(customer_md.original_kind, "markdown")
+        self.assertEqual(customer_md.original_key, "customer/demo_customer_manual.md")
 
     def test_get_chunks_and_markdown_content(self) -> None:
         service = LibraryDocumentService(runtime=_FakeRuntime(self.root))  # type: ignore[arg-type]
@@ -80,8 +80,10 @@ class LibraryDocumentServiceTests(unittest.TestCase):
         chunks = service.get_chunks("customer/demo_customer_manual.md")
         content = service.get_markdown_content("official/en/authentication_and_authorization.md")
 
+        self.assertEqual(chunks.workspace_id, "")
         self.assertEqual(chunks.chunk_count, 1)
         self.assertEqual(chunks.chunks[0].section_title, "Overview")
+        self.assertEqual(content.workspace_id, "")
         self.assertIn("Authentication and Authorization", content.content)
 
 

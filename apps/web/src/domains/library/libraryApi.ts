@@ -11,6 +11,7 @@ type ApiLibrarySourceBreakdownItem = {
 };
 
 type ApiLibrarySummaryResponse = {
+  workspace_id: string;
   source_root: string;
   extract_root: string;
   corpus_files: number;
@@ -26,6 +27,7 @@ type ApiLibrarySummaryResponse = {
 };
 
 type ApiLibraryDocumentRecord = {
+  workspace_id: string;
   document_key: string;
   title: string;
   relative_path: string;
@@ -39,6 +41,7 @@ type ApiLibraryDocumentRecord = {
 };
 
 type ApiLibraryCatalogResponse = {
+  workspace_id: string;
   documents: ApiLibraryDocumentRecord[];
   message: string;
 };
@@ -53,6 +56,7 @@ type ApiLibraryChunkRecord = {
 };
 
 type ApiLibraryDocumentChunksResponse = {
+  workspace_id: string;
   document_key: string;
   title: string;
   chunk_count: number;
@@ -60,6 +64,7 @@ type ApiLibraryDocumentChunksResponse = {
 };
 
 type ApiLibraryDocumentContentResponse = {
+  workspace_id: string;
   document_key: string;
   title: string;
   content: string;
@@ -81,6 +86,7 @@ async function readJson<T>(response: Response): Promise<T> {
 
 function mapSummary(input: ApiLibrarySummaryResponse): LibrarySummaryResponse {
   return {
+    workspaceId: input.workspace_id ?? "",
     sourceRoot: input.source_root,
     extractRoot: input.extract_root,
     corpusFiles: input.corpus_files,
@@ -98,6 +104,7 @@ function mapSummary(input: ApiLibrarySummaryResponse): LibrarySummaryResponse {
 
 function mapDocument(input: ApiLibraryDocumentRecord) {
   return {
+    workspaceId: input.workspace_id ?? "",
     documentKey: input.document_key,
     title: input.title,
     relativePath: input.relative_path,
@@ -113,6 +120,7 @@ function mapDocument(input: ApiLibraryDocumentRecord) {
 
 function mapCatalog(input: ApiLibraryCatalogResponse): LibraryCatalogResponse {
   return {
+    workspaceId: input.workspace_id ?? "",
     documents: (input.documents ?? []).map(mapDocument),
     message: input.message ?? "",
   };
@@ -120,6 +128,7 @@ function mapCatalog(input: ApiLibraryCatalogResponse): LibraryCatalogResponse {
 
 function mapChunks(input: ApiLibraryDocumentChunksResponse): LibraryDocumentChunksResponse {
   return {
+    workspaceId: input.workspace_id ?? "",
     documentKey: input.document_key,
     title: input.title,
     chunkCount: input.chunk_count,
@@ -136,36 +145,46 @@ function mapChunks(input: ApiLibraryDocumentChunksResponse): LibraryDocumentChun
 
 function mapContent(input: ApiLibraryDocumentContentResponse): LibraryDocumentContentResponse {
   return {
+    workspaceId: input.workspace_id ?? "",
     documentKey: input.document_key,
     title: input.title,
     content: input.content,
   };
 }
 
-export async function getLibrarySummary(): Promise<LibrarySummaryResponse> {
-  const response = await fetch(apiUrl("/api/v1/library/summary"));
+export async function getLibrarySummary(workspaceId = ""): Promise<LibrarySummaryResponse> {
+  const search = new URLSearchParams();
+  if (workspaceId) search.set("workspace_id", workspaceId);
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  const response = await fetch(apiUrl(`/api/v1/library/summary${suffix}`));
   return mapSummary(await readJson<ApiLibrarySummaryResponse>(response));
 }
 
-export async function getLibraryCatalog(): Promise<LibraryCatalogResponse> {
-  const response = await fetch(apiUrl("/api/v1/library/catalog"));
+export async function getLibraryCatalog(workspaceId = ""): Promise<LibraryCatalogResponse> {
+  const search = new URLSearchParams();
+  if (workspaceId) search.set("workspace_id", workspaceId);
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  const response = await fetch(apiUrl(`/api/v1/library/catalog${suffix}`));
   return mapCatalog(await readJson<ApiLibraryCatalogResponse>(response));
 }
 
-export async function getLibraryDocumentChunks(documentKey: string): Promise<LibraryDocumentChunksResponse> {
+export async function getLibraryDocumentChunks(documentKey: string, workspaceId = ""): Promise<LibraryDocumentChunksResponse> {
   const search = new URLSearchParams({ document_key: documentKey });
+  if (workspaceId) search.set("workspace_id", workspaceId);
   const response = await fetch(apiUrl(`/api/v1/library/chunks?${search.toString()}`));
   return mapChunks(await readJson<ApiLibraryDocumentChunksResponse>(response));
 }
 
-export async function getLibraryDocumentContent(documentKey: string): Promise<LibraryDocumentContentResponse> {
+export async function getLibraryDocumentContent(documentKey: string, workspaceId = ""): Promise<LibraryDocumentContentResponse> {
   const search = new URLSearchParams({ document_key: documentKey });
+  if (workspaceId) search.set("workspace_id", workspaceId);
   const response = await fetch(apiUrl(`/api/v1/library/document-content?${search.toString()}`));
   return mapContent(await readJson<ApiLibraryDocumentContentResponse>(response));
 }
 
-export function libraryDocumentFileUrl(documentKey: string): string {
+export function libraryDocumentFileUrl(documentKey: string, workspaceId = ""): string {
   const search = new URLSearchParams({ document_key: documentKey });
+  if (workspaceId) search.set("workspace_id", workspaceId);
   return apiUrl(`/api/v1/library/document-file?${search.toString()}`);
 }
 

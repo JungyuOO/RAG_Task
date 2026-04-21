@@ -1,4 +1,8 @@
 from apps.api.storage.sqlite_runtime_repositories import (
+    SQLiteMetricSnapshotRepository,
+    SQLiteRecommendationLogRepository,
+    SQLiteScmConnectionRepository,
+    SQLiteScmRepositoryRepository,
     SQLiteActionAuditRepository,
     SQLiteActionExecutionRepository,
     SQLiteActionRequestRepository,
@@ -16,4 +20,8 @@ __all__ = [
     "SQLiteConnectionProfileStore",
     "SQLiteWorkspaceModelProfileRepository",
     "SQLiteWorkspaceRepository",
+    "SQLiteMetricSnapshotRepository",
+    "SQLiteRecommendationLogRepository",
+    "SQLiteScmConnectionRepository",
+    "SQLiteScmRepositoryRepository",
 ]

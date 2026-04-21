@@ -7,6 +7,7 @@ function apiUrl(path: string) {
 }
 
 type ApiBatchIndexRequest = {
+  workspace_id?: string;
   root_path?: string;
   explicit_source_paths?: string[];
   source_type?: string | null;
@@ -50,6 +51,7 @@ type ApiBatchJobStatusResponse = {
 
 function serializeRequest(request: BatchIndexRequest): ApiBatchIndexRequest {
   return {
+    workspace_id: request.workspaceId ?? "",
     root_path: request.rootPath ?? "",
     explicit_source_paths: request.explicitSourcePaths ?? [],
     source_type: request.sourceType ?? null,
@@ -89,6 +91,7 @@ function mapBatchJobStatus(input: ApiBatchJobStatusResponse): BatchJobStatusResp
     taskType: input.task_type,
     status: input.status,
     request: {
+      workspaceId: input.request.workspace_id ?? undefined,
       rootPath: input.request.root_path,
       explicitSourcePaths: input.request.explicit_source_paths,
       sourceType: (input.request.source_type ?? undefined) as BatchIndexRequest["sourceType"],

@@ -2,6 +2,7 @@
 export type DocumentGroup = "official_ocp" | "customer_generated";
 
 export interface BatchIndexRequest {
+  workspaceId?: string;
   rootPath?: string;
   explicitSourcePaths?: string[];
   sourceType?: SourceType;
@@ -49,6 +50,7 @@ export interface LibrarySourceBreakdownItem {
 }
 
 export interface LibrarySummaryResponse {
+  workspaceId: string;
   sourceRoot: string;
   extractRoot: string;
   corpusFiles: number;
@@ -64,6 +66,7 @@ export interface LibrarySummaryResponse {
 }
 
 export interface LibraryDocumentRecord {
+  workspaceId: string;
   documentKey: string;
   title: string;
   relativePath: string;
@@ -77,6 +80,7 @@ export interface LibraryDocumentRecord {
 }
 
 export interface LibraryCatalogResponse {
+  workspaceId: string;
   documents: LibraryDocumentRecord[];
   message: string;
 }
@@ -91,6 +95,7 @@ export interface LibraryChunkRecord {
 }
 
 export interface LibraryDocumentChunksResponse {
+  workspaceId: string;
   documentKey: string;
   title: string;
   chunkCount: number;
@@ -98,6 +103,7 @@ export interface LibraryDocumentChunksResponse {
 }
 
 export interface LibraryDocumentContentResponse {
+  workspaceId: string;
   documentKey: string;
   title: string;
   content: string;

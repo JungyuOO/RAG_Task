@@ -37,7 +37,7 @@ export function ChatTranscript({
     <div ref={threadRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-auto pr-1">
       <div className="flex min-h-full flex-col gap-4">
         {turns.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-border/70 bg-background/50 px-4 py-8 text-sm leading-6 text-muted-foreground">
+          <div className="surface-muted rounded-2xl px-4 py-8 text-sm leading-6 text-muted-foreground">
             첫 질문을 보내면 여기에서 assistant 응답과 live artifact가 함께 표시됩니다.
           </div>
         ) : null}

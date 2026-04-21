@@ -1,33 +1,35 @@
 import { FormEvent, useEffect, useState } from "react";
 
+import type { WorkspaceCreateRequest, WorkspaceRecord } from "@/domains/workspaces/types";
+import { createWorkspace, listWorkspaces } from "@/domains/workspaces/workspacesApi";
 import { PageHeader } from "@/shared/layout/PageHeader";
 import { Button } from "@/shared/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/shared/ui/card";
 import { Input } from "@/shared/ui/input";
 import { Label } from "@/shared/ui/label";
-import type { WorkspaceCreateRequest, WorkspaceRecord } from "@/domains/workspaces/types";
-import { createWorkspace, listWorkspaces } from "@/domains/workspaces/workspacesApi";
 
 type WorkspacesPageProps = {
   selectedWorkspaceId: string;
   onSelectWorkspace: (workspaceId: string) => void;
+  onClearWorkspace: () => void;
   onLoadingChange?: (state: { active: boolean; title: string; detail?: string }) => void;
+};
+
+const DEFAULT_FORM: WorkspaceCreateRequest = {
+  name: "",
+  environment: "dev",
 };
 
 export function WorkspacesPage({
   selectedWorkspaceId,
   onSelectWorkspace,
+  onClearWorkspace,
   onLoadingChange,
 }: WorkspacesPageProps) {
   const [items, setItems] = useState<WorkspaceRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [form, setForm] = useState<WorkspaceCreateRequest>({
-    name: "",
-    slug: "",
-    industry: "",
-    environment: "",
-  });
+  const [form, setForm] = useState<WorkspaceCreateRequest>(DEFAULT_FORM);
 
   async function refresh() {
     setLoading(true);
@@ -35,9 +37,6 @@ export function WorkspacesPage({
     try {
       const next = await listWorkspaces();
       setItems(next);
-      if (!selectedWorkspaceId && next[0]) {
-        onSelectWorkspace(next[0].workspaceId);
-      }
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Failed to load workspaces.");
     } finally {
@@ -52,8 +51,8 @@ export function WorkspacesPage({
   useEffect(() => {
     onLoadingChange?.({
       active: loading,
-      title: "워크스페이스 불러오는 중",
-      detail: "고객사별 작업 공간 목록을 가져오는 중입니다.",
+      title: "Loading workspaces",
+      detail: "Fetching available customer workspaces.",
     });
     return () => onLoadingChange?.({ active: false, title: "" });
   }, [loading, onLoadingChange]);
@@ -64,7 +63,7 @@ export function WorkspacesPage({
     setError("");
     try {
       const created = await createWorkspace(form);
-      setForm({ name: "", slug: "", industry: "", environment: "" });
+      setForm(DEFAULT_FORM);
       await refresh();
       onSelectWorkspace(created.workspaceId);
     } catch (nextError) {
@@ -77,25 +76,32 @@ export function WorkspacesPage({
     <div className="space-y-6">
       <PageHeader
         eyebrow="Workspaces"
-        title="Workspace settings"
-        description="고객사별 작업 공간을 만들고 현재 활성 workspace를 선택합니다."
+        title="Workspaces"
+        description="Create a customer workspace, choose the active one, or clear the current selection before switching contexts."
+        actions={
+          selectedWorkspaceId ? (
+            <Button type="button" variant="outline" onClick={onClearWorkspace}>
+              Clear active workspace
+            </Button>
+          ) : null
+        }
       />
 
       {error ? (
-        <Card className="border-destructive/40 bg-destructive/10">
+        <Card className="surface-danger">
           <CardContent className="p-6 text-sm text-destructive">{error}</CardContent>
         </Card>
       ) : null}
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
-        <Card className="border-border/70 bg-card/95">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
+        <Card className="surface-soft">
           <CardHeader>
             <CardTitle>Workspace list</CardTitle>
-            <CardDescription>선택된 workspace는 이후 모델 설정 및 고객사별 기능의 기준이 됩니다.</CardDescription>
+            <CardDescription>The active workspace drives models, connections, library context, and SCM delivery.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             {items.length === 0 ? (
-              <div className="text-sm text-muted-foreground">등록된 workspace가 없습니다.</div>
+              <div className="text-sm text-muted-foreground">No workspace has been created yet.</div>
             ) : (
               items.map((item) => {
                 const active = item.workspaceId === selectedWorkspaceId;
@@ -105,14 +111,20 @@ export function WorkspacesPage({
                     type="button"
                     onClick={() => onSelectWorkspace(item.workspaceId)}
                     className={`block w-full rounded-xl border px-4 py-3 text-left ${
-                      active
-                        ? "border-primary bg-primary/10"
-                        : "border-border/70 bg-background/50 hover:bg-background/80"
+                      active ? "surface-brand" : "surface-muted hover:bg-background/80"
                     }`}
                   >
-                    <div className="font-medium text-foreground">{item.name}</div>
-                    <div className="text-sm text-muted-foreground">
-                      slug={item.slug} · {item.industry || "industry -"} · {item.environment || "env -"}
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="font-medium text-foreground">{item.name}</div>
+                        <div className="text-sm text-muted-foreground">{item.environment || "No environment set"}</div>
+                        <div className="mt-1 text-xs text-muted-foreground/80">slug={item.slug}</div>
+                      </div>
+                      {active ? (
+                        <div className="rounded-full border border-border/70 px-2.5 py-1 text-xs text-foreground">
+                          Active
+                        </div>
+                      ) : null}
                     </div>
                   </button>
                 );
@@ -121,10 +133,10 @@ export function WorkspacesPage({
           </CardContent>
         </Card>
 
-        <Card className="border-border/70 bg-card/95">
+        <Card className="surface-soft">
           <CardHeader>
             <CardTitle>Create workspace</CardTitle>
-            <CardDescription>고객사 또는 운영 환경 단위로 새 workspace를 생성합니다.</CardDescription>
+            <CardDescription>Name is enough for MVP. Slug is generated automatically, and environment stays lightweight.</CardDescription>
           </CardHeader>
           <CardContent>
             <form className="space-y-4" onSubmit={handleSubmit}>
@@ -134,33 +146,23 @@ export function WorkspacesPage({
                   id="workspace-name"
                   value={form.name ?? ""}
                   onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="workspace-slug">Slug</Label>
-                <Input
-                  id="workspace-slug"
-                  value={form.slug ?? ""}
-                  onChange={(event) => setForm((current) => ({ ...current, slug: event.target.value }))}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="workspace-industry">Industry</Label>
-                <Input
-                  id="workspace-industry"
-                  value={form.industry ?? ""}
-                  onChange={(event) => setForm((current) => ({ ...current, industry: event.target.value }))}
+                  placeholder="Demo Workspace"
                 />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="workspace-environment">Environment</Label>
-                <Input
+                <select
                   id="workspace-environment"
-                  value={form.environment ?? ""}
+                  className="flex h-10 w-full rounded-lg border border-border bg-background px-3 text-sm outline-none transition focus:ring-2 focus:ring-primary/30"
+                  value={form.environment ?? "dev"}
                   onChange={(event) => setForm((current) => ({ ...current, environment: event.target.value }))}
-                />
+                >
+                  <option value="dev">dev</option>
+                  <option value="staging">staging</option>
+                  <option value="prod">prod</option>
+                </select>
               </div>
-              <Button disabled={loading}>{loading ? "생성 중..." : "Create workspace"}</Button>
+              <Button disabled={loading || !form.name.trim()}>{loading ? "Creating..." : "Create workspace"}</Button>
             </form>
           </CardContent>
         </Card>

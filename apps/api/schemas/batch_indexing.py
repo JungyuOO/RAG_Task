@@ -8,6 +8,7 @@ from apps.api.schemas.ingestion_parser import DocumentGroup, SourceType
 class BatchIndexRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    workspace_id: str = ""
     root_path: str = ""
     explicit_source_paths: list[str] = Field(default_factory=list)
     source_type: SourceType | None = None

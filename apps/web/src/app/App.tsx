@@ -1,6 +1,7 @@
 ﻿import { Suspense, lazy, useEffect, useMemo, useState } from "react";
 
 import { useOcpConnection } from "@/domains/connection/useOcpConnection";
+import { ConnectionProfileMenu } from "@/domains/connection/ConnectionProfileMenu";
 import { ChatSessionRail } from "@/domains/chat/ChatSessionRail";
 import { createChatSessionRecord, type ChatSessionRecord } from "@/domains/chat/types";
 import type { WorkspaceRecord } from "@/domains/workspaces/types";
@@ -9,6 +10,7 @@ import { AppShell } from "@/shared/layout/AppShell";
 import { getCanonicalUrl, readRouteStateFromLocation, type AppRoute } from "./routes";
 const CHAT_SESSIONS_STORAGE_KEY = "rag-task.chat.sessions";
 const ACTIVE_WORKSPACE_STORAGE_KEY = "rag-task.workspace.active";
+const NO_ACTIVE_WORKSPACE = "__none__";
 const WorkspacesPage = lazy(() => import("../pages/WorkspacesPage").then((module) => ({ default: module.WorkspacesPage })));
 const ConnectionPage = lazy(() => import("../pages/ConnectionPage").then((module) => ({ default: module.ConnectionPage })));
 const ModelsPage = lazy(() => import("../pages/ModelsPage").then((module) => ({ default: module.ModelsPage })));
@@ -17,6 +19,7 @@ const ResourcesPage = lazy(() => import("../pages/ResourcesPage").then((module) 
 const LibraryPage = lazy(() => import("../pages/LibraryPage").then((module) => ({ default: module.LibraryPage })));
 const ChatPage = lazy(() => import("../pages/ChatPage").then((module) => ({ default: module.ChatPage })));
 const ActionsPage = lazy(() => import("../pages/ActionsPage").then((module) => ({ default: module.ActionsPage })));
+const ScmPage = lazy(() => import("../pages/ScmPage").then((module) => ({ default: module.ScmPage })));
 
 type GlobalLoadingState = {
   active: boolean;
@@ -44,7 +47,8 @@ export function App() {
       : { route: "connections" as AppRoute, chatSessionId: "" };
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>(() => {
     if (typeof window === "undefined") return "";
-    return window.localStorage.getItem(ACTIVE_WORKSPACE_STORAGE_KEY) ?? "";
+    const stored = window.localStorage.getItem(ACTIVE_WORKSPACE_STORAGE_KEY) ?? "";
+    return stored === NO_ACTIVE_WORKSPACE ? "" : stored;
   });
   const connectionController = useOcpConnection(selectedWorkspaceId);
   const [route, setRoute] = useState<AppRoute>(initialRouteState.route);
@@ -62,7 +66,10 @@ export function App() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    window.localStorage.setItem(ACTIVE_WORKSPACE_STORAGE_KEY, selectedWorkspaceId);
+    window.localStorage.setItem(
+      ACTIVE_WORKSPACE_STORAGE_KEY,
+      selectedWorkspaceId || NO_ACTIVE_WORKSPACE,
+    );
   }, [selectedWorkspaceId]);
 
   useEffect(() => {
@@ -80,7 +87,8 @@ export function App() {
       try {
         const next = await listWorkspaces();
         setWorkspaceSnapshot(next);
-        if (!selectedWorkspaceId && next[0]) {
+        const stored = typeof window === "undefined" ? "" : window.localStorage.getItem(ACTIVE_WORKSPACE_STORAGE_KEY) ?? "";
+        if (!selectedWorkspaceId && next[0] && stored !== NO_ACTIVE_WORKSPACE) {
           setSelectedWorkspaceId(next[0].workspaceId);
         }
       } catch {
@@ -145,6 +153,10 @@ export function App() {
     navigate("chat", { chatSessionId: nextSession.id });
   }
 
+  function clearActiveWorkspace() {
+    setSelectedWorkspaceId("");
+  }
+
   function selectChatSession(sessionId: string) {
     setActiveChatSessionId(sessionId);
     navigate("chat", { chatSessionId: sessionId });
@@ -183,6 +195,7 @@ export function App() {
           <WorkspacesPage
             selectedWorkspaceId={selectedWorkspaceId}
             onSelectWorkspace={setSelectedWorkspaceId}
+            onClearWorkspace={clearActiveWorkspace}
             onLoadingChange={setPageLoadingState}
           />
         );
@@ -191,16 +204,18 @@ export function App() {
       case "models":
         return <ModelsPage selectedWorkspace={selectedWorkspace} onLoadingChange={setPageLoadingState} />;
       case "overview":
-        return <DashboardPage controller={connectionController} onLoadingChange={setPageLoadingState} />;
+        return <DashboardPage controller={connectionController} selectedWorkspace={selectedWorkspace} onLoadingChange={setPageLoadingState} />;
       case "resources":
-        return <ResourcesPage controller={connectionController} onLoadingChange={setPageLoadingState} />;
+        return <ResourcesPage controller={connectionController} selectedWorkspace={selectedWorkspace} onLoadingChange={setPageLoadingState} />;
       case "library":
-        return <LibraryPage controller={connectionController} onLoadingChange={setPageLoadingState} />;
+        return <LibraryPage controller={connectionController} selectedWorkspace={selectedWorkspace} onLoadingChange={setPageLoadingState} />;
+      case "scm":
+        return <ScmPage selectedWorkspace={selectedWorkspace} onLoadingChange={setPageLoadingState} />;
       case "actions":
         return <ActionsPage controller={connectionController} />;
       case "connections":
       default:
-        return <ConnectionPage controller={connectionController} />;
+        return <ConnectionPage controller={connectionController} selectedWorkspace={selectedWorkspace} />;
     }
   }, [activeChatSession, connectionController, route, selectedWorkspace, selectedWorkspaceId]);
 
@@ -217,9 +232,19 @@ export function App() {
     );
   }, [activeChatSession.id, chatSessions, route]);
 
+  const footerContent = useMemo(
+    () => (
+      <ConnectionProfileMenu
+        controller={connectionController}
+        onOpenConnections={() => navigate("connections")}
+      />
+    ),
+    [connectionController, navigate],
+  );
+
   return (
-    <AppShell activeRoute={route} onNavigate={navigate} profile={connectionController.profile} testResult={connectionController.testResult} schedulerStatus={connectionController.schedulerStatus} message={connectionController.message} railContent={railContent} loadingState={shellLoadingState}>
-      <Suspense fallback={<div className="rounded-xl border border-border/70 bg-background/50 px-4 py-3 text-sm text-muted-foreground">페이지를 불러오는 중입니다.</div>}>
+    <AppShell activeRoute={route} onNavigate={navigate} profile={connectionController.profile} testResult={connectionController.testResult} schedulerStatus={connectionController.schedulerStatus} message={connectionController.message} railContent={railContent} footerContent={footerContent} loadingState={shellLoadingState}>
+      <Suspense fallback={<div className="surface-muted rounded-xl px-4 py-3 text-sm text-muted-foreground">페이지를 불러오는 중입니다.</div>}>
         {page}
       </Suspense>
     </AppShell>

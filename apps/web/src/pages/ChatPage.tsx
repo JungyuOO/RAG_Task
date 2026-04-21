@@ -313,7 +313,7 @@ function ChatStageDetails({ stages, open }: { stages: CopilotChatStage[]; open: 
   if (!currentStage) return null;
 
   return (
-    <div className="rounded-xl border border-border/70 bg-background/50">
+    <div className="surface-muted rounded-xl">
       <button
         type="button"
         className="flex w-full items-start justify-between gap-3 px-4 py-3 text-left"
@@ -401,7 +401,7 @@ function ResourceArtifactBlock({
 }) {
   if (artifact.artifactType === "resource_list") {
     return (
-      <div className="space-y-3 rounded-xl border border-border/70 bg-background/50 p-4">
+      <div className="surface-muted space-y-3 rounded-xl p-4">
         <div className="flex items-center justify-between gap-3 text-sm">
           <strong className="text-foreground">{artifact.title || "Resource List"}</strong>
           <span className="text-muted-foreground">{artifact.namespace}</span>
@@ -427,7 +427,7 @@ function ResourceArtifactBlock({
 
   if (artifact.artifactType === "resource_relations") {
     return (
-      <div className="space-y-2 rounded-xl border border-border/70 bg-background/50 p-4">
+      <div className="surface-muted space-y-2 rounded-xl p-4">
         <div className="flex items-center justify-between gap-3 text-sm">
           <strong className="text-foreground">{artifact.title || "Resource Relations"}</strong>
           <span className="text-muted-foreground">{artifact.namespace}</span>
@@ -438,7 +438,7 @@ function ResourceArtifactBlock({
             <button
               key={`${item.namespace}:${item.name}`}
               type="button"
-              className="block w-full rounded-xl border border-border/70 bg-card/80 px-3 py-3 text-left text-sm hover:bg-secondary/40"
+              className="surface-muted block w-full rounded-xl px-3 py-3 text-left text-sm hover:bg-secondary/40"
               onClick={() => {
                 const target = buildEditorTargetFromArtifact(artifact, item);
                 if (target) onOpenEditor(target);
@@ -463,7 +463,7 @@ function ResourceArtifactBlock({
     const manifestYaml = String(artifact.payload.manifest_yaml ?? "");
 
     return (
-      <div className="space-y-3 rounded-xl border border-border/70 bg-background/50 p-4">
+      <div className="surface-muted space-y-3 rounded-xl p-4">
         <div className="flex items-center justify-between gap-3 text-sm">
           <strong className="text-foreground">{artifact.title || "Resource YAML"}</strong>
           <span className="text-muted-foreground">{artifact.namespace}</span>
@@ -492,12 +492,12 @@ function ResourceArtifactBlock({
   if (artifact.artifactType === "command_template") {
     const command = String(artifact.payload.resolved_command ?? artifact.payload.template ?? "");
     return (
-      <div className="space-y-3 rounded-xl border border-border/70 bg-background/50 p-4">
+      <div className="surface-muted space-y-3 rounded-xl p-4">
         <div className="flex items-center justify-between gap-3 text-sm">
           <strong className="text-foreground">{artifact.title || "Command Template"}</strong>
           <span className="text-muted-foreground">exact evidence</span>
         </div>
-        <pre className="overflow-auto rounded-xl border border-border/70 bg-background/80 p-4 text-xs leading-6 text-muted-foreground">
+        <pre className="surface-muted overflow-auto rounded-xl p-4 text-xs leading-6 text-muted-foreground">
           <code>{command}</code>
         </pre>
         {command ? (
@@ -512,7 +512,7 @@ function ResourceArtifactBlock({
   if (artifact.artifactType === "followup_suggestions") {
     const prompts = Array.isArray(artifact.payload.prompts) ? artifact.payload.prompts : [];
     return (
-      <div className="space-y-3 rounded-xl border border-border/70 bg-background/50 p-4">
+      <div className="surface-muted space-y-3 rounded-xl p-4">
         <div className="flex items-center justify-between gap-3 text-sm">
           <strong className="text-foreground">{artifact.title || "Next checks"}</strong>
           <span className="text-muted-foreground">{artifact.namespace}</span>
@@ -823,7 +823,7 @@ export function ChatPage({ controller, session, updateSession }: ChatPageProps) 
       />
 
       {!controller.profile ? (
-        <Card className="border-border/70 bg-background/50">
+        <Card className="surface-muted">
           <CardContent className="p-6 text-sm text-muted-foreground">
             현재는 <strong>doc-only mode</strong> 입니다. live OCP 질의에는 클러스터 연결이 필요합니다.
           </CardContent>
@@ -833,7 +833,7 @@ export function ChatPage({ controller, session, updateSession }: ChatPageProps) 
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start">
         <Card
           className={cn(
-            "min-w-0 overflow-hidden border-border/70 bg-card/95 transition-[width,flex-basis] duration-300 xl:flex-1",
+            "surface-soft min-w-0 overflow-hidden transition-[width,flex-basis] duration-300 xl:flex-1",
             sourceDrawerOpen ? "xl:basis-[calc(100%-24rem)]" : "xl:basis-full",
           )}
         >
@@ -866,7 +866,7 @@ export function ChatPage({ controller, session, updateSession }: ChatPageProps) 
             />
 
             {error ? (
-              <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              <div className="surface-danger rounded-xl px-4 py-3 text-sm text-destructive">
                 {error}
               </div>
             ) : null}
@@ -897,7 +897,7 @@ export function ChatPage({ controller, session, updateSession }: ChatPageProps) 
           )}
         >
           {sourceDrawerOpen ? (
-            <Card className="border-border/70 bg-card/95 xl:max-h-[calc(100vh-3rem)]">
+            <Card className="surface-soft xl:max-h-[calc(100vh-3rem)]">
               <CardHeader>
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -919,7 +919,7 @@ export function ChatPage({ controller, session, updateSession }: ChatPageProps) 
               </CardHeader>
               <CardContent className="space-y-4 overflow-y-auto xl:max-h-[calc(100vh-9rem)]">
                 {selectionLoading ? (
-                  <div className="rounded-xl border border-border/70 bg-background/50 px-4 py-4 text-sm text-muted-foreground">
+                  <div className="surface-muted rounded-xl px-4 py-4 text-sm text-muted-foreground">
                     <div className="flex items-center gap-3">
                       <LoaderCircle className="h-4 w-4 animate-spin text-primary" />
                       <span>Source preview를 불러오는 중입니다.</span>
@@ -959,7 +959,7 @@ export function ChatPage({ controller, session, updateSession }: ChatPageProps) 
                         >
                           YAML 복사
                         </Button>
-                        <pre className="overflow-auto rounded-xl border border-border/70 bg-background/80 p-4 text-xs leading-6 text-muted-foreground">
+                        <pre className="surface-muted overflow-auto rounded-xl p-4 text-xs leading-6 text-muted-foreground">
                           <code>{String(selection.source.metadata.manifest_yaml)}</code>
                         </pre>
                       </>
@@ -973,7 +973,7 @@ export function ChatPage({ controller, session, updateSession }: ChatPageProps) 
                     <div><span className="font-medium text-foreground">Section:</span> {selection.preview.sectionTitle || "-"}</div>
                     <div><span className="font-medium text-foreground">Path:</span> {selection.preview.relativeSourcePath || selection.preview.sourcePath}</div>
                     <div><span className="font-medium text-foreground">Lines:</span> {selection.preview.lineStart ?? "-"} ~ {selection.preview.lineEnd ?? "-"}</div>
-                    <div className="rounded-xl border border-border/70 bg-background/50 p-4">
+                    <div className="surface-muted rounded-xl p-4">
                       <MarkdownArticle
                         content={selection.preview.snippet || selection.preview.lines.join("\n")}
                         renderCodeActions={(code) => (
@@ -998,7 +998,7 @@ export function ChatPage({ controller, session, updateSession }: ChatPageProps) 
 
       {editorLoading.active ? (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/65 p-4 backdrop-blur-sm">
-          <Card className="w-full max-w-md border-border/70 bg-card/95 shadow-2xl">
+          <Card className="surface-soft w-full max-w-md shadow-2xl">
             <CardContent className="flex items-start gap-4 p-6">
               <div className="rounded-full bg-primary/10 p-3 text-primary">
                 <LoaderCircle className="h-5 w-5 animate-spin" />

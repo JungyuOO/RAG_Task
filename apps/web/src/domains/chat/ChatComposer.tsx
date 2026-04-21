@@ -24,13 +24,13 @@ export function ChatComposer({
   onKeyDown,
 }: ChatComposerProps) {
   return (
-    <form onSubmit={onSubmit} className="space-y-3 rounded-2xl border border-border/70 bg-card/95 p-4">
+    <form onSubmit={onSubmit} className="surface-soft space-y-3 rounded-2xl p-4">
       <div className="flex flex-wrap gap-2">
         {shortcuts.map((prompt) => (
           <button
             key={prompt}
             type="button"
-            className="rounded-full border border-border/70 bg-background/60 px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            className="surface-muted rounded-full px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
             onClick={() => onShortcut(prompt)}
           >
             {prompt}

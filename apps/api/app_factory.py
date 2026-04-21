@@ -11,6 +11,8 @@ from apps.api.routes.docs_preview import router as docs_preview_router
 from apps.api.routes.indexing import router as index_router
 from apps.api.routes.library import router as library_router
 from apps.api.routes.ocp import router as ocp_live_router
+from apps.api.routes.oauth import router as oauth_router
+from apps.api.routes.scm import router as scm_router
 from apps.api.routes.workspaces import router as workspaces_router
 from apps.api.runtime import chat_llm_client, connection_lease_scheduler
 
@@ -39,6 +41,8 @@ def create_app() -> FastAPI:
     app.include_router(index_router, prefix="/api/v1")
     app.include_router(library_router, prefix="/api/v1")
     app.include_router(ocp_live_router, prefix="/api/v1")
+    app.include_router(oauth_router, prefix="/api/v1")
+    app.include_router(scm_router, prefix="/api/v1")
     app.include_router(workspaces_router, prefix="/api/v1")
     return app
 

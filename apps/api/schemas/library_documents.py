@@ -12,6 +12,7 @@ LibraryOriginalKind = Literal["markdown", "pdf"]
 class LibraryDocumentRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    workspace_id: str = ""
     document_key: str
     title: str
     relative_path: str
@@ -27,6 +28,7 @@ class LibraryDocumentRecord(BaseModel):
 class LibraryCatalogResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    workspace_id: str = ""
     documents: list[LibraryDocumentRecord] = Field(default_factory=list)
     message: str = ""
 
@@ -45,6 +47,7 @@ class LibraryChunkRecord(BaseModel):
 class LibraryDocumentChunksResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    workspace_id: str = ""
     document_key: str
     title: str
     chunk_count: int
@@ -54,6 +57,7 @@ class LibraryDocumentChunksResponse(BaseModel):
 class LibraryDocumentContentResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    workspace_id: str = ""
     document_key: str
     title: str
     content: str

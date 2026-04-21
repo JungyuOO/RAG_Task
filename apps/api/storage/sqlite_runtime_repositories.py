@@ -31,6 +31,21 @@ from apps.api.schemas.workspaces import (
     WorkspaceRecord,
     WorkspaceUpdateRequest,
 )
+from apps.api.schemas.recommendations import (
+    MetricSnapshotListResponse,
+    MetricSnapshotRecord,
+    RecommendationListResponse,
+    RecommendationRecord,
+)
+from apps.api.schemas.scm import (
+    ScmConnectionCreateRequest,
+    ScmConnectionListResponse,
+    ScmConnectionRecord,
+    ScmRepositoryCreateRequest,
+    ScmRepositoryListResponse,
+    ScmRepositoryRecord,
+    ScmRepositoryUpdateRequest,
+)
 
 
 def _utc_now() -> datetime:
@@ -315,6 +330,354 @@ class SQLiteWorkspaceModelProfileRepository(_SQLiteRepositoryBase):
     def clear(self) -> None:
         with self._lock, self._connect() as connection:
             connection.execute("DELETE FROM workspace_model_profiles")
+            connection.commit()
+
+
+class SQLiteMetricSnapshotRepository(_SQLiteRepositoryBase):
+    def _create_schema(self, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS metric_snapshots (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id TEXT NOT NULL UNIQUE,
+                workspace_id TEXT NOT NULL,
+                connection_id TEXT NOT NULL,
+                namespace TEXT NOT NULL,
+                metric_key TEXT NOT NULL,
+                metric_value REAL NOT NULL,
+                unit TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                collected_at TEXT NOT NULL
+            )
+            """
+        )
+
+    def create(
+        self,
+        *,
+        workspace_id: str,
+        connection_id: str,
+        namespace: str,
+        metric_key: str,
+        metric_value: float,
+        unit: str = "",
+    ) -> MetricSnapshotRecord:
+        record = MetricSnapshotRecord(
+            snapshot_id=f"metric-{uuid4().hex}",
+            workspace_id=workspace_id,
+            connection_id=connection_id,
+            namespace=namespace,
+            metric_key=metric_key,
+            metric_value=float(metric_value),
+            unit=unit,
+            collected_at=_utc_now(),
+        )
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO metric_snapshots (
+                    snapshot_id, workspace_id, connection_id, namespace, metric_key, metric_value, unit, payload_json, collected_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.snapshot_id,
+                    record.workspace_id,
+                    record.connection_id,
+                    record.namespace,
+                    record.metric_key,
+                    record.metric_value,
+                    record.unit,
+                    _json_dumps(record.model_dump(mode="json")),
+                    record.collected_at.isoformat(),
+                ),
+            )
+            connection.commit()
+        return record
+
+    def list_recent(self, *, workspace_id: str, limit: int = 20) -> MetricSnapshotListResponse:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload_json FROM metric_snapshots
+                WHERE workspace_id = ?
+                ORDER BY collected_at DESC, seq DESC
+                LIMIT ?
+                """,
+                (workspace_id, max(int(limit), 1)),
+            ).fetchall()
+        return MetricSnapshotListResponse(
+            items=[MetricSnapshotRecord.model_validate(_json_loads(row["payload_json"])) for row in rows]
+        )
+
+    def clear(self) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute("DELETE FROM metric_snapshots")
+            connection.commit()
+
+
+class SQLiteRecommendationLogRepository(_SQLiteRepositoryBase):
+    def _create_schema(self, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS recommendation_logs (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                recommendation_id TEXT NOT NULL UNIQUE,
+                workspace_id TEXT NOT NULL,
+                connection_id TEXT NOT NULL,
+                namespace TEXT NOT NULL,
+                recommendation_type TEXT NOT NULL,
+                risk_level TEXT NOT NULL,
+                resource_kind TEXT NOT NULL,
+                resource_name TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+
+    def create(
+        self,
+        *,
+        workspace_id: str,
+        connection_id: str,
+        namespace: str,
+        recommendation_type: str,
+        risk_level: str,
+        summary: str,
+        rationale: str = "",
+        resource_kind: str = "",
+        resource_name: str = "",
+    ) -> RecommendationRecord:
+        record = RecommendationRecord(
+            recommendation_id=f"rec-{uuid4().hex}",
+            workspace_id=workspace_id,
+            connection_id=connection_id,
+            namespace=namespace,
+            recommendation_type=recommendation_type,
+            risk_level=risk_level,
+            resource_kind=resource_kind,
+            resource_name=resource_name,
+            summary=summary,
+            rationale=rationale,
+            created_at=_utc_now(),
+        )
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO recommendation_logs (
+                    recommendation_id, workspace_id, connection_id, namespace, recommendation_type, risk_level, resource_kind, resource_name, payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.recommendation_id,
+                    record.workspace_id,
+                    record.connection_id,
+                    record.namespace,
+                    record.recommendation_type,
+                    record.risk_level,
+                    record.resource_kind,
+                    record.resource_name,
+                    _json_dumps(record.model_dump(mode="json")),
+                    record.created_at.isoformat(),
+                ),
+            )
+            connection.commit()
+        return record
+
+    def list_recent(self, *, workspace_id: str, limit: int = 20) -> RecommendationListResponse:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload_json FROM recommendation_logs
+                WHERE workspace_id = ?
+                ORDER BY created_at DESC, seq DESC
+                LIMIT ?
+                """,
+                (workspace_id, max(int(limit), 1)),
+            ).fetchall()
+        return RecommendationListResponse(
+            items=[RecommendationRecord.model_validate(_json_loads(row["payload_json"])) for row in rows]
+        )
+
+    def clear(self) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute("DELETE FROM recommendation_logs")
+            connection.commit()
+
+
+class SQLiteScmConnectionRepository(_SQLiteRepositoryBase):
+    def _create_schema(self, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS scm_connections (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                scm_connection_id TEXT NOT NULL UNIQUE,
+                workspace_id TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+    def create(self, workspace_id: str, request: ScmConnectionCreateRequest) -> ScmConnectionRecord:
+        now = _utc_now()
+        record = ScmConnectionRecord(
+            scm_connection_id=f"scm-{uuid4().hex}",
+            workspace_id=workspace_id,
+            provider=request.provider,
+            host_url=request.host_url,
+            auth_type=request.auth_type,
+            account_label=request.account_label,
+            login_name=request.login_name,
+            scopes=list(request.scopes or []),
+            secret_ref=request.secret_ref,
+            status="connected",
+            created_at=now,
+            updated_at=now,
+        )
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO scm_connections (scm_connection_id, workspace_id, payload_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    record.scm_connection_id,
+                    record.workspace_id,
+                    _json_dumps(record.model_dump(mode="json")),
+                    record.created_at.isoformat(),
+                    record.updated_at.isoformat(),
+                ),
+            )
+            connection.commit()
+        return record
+
+    def list_by_workspace(self, workspace_id: str) -> ScmConnectionListResponse:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM scm_connections WHERE workspace_id = ? ORDER BY updated_at DESC, created_at DESC",
+                (workspace_id,),
+            ).fetchall()
+        return ScmConnectionListResponse(
+            items=[ScmConnectionRecord.model_validate(_json_loads(row["payload_json"])) for row in rows]
+        )
+
+    def get(self, scm_connection_id: str) -> ScmConnectionRecord | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM scm_connections WHERE scm_connection_id = ?",
+                (scm_connection_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return ScmConnectionRecord.model_validate(_json_loads(row["payload_json"]))
+
+    def clear(self) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute("DELETE FROM scm_connections")
+            connection.commit()
+
+
+class SQLiteScmRepositoryRepository(_SQLiteRepositoryBase):
+    def _create_schema(self, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS scm_repositories (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                repository_id TEXT NOT NULL UNIQUE,
+                workspace_id TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+    def create(self, workspace_id: str, request: ScmRepositoryCreateRequest) -> ScmRepositoryRecord:
+        now = _utc_now()
+        record = ScmRepositoryRecord(
+            repository_id=f"repo-{uuid4().hex}",
+            workspace_id=workspace_id,
+            scm_connection_id=request.scm_connection_id,
+            repo_full_name=request.repo_full_name,
+            default_branch=request.default_branch,
+            config_path=request.config_path,
+            delivery_mode=request.delivery_mode,
+            manifest_kind=request.manifest_kind,
+            target_cluster_url=request.target_cluster_url,
+            target_namespace=request.target_namespace,
+            auto_deploy_enabled=request.auto_deploy_enabled,
+            sync_status="configured",
+            created_at=now,
+            updated_at=now,
+        )
+        self._upsert(record)
+        return record
+
+    def update(self, repository_id: str, request: ScmRepositoryUpdateRequest) -> ScmRepositoryRecord:
+        existing = self.get(repository_id)
+        if existing is None:
+            raise LookupError("Repository not found.")
+        updated = existing.model_copy(
+            update={
+                "default_branch": request.default_branch or existing.default_branch,
+                "config_path": request.config_path or existing.config_path,
+                "delivery_mode": request.delivery_mode or existing.delivery_mode,
+                "manifest_kind": request.manifest_kind or existing.manifest_kind,
+                "target_cluster_url": request.target_cluster_url or existing.target_cluster_url,
+                "target_namespace": request.target_namespace or existing.target_namespace,
+                "auto_deploy_enabled": existing.auto_deploy_enabled if request.auto_deploy_enabled is None else request.auto_deploy_enabled,
+                "updated_at": _utc_now(),
+            }
+        )
+        self._upsert(updated)
+        return updated
+
+    def list_by_workspace(self, workspace_id: str) -> ScmRepositoryListResponse:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM scm_repositories WHERE workspace_id = ? ORDER BY updated_at DESC, created_at DESC",
+                (workspace_id,),
+            ).fetchall()
+        return ScmRepositoryListResponse(
+            items=[ScmRepositoryRecord.model_validate(_json_loads(row["payload_json"])) for row in rows]
+        )
+
+    def get(self, repository_id: str) -> ScmRepositoryRecord | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM scm_repositories WHERE repository_id = ?",
+                (repository_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return ScmRepositoryRecord.model_validate(_json_loads(row["payload_json"]))
+
+    def clear(self) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute("DELETE FROM scm_repositories")
+            connection.commit()
+
+    def _upsert(self, record: ScmRepositoryRecord) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO scm_repositories (repository_id, workspace_id, payload_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(repository_id) DO UPDATE SET
+                    payload_json=excluded.payload_json,
+                    created_at=excluded.created_at,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    record.repository_id,
+                    record.workspace_id,
+                    _json_dumps(record.model_dump(mode="json")),
+                    record.created_at.isoformat(),
+                    record.updated_at.isoformat(),
+                ),
+            )
             connection.commit()
 
 

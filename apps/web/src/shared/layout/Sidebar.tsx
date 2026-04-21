@@ -5,6 +5,7 @@ import {
   Boxes,
   BriefcaseBusiness,
   Cable,
+  GitBranch,
   LayoutDashboard,
   PlaySquare,
   SlidersHorizontal,
@@ -21,6 +22,7 @@ type SidebarProps = {
   onNavigate: (route: AppRoute) => void;
   onClose: () => void;
   railContent?: ReactNode;
+  footerContent?: ReactNode;
 };
 
 const navItems: Array<{
@@ -36,6 +38,7 @@ const navItems: Array<{
   { route: "library", label: "Library", icon: Boxes },
   { route: "chat", label: "Chat", icon: Bot },
   { route: "actions", label: "Actions", icon: PlaySquare },
+  { route: "scm", label: "SCM", icon: GitBranch },
 ];
 
 export function Sidebar({
@@ -44,6 +47,7 @@ export function Sidebar({
   onNavigate,
   onClose,
   railContent,
+  footerContent,
 }: SidebarProps) {
   return (
     <>
@@ -100,6 +104,7 @@ export function Sidebar({
         </nav>
 
         {railContent ? <div className="mt-6 overflow-auto pr-1">{railContent}</div> : null}
+        {footerContent ? <div className="mt-auto pt-4">{footerContent}</div> : null}
       </aside>
     </>
   );

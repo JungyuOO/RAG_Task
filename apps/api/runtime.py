@@ -3,7 +3,13 @@
 from pathlib import Path
 
 from apps.api.core.llm_settings import get_chat_llm_settings
+from apps.api.core.pgvector_settings import get_pgvector_runtime_settings
+from apps.api.core.scm_oauth_settings import get_scm_oauth_settings
 from apps.api.storage.sqlite import (
+    SQLiteMetricSnapshotRepository,
+    SQLiteRecommendationLogRepository,
+    SQLiteScmConnectionRepository,
+    SQLiteScmRepositoryRepository,
     SQLiteActionAuditRepository,
     SQLiteActionExecutionRepository,
     SQLiteActionRequestRepository,
@@ -11,6 +17,14 @@ from apps.api.storage.sqlite import (
     SQLiteConnectionProfileStore,
     SQLiteWorkspaceModelProfileRepository,
     SQLiteWorkspaceRepository,
+)
+from apps.api.storage.postgres_runtime_repositories import (
+    PostgresMetricSnapshotRepository,
+    PostgresRecommendationLogRepository,
+    PostgresScmConnectionRepository,
+    PostgresScmRepositoryRepository,
+    PostgresWorkspaceModelProfileRepository,
+    PostgresWorkspaceRepository,
 )
 from apps.api.core.runtime_persistence import load_runtime_persistence_profile
 from apps.api.ocp import (
@@ -24,6 +38,7 @@ from apps.api.ocp import (
 )
 from apps.api.ocp.auth import OcpConnectionBroker, OcpConnectionVerifier, build_default_lease_scheduler
 from apps.api.ocp.auth.broker import build_default_connection_secret_store
+from apps.api.scm import ScmOauthService
 from apps.api.rag.generation.citation_grounding import CitationGroundingValidator
 from apps.api.rag.generation.llm_client import OpenAiCompatibleLlmClient
 from apps.api.rag.generation.response_cache import ChatResponseCache
@@ -38,17 +53,66 @@ runtime_persistence_profile = load_runtime_persistence_profile()
 STATE_ROOT = runtime_persistence_profile.state_root
 STATE_DB_PATH = runtime_persistence_profile.state_db_path
 
+
+def _build_workspace_state_repositories():
+    try:
+        pg_settings = get_pgvector_runtime_settings()
+        workspace_repo = PostgresWorkspaceRepository(dsn=pg_settings.db_dsn)
+        model_repo = PostgresWorkspaceModelProfileRepository(dsn=pg_settings.db_dsn)
+        metric_repo = PostgresMetricSnapshotRepository(dsn=pg_settings.db_dsn)
+        recommendation_repo = PostgresRecommendationLogRepository(dsn=pg_settings.db_dsn)
+        workspace_repo.ping()
+        model_repo.ping()
+        metric_repo.ping()
+        recommendation_repo.ping()
+        return workspace_repo, model_repo, metric_repo, recommendation_repo
+    except Exception:
+        return (
+            SQLiteWorkspaceRepository(db_path=STATE_DB_PATH),
+            SQLiteWorkspaceModelProfileRepository(db_path=STATE_DB_PATH),
+            SQLiteMetricSnapshotRepository(db_path=STATE_DB_PATH),
+            SQLiteRecommendationLogRepository(db_path=STATE_DB_PATH),
+        )
+
+
+def _build_scm_repositories():
+    try:
+        pg_settings = get_pgvector_runtime_settings()
+        connection_repo = PostgresScmConnectionRepository(dsn=pg_settings.db_dsn)
+        repository_repo = PostgresScmRepositoryRepository(dsn=pg_settings.db_dsn)
+        connection_repo.ping()
+        repository_repo.ping()
+        return connection_repo, repository_repo
+    except Exception:
+        return (
+            SQLiteScmConnectionRepository(db_path=STATE_DB_PATH),
+            SQLiteScmRepositoryRepository(db_path=STATE_DB_PATH),
+        )
+
 connection_secret_store = build_default_connection_secret_store(
     storage_path=runtime_persistence_profile.secret_storage_path,
     refs_path=runtime_persistence_profile.secret_refs_path,
     backend=runtime_persistence_profile.secret_backend or None,
 )
+scm_oauth_settings = get_scm_oauth_settings()
 connection_profile_store = SQLiteConnectionProfileStore(
     db_path=STATE_DB_PATH,
     legacy_json_path=runtime_persistence_profile.legacy_json_path("connection_profiles.json"),
 )
-workspace_repository = SQLiteWorkspaceRepository(db_path=STATE_DB_PATH)
-workspace_model_profile_repository = SQLiteWorkspaceModelProfileRepository(db_path=STATE_DB_PATH)
+(
+    workspace_repository,
+    workspace_model_profile_repository,
+    metric_snapshot_repository,
+    recommendation_log_repository,
+) = _build_workspace_state_repositories()
+(
+scm_connection_repository,
+    scm_repository_repository,
+) = _build_scm_repositories()
+scm_oauth_service = ScmOauthService(
+    settings=scm_oauth_settings,
+    secret_store=connection_secret_store,
+)
 connection_broker = OcpConnectionBroker(secret_store=connection_secret_store, profile_store=connection_profile_store)
 connection_lease_scheduler = build_default_lease_scheduler(broker=connection_broker)
 connection_verifier = OcpConnectionVerifier()

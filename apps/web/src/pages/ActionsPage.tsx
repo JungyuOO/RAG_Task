@@ -213,7 +213,7 @@ export function ActionsPage({ controller }: { controller: OcpConnectionControlle
       />
 
       {controller.testResult ? (
-        <Card className="border-border/70 bg-card/95">
+        <Card className="surface-soft">
           <CardHeader>
             <CardTitle>Resolved Connection Identity</CardTitle>
             <CardDescription>Current resolved user and RBAC summary for this connected cluster context.</CardDescription>
@@ -227,7 +227,7 @@ export function ActionsPage({ controller }: { controller: OcpConnectionControlle
         </Card>
       ) : null}
 
-      <Card className="border-border/70 bg-card/95">
+      <Card className="surface-soft">
         <CardHeader>
           <CardTitle>Action Request Builder</CardTitle>
           <CardDescription>Create previews and approval requests against the current cluster context.</CardDescription>
@@ -283,7 +283,7 @@ export function ActionsPage({ controller }: { controller: OcpConnectionControlle
                 />
               </div>
 
-              <label className="flex items-center gap-2 rounded-xl border border-border/70 bg-background/50 px-4 py-3 text-sm text-muted-foreground">
+              <label className="surface-muted flex items-center gap-2 rounded-xl px-4 py-3 text-sm text-muted-foreground">
                 <input
                   type="checkbox"
                   className="h-4 w-4 accent-[#1060ff]"
@@ -329,7 +329,7 @@ export function ActionsPage({ controller }: { controller: OcpConnectionControlle
           )}
 
           {error ? (
-            <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            <div className="surface-danger rounded-xl px-4 py-3 text-sm text-destructive">
               {error}
             </div>
           ) : null}
@@ -344,7 +344,7 @@ export function ActionsPage({ controller }: { controller: OcpConnectionControlle
         </TabsList>
 
         <TabsContent value="requests">
-          <Card className="border-border/70 bg-card/95">
+          <Card className="surface-soft">
             <CardHeader>
               <CardTitle>Requests</CardTitle>
               <CardDescription>Review request state, approval counts, and next actions.</CardDescription>
@@ -363,7 +363,7 @@ export function ActionsPage({ controller }: { controller: OcpConnectionControlle
         </TabsContent>
 
         <TabsContent value="executions">
-          <Card className="border-border/70 bg-card/95">
+          <Card className="surface-soft">
             <CardHeader>
               <CardTitle>Executions</CardTitle>
               <CardDescription>Review execution state, preflight checks, and output summary.</CardDescription>
@@ -375,7 +375,7 @@ export function ActionsPage({ controller }: { controller: OcpConnectionControlle
         </TabsContent>
 
         <TabsContent value="audit">
-          <Card className="border-border/70 bg-card/95">
+          <Card className="surface-soft">
             <CardHeader>
               <CardTitle>Audit</CardTitle>
               <CardDescription>Recent audit events and break-glass metadata.</CardDescription>

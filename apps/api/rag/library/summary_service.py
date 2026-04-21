@@ -50,7 +50,7 @@ class LibrarySummaryService:
         self._batch_job_service = batch_job_service
         self._extract_root = extract_root
 
-    def get_summary(self) -> LibrarySummaryResponse:
+    def get_summary(self, *, workspace_id: str = "") -> LibrarySummaryResponse:
         runtime = self._runtime.get()
         source_root = Path(runtime.settings.rag_source_dir).resolve()
         extract_root = (
@@ -105,6 +105,7 @@ class LibrarySummaryService:
             message = "No source documents or index state are available yet."
 
         return LibrarySummaryResponse(
+            workspace_id=workspace_id,
             source_root=str(source_root),
             extract_root=str(extract_root),
             corpus_files=len(corpus_files),
@@ -138,5 +139,9 @@ class LibrarySummaryService:
 
     @staticmethod
     def _is_legacy_file(path: Path, source_root: Path) -> bool:
-        return path.relative_to(source_root).as_posix().startswith("legacy/")
+        try:
+            relative_path = path.relative_to(source_root).as_posix()
+        except ValueError:
+            relative_path = path.as_posix()
+        return relative_path.startswith("legacy/")
 
