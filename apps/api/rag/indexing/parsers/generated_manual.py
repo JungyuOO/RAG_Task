@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 from apps.api.core.text import stable_hash
-from apps.api.api.schemas.indexing import (
+from apps.api.schemas.indexing import (
     BlockAttributes,
     BlockType,
     ParsedBlock,
@@ -200,4 +200,5 @@ class GeneratedManualParser(BaseParser):
         if len(tokens) > 3:
             return False
         return bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", normalized))
+
 

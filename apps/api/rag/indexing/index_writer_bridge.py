@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass, field
 
 from apps.api.core.text import tokenize
-from apps.api.api.schemas.indexing import ChunkRecord
+from apps.api.schemas.indexing import ChunkRecord
 from apps.api.rag.retrieval.legacy_pgvector_runtime import LegacyPgvectorRuntime
 
 logger = logging.getLogger("rag.index_writer")
@@ -87,4 +87,5 @@ class LegacyPgvectorIndexWriter:
                 message=f"{current}/{total} batches processed",
                 current_file=source_path,
             )
+
 

@@ -1,8 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 
-from apps.api.api.schemas.chat import CopilotChatSourceItem
+from apps.api.schemas.chat import CopilotChatSourceItem
 from apps.api.rag.query.query_features import answer_source_budget, tokenize_query
 
 
@@ -282,3 +282,4 @@ class AnswerPlanner:
             if part.strip()
         ]
         return parts[:3] or [text]
+

@@ -1,9 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import shutil
 from pathlib import Path
 
-from apps.api.api.schemas.indexing import IndexResetResponse
+from apps.api.schemas.indexing import IndexResetResponse
 from apps.api.rag.retrieval.legacy_pgvector_runtime import LegacyPgvectorRuntime
 from apps.api.rag.indexing.batch_job_service import BatchIndexJobService
 
@@ -52,3 +52,4 @@ class IndexAdminService:
                 child.unlink(missing_ok=True)
                 removed += 1
         return removed
+

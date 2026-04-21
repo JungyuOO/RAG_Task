@@ -1,11 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import inspect
 import logging
 import time
 from pathlib import Path
 
-from apps.api.api.schemas.indexing import (
+from apps.api.schemas.indexing import (
     BatchIndexItem,
     BatchIndexRequest,
     BatchIndexResponse,
@@ -223,3 +223,4 @@ class BatchIndexingService:
         if "-en" in lowered or "_en" in lowered:
             return "en"
         return ""
+

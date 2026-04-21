@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import inspect
@@ -8,16 +8,16 @@ import time
 from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
 
-from apps.api.api.schemas.chat import (
+from apps.api.schemas.chat import (
     CopilotChatHistoryTurn,
     CopilotChatResponse,
     CopilotChatSourceItem,
     CopilotChatStage,
 )
-from apps.api.api.schemas.copilot_chat import CopilotChatArtifact, CopilotCitationMapItem
-from apps.api.api.schemas.ocp_live import OcpLiveResourceSummary
-from apps.api.integrations.ocp.auth import OcpConnectionBroker
-from apps.api.integrations.ocp.live_chat_service import LiveOcpChatService
+from apps.api.schemas.copilot_chat import CopilotChatArtifact, CopilotCitationMapItem
+from apps.api.schemas.ocp_live import OcpLiveResourceSummary
+from apps.api.ocp.auth import OcpConnectionBroker
+from apps.api.ocp.live_chat_service import LiveOcpChatService
 from apps.api.rag.generation.answer_planner import AnswerPlanner
 from apps.api.rag.generation.citation_grounding import CitationGroundingValidator
 from apps.api.rag.generation.llm_client import OpenAiCompatibleLlmClient
@@ -2030,3 +2030,5 @@ class UnifiedCopilotService:
             await cls._emit_answer_delta(callback, chunk)
             if index + chunk_size < total:
                 await asyncio.sleep(delay)
+
+

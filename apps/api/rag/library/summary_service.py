@@ -1,11 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
 from pathlib import Path
 from typing import Any
 
-from apps.api.api.schemas.library import LibrarySourceBreakdownItem, LibrarySummaryResponse
+from apps.api.schemas.library import LibrarySourceBreakdownItem, LibrarySummaryResponse
 from apps.api.rag.indexing.batch_job_service import BatchIndexJobService
 from apps.api.rag.retrieval.legacy_pgvector_runtime import LegacyPgvectorRuntime
 
@@ -139,3 +139,4 @@ class LibrarySummaryService:
     @staticmethod
     def _is_legacy_file(path: Path, source_root: Path) -> bool:
         return path.relative_to(source_root).as_posix().startswith("legacy/")
+

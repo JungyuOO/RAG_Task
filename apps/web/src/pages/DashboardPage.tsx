@@ -1,18 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 
-import { PageHeader } from "@/components/layout/PageHeader";
-import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/shared/layout/PageHeader";
+import { Button } from "@/shared/ui/button";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
-import type { OcpOverviewResponse } from "@/features/connection/types";
-import type { OcpConnectionController } from "@/features/connection/hooks/useOcpConnection";
-import { getOcpOverview } from "@/features/dashboard/api/ocpOverviewApi";
+} from "@/shared/ui/card";
+import { Skeleton } from "@/shared/ui/skeleton";
+import type { OcpOverviewResponse } from "@/domains/connection/types";
+import type { OcpConnectionController } from "@/domains/connection/useOcpConnection";
+import { getOcpOverview } from "@/domains/dashboard/ocpOverviewApi";
 
 type DashboardPageProps = {
   controller: OcpConnectionController;
@@ -188,3 +188,5 @@ export function DashboardPage({ controller, onLoadingChange }: DashboardPageProp
     </div>
   );
 }
+
+

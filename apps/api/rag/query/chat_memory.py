@@ -1,8 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from apps.api.api.schemas.chat import CopilotChatHistoryTurn
+from apps.api.schemas.chat import CopilotChatHistoryTurn
 
 
 @dataclass(slots=True)
@@ -39,3 +39,4 @@ def build_chat_memory(recent_turns: list[CopilotChatHistoryTurn]) -> ChatMemoryS
         ):
             break
     return state
+

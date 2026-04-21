@@ -3,15 +3,17 @@
 from pathlib import Path
 
 from apps.api.core.llm_settings import get_chat_llm_settings
-from apps.api.persistence.sqlite import (
+from apps.api.storage.sqlite import (
     SQLiteActionAuditRepository,
     SQLiteActionExecutionRepository,
     SQLiteActionRequestRepository,
     SQLiteBatchJobRepository,
     SQLiteConnectionProfileStore,
+    SQLiteWorkspaceModelProfileRepository,
+    SQLiteWorkspaceRepository,
 )
 from apps.api.core.runtime_persistence import load_runtime_persistence_profile
-from apps.api.integrations.ocp import (
+from apps.api.ocp import (
     ConnectedOcpService,
     LiveOcpChatService,
     OcpActionAuditService,
@@ -20,8 +22,8 @@ from apps.api.integrations.ocp import (
     OcpActionPreviewService,
     OcpActionRequestService,
 )
-from apps.api.integrations.ocp.auth import OcpConnectionBroker, OcpConnectionVerifier, build_default_lease_scheduler
-from apps.api.integrations.ocp.auth.broker import build_default_connection_secret_store
+from apps.api.ocp.auth import OcpConnectionBroker, OcpConnectionVerifier, build_default_lease_scheduler
+from apps.api.ocp.auth.broker import build_default_connection_secret_store
 from apps.api.rag.generation.citation_grounding import CitationGroundingValidator
 from apps.api.rag.generation.llm_client import OpenAiCompatibleLlmClient
 from apps.api.rag.generation.response_cache import ChatResponseCache
@@ -45,6 +47,8 @@ connection_profile_store = SQLiteConnectionProfileStore(
     db_path=STATE_DB_PATH,
     legacy_json_path=runtime_persistence_profile.legacy_json_path("connection_profiles.json"),
 )
+workspace_repository = SQLiteWorkspaceRepository(db_path=STATE_DB_PATH)
+workspace_model_profile_repository = SQLiteWorkspaceModelProfileRepository(db_path=STATE_DB_PATH)
 connection_broker = OcpConnectionBroker(secret_store=connection_secret_store, profile_store=connection_profile_store)
 connection_lease_scheduler = build_default_lease_scheduler(broker=connection_broker)
 connection_verifier = OcpConnectionVerifier()
@@ -107,5 +111,6 @@ unified_copilot_service = UnifiedCopilotService(
     response_cache=chat_response_cache,
     llm_client=chat_llm_client,
 )
+
 
 

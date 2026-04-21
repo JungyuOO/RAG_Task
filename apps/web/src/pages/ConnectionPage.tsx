@@ -1,13 +1,13 @@
-import { PageHeader } from "@/components/layout/PageHeader";
+﻿import { PageHeader } from "@/shared/layout/PageHeader";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
-import { OcpConnectionForm } from "@/features/connection/components/OcpConnectionForm";
-import type { OcpConnectionController } from "@/features/connection/hooks/useOcpConnection";
+} from "@/shared/ui/card";
+import { OcpConnectionForm } from "@/domains/connection/OcpConnectionForm";
+import type { OcpConnectionController } from "@/domains/connection/useOcpConnection";
 
 type ConnectionPageProps = {
   controller: OcpConnectionController;
@@ -37,3 +37,5 @@ export function ConnectionPage({ controller }: ConnectionPageProps) {
     </div>
   );
 }
+
+

@@ -2,7 +2,7 @@
 
 import re
 
-from apps.api.api.schemas.indexing import BlockType, NormalizedBlock, ParsedDocumentBundle
+from apps.api.schemas.indexing import BlockType, NormalizedBlock, ParsedDocumentBundle
 
 
 class BlockNormalizer:
@@ -62,4 +62,5 @@ class BlockNormalizer:
             normalized = "\n".join(line for line in lines if line.strip())
             return normalized.strip()
         return re.sub(r"\s+", " ", text).strip()
+
 

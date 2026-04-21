@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from apps.api.api.schemas.indexing import ParsedDocumentBundle, SourceDescriptor, SourceType
+from apps.api.schemas.indexing import ParsedDocumentBundle, SourceDescriptor, SourceType
 from apps.api.rag.indexing.parsers.base import BaseParser
 
 
@@ -22,4 +22,5 @@ class PdfParser(BaseParser):
                 "expected_specialization": "pdf fallback extraction",
             },
         )
+
 

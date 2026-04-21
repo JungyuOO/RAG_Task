@@ -6,8 +6,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Iterable
 
-from apps.api.api.schemas.chat import CopilotChatResponse, CopilotChatSourceItem
-from apps.api.api.schemas.indexing import ChunkRecord, SourceDescriptor, SourceType
+from apps.api.schemas.chat import CopilotChatResponse, CopilotChatSourceItem
+from apps.api.schemas.indexing import ChunkRecord, SourceDescriptor, SourceType
 from apps.api.rag.query.query_features import answer_source_budget
 from apps.api.rag.indexing.chunking import BlockPreservingChunker
 from apps.api.rag.indexing.enrich import MetadataEnricher
@@ -361,4 +361,5 @@ class DocumentRetriever:
                 preview = remainder
         preview = re.sub(r"\s+", " ", preview).strip()
         return preview[:220]
+
 

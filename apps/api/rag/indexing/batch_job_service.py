@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 
-from apps.api.persistence.batch_job_repository import InMemoryBatchJobRepository
-from apps.api.api.schemas.indexing import BatchIndexRequest, BatchJobListResponse, BatchJobStatusResponse
+from apps.api.storage.batch_job_repository import InMemoryBatchJobRepository
+from apps.api.schemas.indexing import BatchIndexRequest, BatchJobListResponse, BatchJobStatusResponse
 from apps.api.rag.indexing.batch_index_service import BatchIndexingService
 
 
@@ -76,5 +76,7 @@ class BatchIndexJobService:
 
     def cancel(self, job_id: str) -> BatchJobStatusResponse:
         return self.job_repository.mark_cancelled(job_id)
+
+
 
 

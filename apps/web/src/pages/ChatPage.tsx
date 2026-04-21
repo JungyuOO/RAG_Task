@@ -1,4 +1,4 @@
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+﻿import { FormEvent, KeyboardEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import {
   ChevronDown,
@@ -8,33 +8,33 @@ import {
   LoaderCircle,
 } from "lucide-react";
 
-import { PageHeader } from "@/components/layout/PageHeader";
-import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/shared/layout/PageHeader";
+import { Button } from "@/shared/ui/button";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
-import { MarkdownArticle } from "@/components/ui/MarkdownArticle";
-import { ResourceList } from "@/features/resources/components/ResourceList";
-import { cn } from "@/lib/cn";
+} from "@/shared/ui/card";
+import { MarkdownArticle } from "@/shared/ui/MarkdownArticle";
+import { ResourceList } from "@/domains/resources/ResourceList";
+import { cn } from "@/shared/lib/cn";
 import {
   ResourceYamlEditorModal,
   type LiveResourceKind,
-} from "@/features/resources/components/ResourceYamlEditorModal";
-import { ChatComposer } from "@/features/chat/components/ChatComposer";
-import { ChatTranscript } from "@/features/chat/components/ChatTranscript";
-import { streamCopilotChat } from "@/features/chat/api/copilotChatApi";
-import { fetchDocumentSnippet } from "@/features/chat/api/docsPreviewApi";
-import { getOcpResourceDetail } from "@/features/resources/api/ocpResourcesApi";
-import type { DocumentPreviewResponse } from "@/features/chat/types";
+} from "@/domains/resources/ResourceYamlEditorModal";
+import { ChatComposer } from "@/domains/chat/ChatComposer";
+import { ChatTranscript } from "@/domains/chat/ChatTranscript";
+import { streamCopilotChat } from "@/domains/chat/copilotChatApi";
+import { fetchDocumentSnippet } from "@/domains/chat/docsPreviewApi";
+import { getOcpResourceDetail } from "@/domains/resources/ocpResourcesApi";
+import type { DocumentPreviewResponse } from "@/domains/chat/types";
 import type {
   OcpLiveResourceDetailResponse,
   OcpLiveResourceSummary,
-} from "@/features/connection/types";
-import type { OcpConnectionController } from "@/features/connection/hooks/useOcpConnection";
+} from "@/domains/connection/types";
+import type { OcpConnectionController } from "@/domains/connection/useOcpConnection";
 import {
   deriveChatSessionTitle,
   type ChatSessionRecord,
@@ -44,7 +44,7 @@ import {
   type CopilotChatSourceItem,
   type CopilotChatStage,
   type CopilotCitationMapItem,
-} from "@/features/chat/types";
+} from "@/domains/chat/types";
 
 type ChatPageProps = {
   controller: OcpConnectionController;
@@ -237,6 +237,19 @@ function createLiveSourceFromDetail(detail: OcpLiveResourceDetailResponse): Copi
 }
 
 function createPostApplyArtifacts(detail: OcpLiveResourceDetailResponse): CopilotChatArtifact[] {
+  const isDeployment = detail.resource === "deployments" || detail.kind === "Deployment";
+  const prompts = isDeployment
+    ? [
+        `${detail.name} deployment에서 방금 바뀐 replicas 값 기준으로 현재 영향만 설명해줘`,
+        `${detail.name} deployment selector와 연결된 service 후보를 live 기준으로 보여줘`,
+        `${detail.name} deployment를 공식 문서 기준으로 rollout/replica 관점에서 개선할 점 3개만 알려줘`,
+      ]
+    : [
+        `${detail.name} 변경이 현재 상태에 어떤 영향을 주는지 live 기준으로 설명해줘`,
+        `${detail.name} 와 연결된 관련 리소스를 live 기준으로 보여줘`,
+        `${detail.name} 관련 공식 문서 기준 추가 개선점을 3개만 알려줘`,
+      ];
+
   return [
     {
       artifactType: "resource_editor",
@@ -280,11 +293,7 @@ function createPostApplyArtifacts(detail: OcpLiveResourceDetailResponse): Copilo
       namespace: detail.namespace,
       resourceName: detail.name,
       payload: {
-        prompts: [
-          `${detail.name} 변경 영향이 뭐가 있는지 다시 설명해줘`,
-          `${detail.name} 와 연결된 service가 무엇인지 보여줘`,
-          `${detail.name} 관련 공식 문서 기준 추가 개선점을 찾아줘`,
-        ],
+        prompts,
       },
       items: [],
     },
@@ -541,7 +550,7 @@ export function ChatPage({ controller, session, updateSession }: ChatPageProps) 
   });
   const threadRef = useRef<HTMLDivElement | null>(null);
   const scrollSaveTimerRef = useRef<number | null>(null);
-  const shouldStickToBottomRef = useRef(false);
+  const stickToBottomRef = useRef(true);
 
   const canSend = useMemo(() => Boolean(draft.trim() && !isSending), [draft, isSending]);
   const sourceDrawerOpen = Boolean(selection);
@@ -563,17 +572,32 @@ export function ChatPage({ controller, session, updateSession }: ChatPageProps) 
         threadRef.current.scrollTop = session.viewport?.scrollTop ?? 0;
       }
     });
-  }, [session.id, session.viewport?.scrollTop]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.id]);
 
   useEffect(() => () => {
     if (scrollSaveTimerRef.current !== null) window.clearTimeout(scrollSaveTimerRef.current);
   }, []);
 
   useEffect(() => {
-    if (!shouldStickToBottomRef.current || !threadRef.current) return;
+    const container = threadRef.current;
+    if (!container) return;
+    const content = container.firstElementChild;
+    if (!content) return;
+    const scrollToBottom = () => {
+      if (!stickToBottomRef.current || !threadRef.current) return;
+      threadRef.current.scrollTop = threadRef.current.scrollHeight;
+    };
+    scrollToBottom();
+    const observer = new ResizeObserver(scrollToBottom);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!stickToBottomRef.current || !threadRef.current) return;
     threadRef.current.scrollTop = threadRef.current.scrollHeight;
-    shouldStickToBottomRef.current = false;
-  }, [displayTurns.length]);
+  }, [displayTurns.length, pendingAssistant]);
 
   function persistViewportState(scrollTop: number) {
     updateSession(session.id, (current) => ({
@@ -589,7 +613,10 @@ export function ChatPage({ controller, session, updateSession }: ChatPageProps) 
 
   function handleThreadScroll() {
     if (!threadRef.current) return;
-    const scrollTop = threadRef.current.scrollTop;
+    const el = threadRef.current;
+    const scrollTop = el.scrollTop;
+    const distanceFromBottom = el.scrollHeight - scrollTop - el.clientHeight;
+    stickToBottomRef.current = distanceFromBottom < 40;
     if (scrollSaveTimerRef.current !== null) window.clearTimeout(scrollSaveTimerRef.current);
     scrollSaveTimerRef.current = window.setTimeout(() => persistViewportState(scrollTop), 120);
   }
@@ -635,7 +662,7 @@ export function ChatPage({ controller, session, updateSession }: ChatPageProps) 
 
     setDraft("");
     setError("");
-    shouldStickToBottomRef.current = true;
+    stickToBottomRef.current = true;
     setPendingAssistant({
       text: "",
       sources: [],
@@ -1014,7 +1041,7 @@ export function ChatPage({ controller, session, updateSession }: ChatPageProps) 
                 },
               ],
             }));
-            shouldStickToBottomRef.current = true;
+            stickToBottomRef.current = true;
             setEditorTarget(null);
           }}
         />
@@ -1022,3 +1049,5 @@ export function ChatPage({ controller, session, updateSession }: ChatPageProps) 
     </div>
   );
 }
+
+

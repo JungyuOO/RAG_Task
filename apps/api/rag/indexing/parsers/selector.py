@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable
 
-from apps.api.api.schemas.indexing import SourceDescriptor
+from apps.api.schemas.indexing import SourceDescriptor
 from apps.api.rag.indexing.parsers.base import BaseParser
 from apps.api.rag.indexing.parsers.generated_manual import GeneratedManualParser
 from apps.api.rag.indexing.parsers.html_page import HtmlPageParser
@@ -37,4 +37,5 @@ def build_default_parser_selector() -> ParserSelector:
             StructuredJsonParser(),
         ]
     )
+
 

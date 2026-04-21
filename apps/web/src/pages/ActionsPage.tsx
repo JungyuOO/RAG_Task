@@ -1,17 +1,17 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState } from "react";
 
-import { PageHeader } from "@/components/layout/PageHeader";
-import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/shared/layout/PageHeader";
+import { Button } from "@/shared/ui/button";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+} from "@/shared/ui/card";
+import { Input } from "@/shared/ui/input";
+import { Label } from "@/shared/ui/label";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/shared/ui/tabs";
 import {
   approveOcpActionRequest,
   createOcpActionRequest,
@@ -21,19 +21,19 @@ import {
   listOcpActionRequests,
   previewOcpAction,
   rejectOcpActionRequest,
-} from "@/features/actions/api/actionPreviewApi";
-import { ActionPreviewDialog } from "@/features/actions/components/ActionPreviewDialog";
-import { AuditTable } from "@/features/actions/components/AuditTable";
-import { ExecutionsTable } from "@/features/actions/components/ExecutionsTable";
-import { RequestsTable } from "@/features/actions/components/RequestsTable";
+} from "@/domains/actions/actionPreviewApi";
+import { ActionPreviewDialog } from "@/domains/actions/ActionPreviewDialog";
+import { AuditTable } from "@/domains/actions/AuditTable";
+import { ExecutionsTable } from "@/domains/actions/ExecutionsTable";
+import { RequestsTable } from "@/domains/actions/RequestsTable";
 import type {
   OcpActionAuditRecord,
   OcpActionExecutionRecord,
   OcpActionPreviewResponse,
   OcpActionRequestRecord,
   OcpActionType,
-} from "@/features/actions/types";
-import type { OcpConnectionController } from "@/features/connection/hooks/useOcpConnection";
+} from "@/domains/actions/types";
+import type { OcpConnectionController } from "@/domains/connection/useOcpConnection";
 
 function joinOrDash(items: string[]) {
   return items.length > 0 ? items.join(", ") : "-";
@@ -395,3 +395,5 @@ export function ActionsPage({ controller }: { controller: OcpConnectionControlle
     </div>
   );
 }
+
+

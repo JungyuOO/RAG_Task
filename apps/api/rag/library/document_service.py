@@ -1,8 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
-from apps.api.api.schemas.library import (
+from apps.api.schemas.library import (
     LibraryCatalogResponse,
     LibraryChunkRecord,
     LibraryDocumentChunksResponse,
@@ -187,3 +187,4 @@ class LibraryDocumentService:
         if not path.exists() or not path.is_file():
             raise FileNotFoundError("Requested document was not found.")
         return path
+

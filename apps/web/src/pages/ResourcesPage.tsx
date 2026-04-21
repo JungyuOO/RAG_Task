@@ -1,34 +1,34 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 
-import { PageHeader } from "@/components/layout/PageHeader";
-import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/shared/layout/PageHeader";
+import { Button } from "@/shared/ui/button";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
+} from "@/shared/ui/card";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+} from "@/shared/ui/dropdown-menu";
 import type {
   OcpLiveNamespaceListResponse,
   OcpLiveResourceDetailResponse,
   OcpLiveResourceListResponse,
   OcpLiveResourceSummary,
-} from "@/features/connection/types";
-import type { OcpConnectionController } from "@/features/connection/hooks/useOcpConnection";
-import { getOcpNamespaces, getOcpResourceDetail, getOcpResources } from "@/features/resources/api/ocpResourcesApi";
-import { ResourceList } from "@/features/resources/components/ResourceList";
+} from "@/domains/connection/types";
+import type { OcpConnectionController } from "@/domains/connection/useOcpConnection";
+import { getOcpNamespaces, getOcpResourceDetail, getOcpResources } from "@/domains/resources/ocpResourcesApi";
+import { ResourceList } from "@/domains/resources/ResourceList";
 import {
   ResourceYamlEditorModal,
   type LiveResourceKind,
-} from "@/features/resources/components/ResourceYamlEditorModal";
+} from "@/domains/resources/ResourceYamlEditorModal";
 
 const RESOURCE_OPTIONS: LiveResourceKind[] = ["pods", "deployments", "services", "routes", "events"];
 
@@ -311,3 +311,5 @@ export function ResourcesPage({ controller, onLoadingChange }: ResourcesPageProp
     </div>
   );
 }
+
+

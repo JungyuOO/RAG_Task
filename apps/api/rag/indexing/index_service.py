@@ -1,11 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import inspect
 import logging
 from pathlib import Path
 
-from apps.api.persistence.artifacts import NormalizedArtifactRepository
-from apps.api.api.schemas.indexing import NewIndexRequest, NewIndexResponse, SourceDescriptor
+from apps.api.storage.artifacts import NormalizedArtifactRepository
+from apps.api.schemas.indexing import NewIndexRequest, NewIndexResponse, SourceDescriptor
 from apps.api.rag.indexing.chunking import BlockPreservingChunker
 from apps.api.rag.indexing.enrich import MetadataEnricher
 from apps.api.rag.indexing.index_writer_bridge import LegacyPgvectorIndexWriter
@@ -111,3 +111,5 @@ class NewIndexingService:
     def _emit_status(status_callback, *, step: str, message: str, current_file: str) -> None:
         if status_callback:
             status_callback(step=step, message=message, current_file=current_file)
+
+

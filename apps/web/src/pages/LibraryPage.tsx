@@ -1,23 +1,23 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 
-import { PageHeader } from "@/components/layout/PageHeader";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/shared/layout/PageHeader";
+import { Badge } from "@/shared/ui/badge";
+import { Button } from "@/shared/ui/button";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
+} from "@/shared/ui/card";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from "@/components/ui/dialog";
-import { MarkdownArticle } from "@/components/ui/MarkdownArticle";
+} from "@/shared/ui/dialog";
+import { MarkdownArticle } from "@/shared/ui/MarkdownArticle";
 import {
   Table,
   TableBody,
@@ -25,23 +25,23 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/components/ui/table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { OcpConnectionController } from "@/features/connection/hooks/useOcpConnection";
+} from "@/shared/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/shared/ui/tabs";
+import type { OcpConnectionController } from "@/domains/connection/useOcpConnection";
 import {
   getLibraryCatalog,
   getLibraryDocumentChunks,
   getLibraryDocumentContent,
   getLibrarySummary,
   libraryDocumentFileUrl,
-} from "@/features/library/api/libraryApi";
+} from "@/domains/library/libraryApi";
 import type {
   LibraryCatalogResponse,
   LibraryDocumentChunksResponse,
   LibraryDocumentContentResponse,
   LibraryDocumentRecord,
   LibrarySummaryResponse,
-} from "@/features/library/types";
+} from "@/domains/library/types";
 
 type DetailMode = "chunks" | "original";
 type LibraryPageProps = {
@@ -96,35 +96,6 @@ export function LibraryPage({ controller, onLoadingChange }: LibraryPageProps) {
   );
 
   useEffect(() => {
-    async function run() {
-      if (!activeDocument) {
-        setChunkData(null);
-        setContentData(null);
-        return;
-      }
-      setDetailLoading(true);
-      setError("");
-      try {
-        if (detailMode === "chunks") {
-          setContentData(null);
-          setChunkData(await getLibraryDocumentChunks(activeDocument.documentKey));
-        } else if (activeDocument.originalKind === "markdown") {
-          setChunkData(null);
-          setContentData(await getLibraryDocumentContent(activeDocument.originalKey));
-        } else {
-          setChunkData(null);
-          setContentData(null);
-        }
-      } catch (nextError) {
-        setError(nextError instanceof Error ? nextError.message : "Failed to load document detail.");
-      } finally {
-        setDetailLoading(false);
-      }
-    }
-    void run();
-  }, [activeDocument, detailMode]);
-
-  useEffect(() => {
     const active = loading || detailLoading;
     onLoadingChange?.({
       active,
@@ -136,10 +107,28 @@ export function LibraryPage({ controller, onLoadingChange }: LibraryPageProps) {
     return () => onLoadingChange?.({ active: false, title: "" });
   }, [detailLoading, loading, onLoadingChange]);
 
-  function activateDocument(document: LibraryDocumentRecord, mode: DetailMode) {
+  async function activateDocument(document: LibraryDocumentRecord, mode: DetailMode) {
     setActiveDocumentKey(document.documentKey);
     setDetailMode(mode);
-    setDetailOpen(true);
+    setDetailLoading(true);
+    setError("");
+    try {
+      if (mode === "chunks") {
+        setContentData(null);
+        setChunkData(await getLibraryDocumentChunks(document.documentKey));
+      } else if (document.originalKind === "markdown") {
+        setChunkData(null);
+        setContentData(await getLibraryDocumentContent(document.originalKey));
+      } else {
+        setChunkData(null);
+        setContentData(null);
+      }
+      setDetailOpen(true);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Failed to load document detail.");
+    } finally {
+      setDetailLoading(false);
+    }
   }
 
   return (
@@ -256,7 +245,7 @@ export function LibraryPage({ controller, onLoadingChange }: LibraryPageProps) {
       </Tabs>
 
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
-        <DialogContent className="max-w-5xl">
+        <DialogContent className="max-w-5xl data-[state=open]:!animate-none data-[state=closed]:!animate-none">
           <DialogHeader>
             <DialogTitle>
               {activeDocument
@@ -304,3 +293,5 @@ export function LibraryPage({ controller, onLoadingChange }: LibraryPageProps) {
     </div>
   );
 }
+
+
