@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import inspect
@@ -8,16 +8,16 @@ import time
 from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
 
-from apps.api.api.schemas.chat import (
+from apps.api.schemas.chat import (
     CopilotChatHistoryTurn,
     CopilotChatResponse,
     CopilotChatSourceItem,
     CopilotChatStage,
 )
-from apps.api.api.schemas.copilot_chat import CopilotChatArtifact, CopilotCitationMapItem
-from apps.api.api.schemas.ocp_live import OcpLiveResourceSummary
-from apps.api.integrations.ocp.auth import OcpConnectionBroker
-from apps.api.integrations.ocp.live_chat_service import LiveOcpChatService
+from apps.api.schemas.copilot_chat import CopilotChatArtifact, CopilotCitationMapItem
+from apps.api.schemas.ocp_live import OcpLiveResourceSummary
+from apps.api.ocp.auth import OcpConnectionBroker
+from apps.api.ocp.live_chat_service import LiveOcpChatService
 from apps.api.rag.generation.answer_planner import AnswerPlanner
 from apps.api.rag.generation.citation_grounding import CitationGroundingValidator
 from apps.api.rag.generation.llm_client import OpenAiCompatibleLlmClient
@@ -847,7 +847,8 @@ class UnifiedCopilotService:
         live_available: bool,
         answer_delta: Callable[[str], Awaitable[None] | None] | None = None,
     ) -> CopilotChatResponse:
-        combined_sources = [*doc_response.sources, *(live_response.sources if live_response else [])][:8]
+        focused_live_response = self._focus_live_response_for_message(message=message, live_response=live_response)
+        combined_sources = [*doc_response.sources, *(focused_live_response.sources if focused_live_response else [])][:8]
         if self._llm_enabled():
             plan = self.answer_planner.plan(message=message, sources=doc_response.sources)
             context_lines: list[str] = []
@@ -860,7 +861,7 @@ class UnifiedCopilotService:
                 for index, group in enumerate(plan.paragraph_source_indexes, start=1)
                 if group
             ]
-            live_summary = self._strip_intro(live_response.answer) if live_response is not None else ""
+            live_summary = self._strip_intro(focused_live_response.answer) if focused_live_response is not None else ""
             if context_lines or live_summary or not live_available:
                 prompt_parts = [
                     "Answer the user's question by combining the document evidence and the current cluster state.",
@@ -922,7 +923,7 @@ class UnifiedCopilotService:
                             purpose="mixed_synthesis",
                         )
                         doc_sources = plan.sources or doc_response.sources
-                        combined_sources = [*doc_sources, *(live_response.sources if live_response else [])][:8]
+                        combined_sources = [*doc_sources, *(focused_live_response.sources if focused_live_response else [])][:8]
                         cleaned = self._finalize_cited_answer(
                             answer.strip(),
                             combined_sources,
@@ -942,7 +943,7 @@ class UnifiedCopilotService:
                             parts.append(token)
                             await self._emit_answer_delta(answer_delta, token)
                         doc_sources = plan.sources or doc_response.sources
-                        combined_sources = [*doc_sources, *(live_response.sources if live_response else [])][:8]
+                        combined_sources = [*doc_sources, *(focused_live_response.sources if focused_live_response else [])][:8]
                         cleaned = self._finalize_cited_answer(
                             "".join(parts).strip(),
                             combined_sources,
@@ -957,24 +958,18 @@ class UnifiedCopilotService:
                             preview_ready=doc_response.preview_ready,
                             answer=cleaned,
                             sources=pruned_sources,
-                            artifacts=[*(doc_response.artifacts or []), *((live_response.artifacts or []) if live_response else [])][:6],
+                            artifacts=[*(doc_response.artifacts or []), *((focused_live_response.artifacts or []) if focused_live_response else [])][:6],
                             citation_map=self._build_citation_map(pruned_sources),
                         )
                 except Exception:
                     pass
 
-        parts = ["Combined summary of the document evidence and current cluster state."]
-        doc_answer = self._strip_intro(doc_response.answer)
-        if doc_answer:
-            parts.append("## Document guidance")
-            parts.append(doc_answer)
-        if live_response is not None:
-            parts.append("## Current OCP result")
-            parts.append(self._strip_intro(live_response.answer))
-        elif not live_available:
-            parts.append("## Current OCP result")
-            parts.append("Live status could not be checked because no cluster connection is configured.")
-        answer = "\n\n".join(part for part in parts if part.strip())
+        answer = await self._build_deterministic_mixed_answer(
+            message=message,
+            doc_sources=doc_response.sources,
+            live_response=focused_live_response,
+            live_available=live_available,
+        )
         await self._emit_answer_text(answer, answer_delta)
         return CopilotChatResponse(
             lane="mixed",
@@ -983,9 +978,292 @@ class UnifiedCopilotService:
             preview_ready=doc_response.preview_ready,
             answer=answer,
             sources=combined_sources,
-            artifacts=[*(doc_response.artifacts or []), *((live_response.artifacts or []) if live_response else [])][:6],
+            artifacts=[*(doc_response.artifacts or []), *((focused_live_response.artifacts or []) if focused_live_response else [])][:6],
             citation_map=self._build_citation_map(combined_sources),
         )
+
+    async def _build_deterministic_mixed_answer(
+        self,
+        *,
+        message: str,
+        doc_sources: list[CopilotChatSourceItem],
+        live_response: CopilotChatResponse | None,
+        live_available: bool,
+    ) -> str:
+        targeted = await self._build_targeted_mixed_answer(
+            message=message,
+            doc_sources=doc_sources,
+            live_response=live_response,
+            live_available=live_available,
+        )
+        if targeted:
+            return targeted
+
+        parts: list[str] = []
+        doc_section = await self._build_deterministic_doc_section(message=message, sources=doc_sources)
+        if doc_section:
+            parts.append(doc_section)
+
+        if live_response is not None:
+            live_text = self._strip_intro(live_response.answer)
+            if live_text:
+                parts.append("현재 OCP 상태\n" + live_text)
+        elif not live_available:
+            parts.append("현재 OCP 상태\n클러스터 연결이 없어 현재 상태를 확인하지 못했습니다.")
+
+        if not parts:
+            fallback = await self._localize_extractive_answer(self._strip_intro(message))
+            return fallback or str(message or "").strip()
+
+        return "\n\n".join(part for part in parts if part.strip()).strip()
+
+    async def _build_targeted_mixed_answer(
+        self,
+        *,
+        message: str,
+        doc_sources: list[CopilotChatSourceItem],
+        live_response: CopilotChatResponse | None,
+        live_available: bool,
+    ) -> str:
+        lowered = str(message or "").casefold()
+        if "영향" not in lowered and "impact" not in lowered:
+            return ""
+
+        live_source = None
+        if live_response is not None and live_response.sources:
+            for source in live_response.sources:
+                if source.source_type == "live":
+                    live_source = source
+                    break
+        if live_source is None:
+            return ""
+
+        metadata = dict(live_source.metadata or {})
+        replicas = metadata.get("replicas")
+        ready_replicas = metadata.get("ready_replicas")
+        name = str(live_source.label or "")
+        namespace = str(live_source.namespace or "")
+
+        doc_section = await self._build_deterministic_doc_section(message=message, sources=doc_sources)
+        parts: list[str] = []
+        if doc_section:
+            parts.append(doc_section)
+
+        impact_lines = []
+        if replicas not in {None, ""}:
+            impact_lines.append(f"- 현재 desired replicas는 {replicas}입니다.")
+        if ready_replicas not in {None, ""}:
+            impact_lines.append(f"- 현재 ready replicas는 {ready_replicas}입니다.")
+        if replicas not in {None, ""} and ready_replicas not in {None, ""}:
+            if int(ready_replicas) == int(replicas):
+                impact_lines.append("- 현재 값 기준으로는 요청된 replica 수만큼 인스턴스가 준비되어 있어 추가 용량이 실제로 반영된 상태로 볼 수 있습니다.")
+            else:
+                impact_lines.append("- 현재 값 기준으로는 desired replica 수와 ready replica 수가 아직 다르므로 확장 효과가 완전히 반영되었는지 추가 확인이 필요합니다.")
+        impact_lines.extend(
+            [
+                "- replica 수가 늘어나면 동일 워크로드 인스턴스 수가 증가하므로 트래픽 분산과 처리 여유가 커질 수 있습니다.",
+                "- 반대로 replica 수가 줄어들면 사용 가능한 인스턴스 수가 감소하므로 순간 부하나 장애 허용 범위를 다시 점검해야 합니다.",
+            ]
+        )
+        parts.append(
+            "\n".join(
+                [
+                    f"현재 OCP 상태",
+                    f"{namespace} namespace의 Deployment {name} 변경 영향 요약입니다.",
+                    *impact_lines,
+                ]
+            ).strip()
+        )
+        if not live_available:
+            parts.append("참고: 현재 클러스터 연결이 불안정하면 실제 반영 상태를 다시 확인해야 합니다.")
+        return "\n\n".join(part for part in parts if part.strip()).strip()
+
+    async def _build_deterministic_doc_section(self, *, message: str, sources: list[CopilotChatSourceItem]) -> str:
+        doc_sources = [source for source in sources if source.source_type == "doc"][:3]
+        if not doc_sources:
+            return ""
+
+        targeted = await self._build_targeted_doc_section(message=message, sources=doc_sources)
+        if targeted:
+            return targeted
+
+        rendered: list[str] = ["문서 기준"]
+        for index, source in enumerate(doc_sources, start=1):
+            section = str(source.metadata.get("section_title") or source.label or "document").strip()
+            preview = str(source.metadata.get("preview_text") or source.metadata.get("synthesis_text") or "").strip()
+            if not preview:
+                continue
+            cleaned_preview = self._clean_doc_preview_text(section=section, preview=preview[:320])
+            localized = await self._localize_extractive_answer(cleaned_preview)
+            localized = self._clean_doc_preview_text(section=section, preview=localized or cleaned_preview)
+            rendered.append(f"- {section}: {localized}[{index}]")
+        return "\n".join(rendered).strip()
+
+    async def _build_targeted_doc_section(
+        self,
+        *,
+        message: str,
+        sources: list[CopilotChatSourceItem],
+    ) -> str:
+        lowered = str(message or "").casefold()
+        if "rollout" in lowered and "history" in lowered:
+            commands = self._extract_shell_commands_from_sources(sources)
+            rollout_commands = [cmd for cmd in commands if "oc rollout history" in cmd.casefold()]
+            describe_commands = [cmd for cmd in commands if "oc describe" in cmd.casefold()]
+            lines = ["문서 기준"]
+            resource_name = self._extract_named_resource_from_text(message)
+            scope = f"{resource_name} 기준으로 " if resource_name else ""
+            if rollout_commands:
+                lines.append(f"- {scope}rollout history 확인은 `{rollout_commands[0]}` 명령으로 최근 revision 이력을 확인하는 방식입니다.[1]")
+            if len(rollout_commands) > 1:
+                lines.append(f"- 특정 revision 상세 확인은 `{rollout_commands[1]}` 처럼 `--revision` 옵션을 붙여 확인할 수 있습니다.[1]")
+            if describe_commands:
+                lines.append(f"- 더 자세한 상태 확인은 `{describe_commands[0]}` 명령으로 보강할 수 있습니다.[1]")
+            if len(lines) > 1:
+                return "\n".join(lines)
+        return ""
+
+    def _focus_live_response_for_message(
+        self,
+        *,
+        message: str,
+        live_response: CopilotChatResponse | None,
+    ) -> CopilotChatResponse | None:
+        if live_response is None:
+            return None
+        if live_response.mode != "tool:resource_list":
+            return live_response
+
+        lowered_message = str(message or "").casefold()
+        matching_sources = [
+            source
+            for source in live_response.sources
+            if source.source_type == "live"
+            and str(source.label or "").strip()
+            and str(source.label).casefold() in lowered_message
+        ]
+        selected = matching_sources[0] if len(matching_sources) == 1 else None
+        if selected is None:
+            selected = self._build_live_source_from_artifacts(
+                lowered_message=lowered_message,
+                artifacts=live_response.artifacts,
+            )
+        if selected is None:
+            return live_response
+
+        filtered_artifacts = self._filter_live_artifacts_to_label(
+            artifacts=live_response.artifacts,
+            label=str(selected.label or ""),
+        )
+        focused_answer = self._build_focused_live_summary(source=selected)
+        return live_response.model_copy(
+            update={
+                "answer": focused_answer,
+                "sources": [selected],
+                "artifacts": filtered_artifacts,
+            }
+        )
+
+    @staticmethod
+    def _filter_live_artifacts_to_label(
+        *,
+        artifacts: list[CopilotChatArtifact],
+        label: str,
+    ) -> list[CopilotChatArtifact]:
+        filtered: list[CopilotChatArtifact] = []
+        for artifact in artifacts or []:
+            if artifact.artifact_type != "resource_list":
+                filtered.append(artifact)
+                continue
+            matched_items = [item for item in artifact.items if str(item.name or "") == label]
+            if not matched_items:
+                continue
+            filtered.append(
+                artifact.model_copy(
+                    update={
+                        "items": matched_items,
+                        "payload": {**artifact.payload, "count": len(matched_items)},
+                    }
+                )
+            )
+        return filtered
+
+    @staticmethod
+    def _build_live_source_from_artifacts(
+        *,
+        lowered_message: str,
+        artifacts: list[CopilotChatArtifact],
+    ) -> CopilotChatSourceItem | None:
+        for artifact in artifacts or []:
+            if artifact.artifact_type != "resource_list":
+                continue
+            for item in artifact.items:
+                label = str(item.name or "").strip()
+                if not label or label.casefold() not in lowered_message:
+                    continue
+                metadata = dict(item.metadata or {})
+                return CopilotChatSourceItem(
+                    source_type="live",
+                    label=label,
+                    namespace=str(item.namespace or ""),
+                    kind=str(item.kind or ""),
+                    provenance=["live", "tool:list_resources"],
+                    metadata=metadata,
+                )
+        return None
+
+    @staticmethod
+    def _build_focused_live_summary(*, source: CopilotChatSourceItem) -> str:
+        namespace = str(source.namespace or "-")
+        kind = str(source.kind or "Resource")
+        name = str(source.label or "")
+        metadata = dict(source.metadata or {})
+        summary_lines = [f"{namespace} namespace의 {kind} {name} 현재 상태입니다."]
+        replicas = metadata.get("replicas")
+        ready_replicas = metadata.get("ready_replicas")
+        if replicas not in {None, ""}:
+            summary_lines.append(f"- replicas: {replicas}")
+        if ready_replicas not in {None, ""}:
+            summary_lines.append(f"- ready_replicas: {ready_replicas}")
+        phase = str(metadata.get("phase") or "").strip()
+        if phase:
+            summary_lines.append(f"- phase: {phase}")
+        host = str(metadata.get("host") or "").strip()
+        if host:
+            summary_lines.append(f"- host: {host}")
+        return "\n".join(summary_lines)
+
+    @staticmethod
+    def _extract_shell_commands_from_sources(sources: list[CopilotChatSourceItem]) -> list[str]:
+        commands: list[str] = []
+        for source in sources:
+            for candidate in (
+                str(source.metadata.get("synthesis_text") or ""),
+                str(source.metadata.get("preview_text") or ""),
+            ):
+                for match in re.findall(r"\$ ([^\n`]+)", candidate):
+                    command = match.strip()
+                    if command and command not in commands:
+                        commands.append(command)
+        return commands
+
+    @staticmethod
+    def _extract_named_resource_from_text(text: str) -> str:
+        match = re.search(r"([a-z0-9][a-z0-9._-]+)\s+deployment", str(text or "").casefold())
+        return match.group(1).strip() if match else ""
+
+    @staticmethod
+    def _clean_doc_preview_text(*, section: str, preview: str) -> str:
+        text = " ".join(str(preview or "").split()).strip()
+        title = " ".join(str(section or "").split()).strip()
+        if not text:
+            return ""
+        if title and text.casefold().startswith(title.casefold()):
+            text = text[len(title):].lstrip(" :.-")
+        doubled_title = f"{title}: {title}" if title else ""
+        if doubled_title and text.casefold().startswith(doubled_title.casefold()):
+            text = text[len(doubled_title):].lstrip(" :.-")
+        return text.strip()
 
     @staticmethod
     def _map_live_item(item: OcpLiveResourceSummary) -> CopilotChatSourceItem:
@@ -1205,12 +1483,51 @@ class UnifiedCopilotService:
         command_artifact = self._build_command_template_artifact(message=message, sources=response.sources)
         if command_artifact is not None:
             artifacts.append(command_artifact)
+        answer = self._anchor_answer_to_question(response.answer, message=message)
         return response.model_copy(
             update={
+                "answer": answer,
                 "artifacts": artifacts,
                 "citation_map": self._build_citation_map(response.sources),
             }
         )
+
+    @staticmethod
+    def _anchor_answer_to_question(answer: str, *, message: str) -> str:
+        text = str(answer or "").strip()
+        question = str(message or "").strip()
+        if not text or not question:
+            return text
+
+        lowered_answer = text.casefold()
+        lowered_question = question.casefold()
+
+        resource_match = re.search(
+            r"([a-z0-9][a-z0-9._-]+)\s+(deployment|pod|service|route)",
+            lowered_question,
+        )
+        focus_terms: list[str] = []
+        for token in ("rollout", "history", "replica", "체크리스트", "운영", "문서"):
+            if token in lowered_question and token not in lowered_answer:
+                focus_terms.append(token)
+
+        prefix_parts: list[str] = []
+        if resource_match:
+            resource_name = resource_match.group(1)
+            resource_kind = resource_match.group(2)
+            if resource_name not in lowered_answer:
+                prefix_parts.append(f"{resource_name} {resource_kind} 기준으로 보면")
+        if focus_terms:
+            korean_terms = ", ".join(focus_terms)
+            prefix_parts.append(f"질문의 초점은 {korean_terms}입니다")
+
+        if not prefix_parts:
+            return text
+
+        prefix = ". ".join(prefix_parts).strip()
+        if not prefix.endswith("."):
+            prefix += "."
+        return f"{prefix} {text}".strip()
 
     def _build_command_template_artifact(
         self,
@@ -1702,5 +2019,16 @@ class UnifiedCopilotService:
     async def _emit_answer_text(cls, text: str, callback: Callable[[str], Awaitable[None] | None] | None) -> None:
         if callback is None or not text:
             return
-        for token in text.split(" "):
-            await cls._emit_answer_delta(callback, token + " ")
+        chunk_size = 3
+        total = len(text)
+        num_chunks = (total + chunk_size - 1) // chunk_size
+        delay = min(0.015, 2.0 / max(num_chunks, 1))
+        for index in range(0, total, chunk_size):
+            chunk = text[index:index + chunk_size]
+            if not chunk:
+                continue
+            await cls._emit_answer_delta(callback, chunk)
+            if index + chunk_size < total:
+                await asyncio.sleep(delay)
+
+

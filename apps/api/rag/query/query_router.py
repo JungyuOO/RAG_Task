@@ -1,8 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 
-from apps.api.api.schemas.chat import CopilotChatHistoryTurn
+from apps.api.schemas.chat import CopilotChatHistoryTurn
 from apps.api.rag.generation.llm_client import OpenAiCompatibleLlmClient
 from apps.api.rag.query.synonym_expansion import expand_acronyms
 
@@ -191,3 +191,4 @@ class QueryRouter:
         if "authentication" in text.casefold() or "authorization" in text.casefold() or "rbac" in text.casefold():
             enriched = f"{enriched} authentication authorization rbac"
         return expand_acronyms(enriched.strip())
+

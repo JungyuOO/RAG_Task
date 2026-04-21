@@ -1,6 +1,6 @@
 ﻿from __future__ import annotations
 
-from apps.api.api.schemas.indexing import NormalizedBlock, ParsedDocumentBundle
+from apps.api.schemas.indexing import NormalizedBlock, ParsedDocumentBundle
 
 
 class MetadataEnricher:
@@ -33,4 +33,5 @@ class MetadataEnricher:
                 )
             )
         return enriched
+
 

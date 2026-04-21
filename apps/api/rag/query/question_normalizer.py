@@ -1,10 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import re
 from dataclasses import dataclass
 
-from apps.api.api.schemas.chat import CopilotChatHistoryTurn
+from apps.api.schemas.chat import CopilotChatHistoryTurn
 from apps.api.rag.generation.llm_client import OpenAiCompatibleLlmClient
 
 
@@ -103,3 +103,4 @@ Rules:
             except (json.JSONDecodeError, TypeError):
                 return None
         return None
+

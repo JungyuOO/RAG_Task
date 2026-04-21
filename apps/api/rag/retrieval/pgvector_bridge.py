@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from apps.api.api.schemas.chat import CopilotChatResponse, CopilotChatSourceItem
+from apps.api.schemas.chat import CopilotChatResponse, CopilotChatSourceItem
 from apps.api.rag.query.query_features import answer_source_budget
 from apps.api.rag.retrieval.legacy_pgvector_runtime import LegacyPgvectorRuntime
 
@@ -154,3 +154,4 @@ class PgvectorRetrievalBridge:
     @staticmethod
     def _answer_source_limit(message: str) -> int:
         return answer_source_budget(message)
+

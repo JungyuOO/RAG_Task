@@ -1,43 +1,45 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 
-import { PageHeader } from "@/components/layout/PageHeader";
-import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/shared/layout/PageHeader";
+import { Button } from "@/shared/ui/button";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
+} from "@/shared/ui/card";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+} from "@/shared/ui/dropdown-menu";
 import type {
   OcpLiveNamespaceListResponse,
   OcpLiveResourceDetailResponse,
   OcpLiveResourceListResponse,
   OcpLiveResourceSummary,
-} from "@/features/connection/types";
-import type { OcpConnectionController } from "@/features/connection/hooks/useOcpConnection";
-import { getOcpNamespaces, getOcpResourceDetail, getOcpResources } from "@/features/resources/api/ocpResourcesApi";
-import { ResourceList } from "@/features/resources/components/ResourceList";
+} from "@/domains/connection/types";
+import type { OcpConnectionController } from "@/domains/connection/useOcpConnection";
+import { getOcpNamespaces, getOcpResourceDetail, getOcpResources } from "@/domains/resources/ocpResourcesApi";
+import { ResourceList } from "@/domains/resources/ResourceList";
 import {
   ResourceYamlEditorModal,
   type LiveResourceKind,
-} from "@/features/resources/components/ResourceYamlEditorModal";
+} from "@/domains/resources/ResourceYamlEditorModal";
+import type { WorkspaceRecord } from "@/domains/workspaces/types";
 
 const RESOURCE_OPTIONS: LiveResourceKind[] = ["pods", "deployments", "services", "routes", "events"];
 
 type ResourcesPageProps = {
   controller: OcpConnectionController;
+  selectedWorkspace: WorkspaceRecord | null;
   onLoadingChange?: (state: { active: boolean; title: string; detail?: string }) => void;
 };
 
-export function ResourcesPage({ controller, onLoadingChange }: ResourcesPageProps) {
+export function ResourcesPage({ controller, selectedWorkspace, onLoadingChange }: ResourcesPageProps) {
   const [resource, setResource] = useState<LiveResourceKind>("pods");
   const [namespace, setNamespace] = useState("");
   const [namespaces, setNamespaces] = useState<OcpLiveNamespaceListResponse | null>(null);
@@ -163,23 +165,29 @@ export function ResourcesPage({ controller, onLoadingChange }: ResourcesPageProp
         actions={namespaceDropdown}
       />
 
+      {selectedWorkspace ? (
+        <div className="surface-muted rounded-2xl px-4 py-3 text-sm text-muted-foreground">
+          Active workspace: <span className="font-medium text-foreground">{selectedWorkspace.name}</span>
+        </div>
+      ) : null}
+
       {!controller.profile ? (
-        <Card className="border-border/70 bg-background/50">
+        <Card className="surface-muted">
           <CardContent className="p-6 text-sm text-muted-foreground">
-            Connection 화면에서 클러스터 연결을 먼저 구성해야 합니다.
+            현재 workspace에 연결된 클러스터 프로필이 없습니다. Connections 화면에서 이 workspace용 연결을 먼저 구성해야 합니다.
           </CardContent>
         </Card>
       ) : null}
 
       {pageError ? (
-        <Card className="border-destructive/40 bg-destructive/10">
+        <Card className="surface-danger">
           <CardContent className="p-6 text-sm text-destructive">{pageError}</CardContent>
         </Card>
       ) : null}
 
       {controller.profile ? (
         <>
-          <Card className="border-border/70 bg-card/95">
+          <Card className="surface-soft">
             <CardHeader>
               <CardTitle>Scope</CardTitle>
               <CardDescription>리소스 종류와 namespace를 바꾸면 목록과 YAML이 함께 갱신됩니다.</CardDescription>
@@ -206,7 +214,7 @@ export function ResourcesPage({ controller, onLoadingChange }: ResourcesPageProp
                     { label: "Count", value: String(resourceData.count) },
                     { label: "Selected", value: selectedItem?.name || "-" },
                   ].map((item) => (
-                    <div key={item.label} className="rounded-2xl border border-border/70 bg-background/50 p-4">
+                    <div key={item.label} className="surface-muted rounded-2xl p-4">
                       <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                         {item.label}
                       </div>
@@ -219,7 +227,7 @@ export function ResourcesPage({ controller, onLoadingChange }: ResourcesPageProp
           </Card>
 
           <div className="grid gap-4 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
-            <Card className="border-border/70 bg-card/95">
+            <Card className="surface-soft">
               <CardHeader>
                 <CardTitle>Resource list</CardTitle>
                 <CardDescription>항목을 클릭하면 오른쪽 패널에 YAML manifest가 표시됩니다.</CardDescription>
@@ -242,14 +250,14 @@ export function ResourcesPage({ controller, onLoadingChange }: ResourcesPageProp
               </CardContent>
             </Card>
 
-            <Card className="border-border/70 bg-card/95">
+            <Card className="surface-soft">
               <CardHeader>
                 <CardTitle>YAML manifest</CardTitle>
                 <CardDescription>선택한 리소스의 원문 manifest를 확인하고 필요 시 수정 흐름으로 이동합니다.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 {detailNotice ? (
-                  <div className="rounded-xl border border-border/70 bg-background/50 px-4 py-3 text-sm text-muted-foreground">
+                  <div className="surface-muted rounded-xl px-4 py-3 text-sm text-muted-foreground">
                     {detailNotice}
                   </div>
                 ) : null}
@@ -277,7 +285,7 @@ export function ResourcesPage({ controller, onLoadingChange }: ResourcesPageProp
                         YAML 복사
                       </Button>
                     </div>
-                    <pre className="max-h-[60vh] overflow-auto rounded-xl border border-border/70 bg-background/70 p-4 text-xs leading-6 text-muted-foreground">
+                    <pre className="surface-muted max-h-[60vh] overflow-auto rounded-xl p-4 text-xs leading-6 text-muted-foreground">
                       <code>{resourceDetail.manifestYaml}</code>
                     </pre>
                   </>
@@ -311,3 +319,5 @@ export function ResourcesPage({ controller, onLoadingChange }: ResourcesPageProp
     </div>
   );
 }
+
+

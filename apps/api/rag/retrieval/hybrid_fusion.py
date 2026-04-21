@@ -1,9 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 from collections.abc import Iterable
 
-from apps.api.api.schemas.chat import CopilotChatResponse, CopilotChatSourceItem
+from apps.api.schemas.chat import CopilotChatResponse, CopilotChatSourceItem
 from apps.api.rag.query.query_features import answer_source_budget
 
 
@@ -129,3 +129,4 @@ def _source_tokens(source: CopilotChatSourceItem) -> set[str]:
         for token in re.findall(r"[a-zA-Z0-9가-힣_-]+", text.casefold())
         if len(token) >= 2
     }
+

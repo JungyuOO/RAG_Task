@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 from apps.api.core.text import stable_hash
-from apps.api.api.schemas.indexing import (
+from apps.api.schemas.indexing import (
     ParsedDocument,
     ParsedDocumentBundle,
     ParsedDocumentMetadata,
@@ -88,5 +88,6 @@ class BaseParser(ABC):
             return candidate.read_text(encoding=encoding, errors="ignore")
         except OSError:
             return ""
+
 
 

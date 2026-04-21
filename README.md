@@ -226,29 +226,12 @@ apps/
     tsconfig.json
     vite.config.ts
 
-packages/                           # 공유 타입 · UI (스캐폴딩)
-  contracts/
-  ui/
-
-scripts/                            # 운영 · 평가 스크립트
-  scrape_redhat_docs.py             # 공식 문서 크롤러
-  build_section_index.py            # 섹션 인덱스 생성
-  build_chat_eval_dataset.py        # 평가 데이터셋 빌드
-  run_chat_eval_dataset.py          # 평가 실행
-  build_service_eval_v2.py
-  run_service_eval.py
-  inventory_redhat_docs.py
-  reindex_official_pdfs.py
-  test_multiturn_v202.py
-
 docs/
   architecture/                     # 아키텍처 결정 문서
   superpowers/plans/                # 개발 계획
   codex-tasks/                      # 외부 에이전트 작업 지시
   specs/                            # 설계 사양
   images/                           # 다이어그램 이미지
-
-tests/                              # 시나리오 · 데이터 기반 테스트
 ```
 
 ---
@@ -338,20 +321,6 @@ curl -X POST http://localhost:8000/api/v1/index/reindex
 
 ---
 
-## 10. 평가 · 운영 스크립트
-
-| 스크립트 | 용도 |
-| --- | --- |
-| `scripts/scrape_redhat_docs.py` | Playwright 로 Red Hat 공식 문서 수집 |
-| `scripts/inventory_redhat_docs.py` | 수집 문서 카탈로그 생성 |
-| `scripts/build_section_index.py` | 섹션 단위 보조 인덱스 구축 |
-| `scripts/build_chat_eval_dataset.py` · `run_chat_eval_dataset.py` | 챗봇 평가 데이터셋 빌드/실행 |
-| `scripts/build_service_eval_v2.py` · `run_service_eval.py` | 서비스 단위 회귀 평가 |
-| `scripts/reindex_official_pdfs.py` | 공식 PDF 일괄 재색인 |
-| `scripts/test_multiturn_v202.py` | 멀티턴 시나리오 스모크 테스트 |
-
----
-
 ## 11. 로드맵
 
 - 테스트 데이터 기반 **검색 가중치 자동 튜닝**
@@ -366,5 +335,4 @@ curl -X POST http://localhost:8000/api/v1/index/reindex
 
 ## 12. 참고
 
-- 🏛️ 아키텍처 문서: [`docs/architecture/`](./docs/architecture/)
-- 📝 개발 계획: [`docs/superpowers/plans/`](./docs/superpowers/plans/)
+- 다이어그램 이미지: [`docs/images/`](./docs/images/)

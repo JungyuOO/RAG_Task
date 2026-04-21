@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 
 from apps.api.core.text import stable_hash
-from apps.api.api.schemas.indexing import BlockType, ChunkExpansionRef, ChunkRecord, NormalizedBlock, ParsedDocumentBundle
+from apps.api.schemas.indexing import BlockType, ChunkExpansionRef, ChunkRecord, NormalizedBlock, ParsedDocumentBundle
 
 
 class BlockPreservingChunker:
@@ -215,4 +215,5 @@ class BlockPreservingChunker:
             return []
         previous_ids = {block.block_id for block in groups[index - 1]}
         return [block.block_id for block in groups[index] if block.block_id in previous_ids]
+
 

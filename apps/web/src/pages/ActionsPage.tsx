@@ -1,17 +1,17 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState } from "react";
 
-import { PageHeader } from "@/components/layout/PageHeader";
-import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/shared/layout/PageHeader";
+import { Button } from "@/shared/ui/button";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+} from "@/shared/ui/card";
+import { Input } from "@/shared/ui/input";
+import { Label } from "@/shared/ui/label";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/shared/ui/tabs";
 import {
   approveOcpActionRequest,
   createOcpActionRequest,
@@ -21,19 +21,19 @@ import {
   listOcpActionRequests,
   previewOcpAction,
   rejectOcpActionRequest,
-} from "@/features/actions/api/actionPreviewApi";
-import { ActionPreviewDialog } from "@/features/actions/components/ActionPreviewDialog";
-import { AuditTable } from "@/features/actions/components/AuditTable";
-import { ExecutionsTable } from "@/features/actions/components/ExecutionsTable";
-import { RequestsTable } from "@/features/actions/components/RequestsTable";
+} from "@/domains/actions/actionPreviewApi";
+import { ActionPreviewDialog } from "@/domains/actions/ActionPreviewDialog";
+import { AuditTable } from "@/domains/actions/AuditTable";
+import { ExecutionsTable } from "@/domains/actions/ExecutionsTable";
+import { RequestsTable } from "@/domains/actions/RequestsTable";
 import type {
   OcpActionAuditRecord,
   OcpActionExecutionRecord,
   OcpActionPreviewResponse,
   OcpActionRequestRecord,
   OcpActionType,
-} from "@/features/actions/types";
-import type { OcpConnectionController } from "@/features/connection/hooks/useOcpConnection";
+} from "@/domains/actions/types";
+import type { OcpConnectionController } from "@/domains/connection/useOcpConnection";
 
 function joinOrDash(items: string[]) {
   return items.length > 0 ? items.join(", ") : "-";
@@ -213,7 +213,7 @@ export function ActionsPage({ controller }: { controller: OcpConnectionControlle
       />
 
       {controller.testResult ? (
-        <Card className="border-border/70 bg-card/95">
+        <Card className="surface-soft">
           <CardHeader>
             <CardTitle>Resolved Connection Identity</CardTitle>
             <CardDescription>Current resolved user and RBAC summary for this connected cluster context.</CardDescription>
@@ -227,7 +227,7 @@ export function ActionsPage({ controller }: { controller: OcpConnectionControlle
         </Card>
       ) : null}
 
-      <Card className="border-border/70 bg-card/95">
+      <Card className="surface-soft">
         <CardHeader>
           <CardTitle>Action Request Builder</CardTitle>
           <CardDescription>Create previews and approval requests against the current cluster context.</CardDescription>
@@ -283,7 +283,7 @@ export function ActionsPage({ controller }: { controller: OcpConnectionControlle
                 />
               </div>
 
-              <label className="flex items-center gap-2 rounded-xl border border-border/70 bg-background/50 px-4 py-3 text-sm text-muted-foreground">
+              <label className="surface-muted flex items-center gap-2 rounded-xl px-4 py-3 text-sm text-muted-foreground">
                 <input
                   type="checkbox"
                   className="h-4 w-4 accent-[#1060ff]"
@@ -329,7 +329,7 @@ export function ActionsPage({ controller }: { controller: OcpConnectionControlle
           )}
 
           {error ? (
-            <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            <div className="surface-danger rounded-xl px-4 py-3 text-sm text-destructive">
               {error}
             </div>
           ) : null}
@@ -344,7 +344,7 @@ export function ActionsPage({ controller }: { controller: OcpConnectionControlle
         </TabsList>
 
         <TabsContent value="requests">
-          <Card className="border-border/70 bg-card/95">
+          <Card className="surface-soft">
             <CardHeader>
               <CardTitle>Requests</CardTitle>
               <CardDescription>Review request state, approval counts, and next actions.</CardDescription>
@@ -363,7 +363,7 @@ export function ActionsPage({ controller }: { controller: OcpConnectionControlle
         </TabsContent>
 
         <TabsContent value="executions">
-          <Card className="border-border/70 bg-card/95">
+          <Card className="surface-soft">
             <CardHeader>
               <CardTitle>Executions</CardTitle>
               <CardDescription>Review execution state, preflight checks, and output summary.</CardDescription>
@@ -375,7 +375,7 @@ export function ActionsPage({ controller }: { controller: OcpConnectionControlle
         </TabsContent>
 
         <TabsContent value="audit">
-          <Card className="border-border/70 bg-card/95">
+          <Card className="surface-soft">
             <CardHeader>
               <CardTitle>Audit</CardTitle>
               <CardDescription>Recent audit events and break-glass metadata.</CardDescription>
@@ -395,3 +395,5 @@ export function ActionsPage({ controller }: { controller: OcpConnectionControlle
     </div>
   );
 }
+
+

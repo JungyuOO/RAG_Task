@@ -1,10 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 import json
 from collections import OrderedDict
 
-from apps.api.api.schemas.chat import CopilotChatResponse
+from apps.api.schemas.chat import CopilotChatResponse
 
 
 class ChatResponseCache:
@@ -28,3 +28,4 @@ class ChatResponseCache:
         self._items.move_to_end(key)
         while len(self._items) > self.max_entries:
             self._items.popitem(last=False)
+

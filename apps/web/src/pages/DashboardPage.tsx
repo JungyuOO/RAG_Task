@@ -1,28 +1,37 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 
-import { PageHeader } from "@/components/layout/PageHeader";
-import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/shared/layout/PageHeader";
+import { Button } from "@/shared/ui/button";
 import {
   Card,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
-import type { OcpOverviewResponse } from "@/features/connection/types";
-import type { OcpConnectionController } from "@/features/connection/hooks/useOcpConnection";
-import { getOcpOverview } from "@/features/dashboard/api/ocpOverviewApi";
+} from "@/shared/ui/card";
+import { Skeleton } from "@/shared/ui/skeleton";
+import type { OcpOverviewResponse } from "@/domains/connection/types";
+import type { OcpConnectionController } from "@/domains/connection/useOcpConnection";
+import {
+  getOcpOverview,
+  getWorkspaceRecommendations,
+  refreshWorkspaceRecommendations,
+} from "@/domains/dashboard/ocpOverviewApi";
+import type { WorkspaceRecommendationRecord } from "@/domains/dashboard/types";
+import type { WorkspaceRecord } from "@/domains/workspaces/types";
 
 type DashboardPageProps = {
   controller: OcpConnectionController;
+  selectedWorkspace: WorkspaceRecord | null;
   onLoadingChange?: (state: { active: boolean; title: string; detail?: string }) => void;
 };
 
-export function DashboardPage({ controller, onLoadingChange }: DashboardPageProps) {
+export function DashboardPage({ controller, selectedWorkspace, onLoadingChange }: DashboardPageProps) {
   const [overview, setOverview] = useState<OcpOverviewResponse | null>(null);
+  const [recommendations, setRecommendations] = useState<WorkspaceRecommendationRecord[]>([]);
   const [overviewError, setOverviewError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [recoLoading, setRecoLoading] = useState(false);
 
   useEffect(() => {
     async function run() {
@@ -38,6 +47,11 @@ export function DashboardPage({ controller, onLoadingChange }: DashboardPageProp
       try {
         const overviewResult = await getOcpOverview(controller.profile.connectionId);
         setOverview(overviewResult);
+        if (selectedWorkspace) {
+          setRecommendations(await getWorkspaceRecommendations(selectedWorkspace.workspaceId));
+        } else {
+          setRecommendations([]);
+        }
       } catch (nextError) {
         setOverview(null);
         setOverviewError(nextError instanceof Error ? nextError.message : "Failed to load dashboard overview.");
@@ -47,7 +61,7 @@ export function DashboardPage({ controller, onLoadingChange }: DashboardPageProp
     }
 
     void run();
-  }, [controller.profile]);
+  }, [controller.profile, selectedWorkspace?.workspaceId]);
 
   useEffect(() => {
     onLoadingChange?.({
@@ -65,6 +79,21 @@ export function DashboardPage({ controller, onLoadingChange }: DashboardPageProp
       .sort((left, right) => right[1] - left[1]);
   }, [overview]);
 
+  async function handleRefreshRecommendations() {
+    if (!selectedWorkspace || !controller.profile) return;
+    setRecoLoading(true);
+    setOverviewError("");
+    try {
+      setRecommendations(
+        await refreshWorkspaceRecommendations(selectedWorkspace.workspaceId, controller.profile.connectionId),
+      );
+    } catch (nextError) {
+      setOverviewError(nextError instanceof Error ? nextError.message : "Failed to refresh recommendations.");
+    } finally {
+      setRecoLoading(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -73,16 +102,22 @@ export function DashboardPage({ controller, onLoadingChange }: DashboardPageProp
         description="연결된 클러스터의 규모, namespace 가시성, RBAC posture, 시계열 활용량을 한 화면에서 확인합니다."
       />
 
+      {selectedWorkspace ? (
+        <div className="surface-muted rounded-2xl px-4 py-3 text-sm text-muted-foreground">
+          Active workspace: <span className="font-medium text-foreground">{selectedWorkspace.name}</span>
+        </div>
+      ) : null}
+
       {!controller.profile ? (
-        <Card className="border-border/70 bg-background/50">
+        <Card className="surface-muted">
           <CardContent className="p-6 text-sm text-muted-foreground">
-            Connection 화면에서 클러스터 연결을 먼저 구성해야 합니다.
+            현재 workspace에 연결된 클러스터 프로필이 없습니다. Connections 화면에서 이 workspace용 연결을 먼저 구성해야 합니다.
           </CardContent>
         </Card>
       ) : null}
 
       {overviewError ? (
-        <Card className="border-destructive/40 bg-destructive/10">
+        <Card className="surface-danger">
           <CardContent className="p-6 text-sm text-destructive">{overviewError}</CardContent>
         </Card>
       ) : null}
@@ -94,7 +129,7 @@ export function DashboardPage({ controller, onLoadingChange }: DashboardPageProp
           { label: "Pods", value: overview ? overview.resourceCounts.pods ?? 0 : null },
           { label: "Services", value: overview ? overview.resourceCounts.services ?? 0 : null },
         ].map((item) => (
-          <Card key={item.label} className="border-border/70 bg-card/95">
+          <Card key={item.label} className="surface-soft">
             <CardHeader className="pb-3">
               <CardTitle className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
                 {item.label}
@@ -115,7 +150,7 @@ export function DashboardPage({ controller, onLoadingChange }: DashboardPageProp
 
       {overview ? (
         <div className="grid gap-4 lg:grid-cols-2">
-          <Card className="border-border/70 bg-card/95">
+          <Card className="surface-soft">
             <CardHeader>
               <CardTitle>Access posture</CardTitle>
               <CardDescription>검증된 identity와 현재 연결 컨텍스트의 핵심 상태입니다.</CardDescription>
@@ -130,7 +165,7 @@ export function DashboardPage({ controller, onLoadingChange }: DashboardPageProp
             </CardContent>
           </Card>
 
-          <Card className="border-border/70 bg-card/95">
+          <Card className="surface-soft">
             <CardHeader>
               <CardTitle>Namespace sample</CardTitle>
               <CardDescription>현재 토큰으로 조회 가능한 namespace 일부입니다.</CardDescription>
@@ -159,7 +194,7 @@ export function DashboardPage({ controller, onLoadingChange }: DashboardPageProp
       ) : null}
 
       {resourceEntries.length > 0 ? (
-        <Card className="border-border/70 bg-card/95">
+        <Card className="surface-soft">
           <CardHeader>
             <CardTitle>Resource density</CardTitle>
             <CardDescription>가장 큰 리소스 군집을 빠르게 파악하기 위한 분포입니다.</CardDescription>
@@ -185,6 +220,49 @@ export function DashboardPage({ controller, onLoadingChange }: DashboardPageProp
           </CardContent>
         </Card>
       ) : null}
+
+      {selectedWorkspace ? (
+        <Card className="surface-soft">
+          <CardHeader>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <CardTitle>Recommendations</CardTitle>
+                <CardDescription>현재 workspace 연결 상태 기준으로 생성한 운영 제안입니다.</CardDescription>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={!controller.profile || recoLoading}
+                onClick={() => {
+                  void handleRefreshRecommendations();
+                }}
+              >
+                {recoLoading ? "Generating..." : "Refresh recommendations"}
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {recommendations.length === 0 ? (
+              <div className="text-sm text-muted-foreground">아직 생성된 추천이 없습니다.</div>
+            ) : (
+              recommendations.map((item) => (
+                <div key={item.recommendationId} className="surface-muted rounded-xl px-4 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="font-medium text-foreground">{item.summary}</div>
+                    <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">{item.riskLevel}</div>
+                  </div>
+                  <div className="mt-2 text-sm text-muted-foreground">{item.rationale}</div>
+                  <div className="mt-2 text-xs text-muted-foreground">
+                    {item.resourceKind || "workspace"} {item.resourceName || ""} {item.namespace ? `· ${item.namespace}` : ""}
+                  </div>
+                </div>
+              ))
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
     </div>
   );
 }
+
+

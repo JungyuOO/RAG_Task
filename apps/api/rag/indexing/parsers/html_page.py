@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 
 from apps.api.core.text import stable_hash
-from apps.api.api.schemas.indexing import (
+from apps.api.schemas.indexing import (
     BlockAttributes,
     BlockType,
     ParsedBlock,
@@ -216,5 +216,6 @@ class HtmlPageParser(BaseParser):
             "pre": BlockType.CODE,
             "code": BlockType.CODE,
         }.get(tag, BlockType.PARAGRAPH)
+
 
 

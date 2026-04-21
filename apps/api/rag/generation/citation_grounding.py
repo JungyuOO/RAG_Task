@@ -1,8 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 
-from apps.api.api.schemas.chat import CopilotChatSourceItem
+from apps.api.schemas.chat import CopilotChatSourceItem
 from apps.api.rag.query.query_features import tokenize_query
 
 
@@ -102,3 +102,4 @@ class CitationGroundingValidator:
             for token in tokenize_query(text)
             if token not in cls._GENERIC_ALIGNMENT_TOKENS
         }
+
