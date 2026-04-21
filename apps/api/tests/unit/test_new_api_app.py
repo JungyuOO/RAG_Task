@@ -44,6 +44,12 @@ class NewApiAppTests(unittest.TestCase):
         self.assertIn("/api/v1/ocp/overview/{connection_id}", payload["paths"])
         self.assertIn("/api/v1/ocp/namespaces/{connection_id}", payload["paths"])
         self.assertIn("/api/v1/ocp/resources/{connection_id}", payload["paths"])
+        self.assertIn("/api/v1/workspaces", payload["paths"])
+        self.assertIn("/api/v1/workspaces/{workspace_id}/scm/connections", payload["paths"])
+        self.assertIn("/api/v1/workspaces/{workspace_id}/scm/repositories", payload["paths"])
+        self.assertIn("/api/v1/workspaces/{workspace_id}/scm/repositories/{repository_id}/deployment-plan", payload["paths"])
+        self.assertIn("/api/v1/oauth/{provider}/start", payload["paths"])
+        self.assertIn("/api/v1/oauth/{provider}/callback", payload["paths"])
 
 
 if __name__ == "__main__":
